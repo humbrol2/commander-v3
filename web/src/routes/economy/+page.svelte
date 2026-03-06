@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { economy } from "$stores/websocket";
 	import ProfitChart from "$lib/components/ProfitChart.svelte";
+	import SupplyChainFlow from "$lib/components/SupplyChainFlow.svelte";
 
 	type TradeRange = "1h" | "1d" | "1w" | "all";
 
@@ -107,6 +108,9 @@
 			</p>
 		</div>
 	</div>
+
+	<!-- Supply Chain Flow -->
+	<SupplyChainFlow />
 
 	<!-- Profit Chart -->
 	<ProfitChart />

@@ -14,7 +14,7 @@ import type { ApiClient } from "../core/api-client";
 import type { GameCache } from "../data/game-cache";
 import type { FleetStatus } from "../bot/types";
 import type { ShipClass } from "../types/game";
-import type { CommanderBrain, EvaluationOutput, Assignment, WorldContext, PendingUpgrade } from "./types";
+import type { CommanderBrain, EvaluationOutput, Assignment, WorldContext, PendingUpgrade, BrainHealth } from "./types";
 import { EconomyEngine } from "./economy-engine";
 import { ScoringBrain, type ScoringConfig } from "./scoring-brain";
 import { findBestUpgrade, calculateROI, scoreShipForRole, LEGACY_SHIPS } from "../core/ship-fitness";
@@ -181,6 +181,17 @@ export class Commander {
     }
   }
 
+  /** Get per-tier brain health (for dashboard) */
+  getBrainHealths(): BrainHealth[] {
+    // If tiered brain, get per-tier health
+    if ("getTierHealths" in this.brain) {
+      return (this.brain as any).getTierHealths();
+    }
+    // Single brain — return its health if available
+    const h = this.brain.getHealth?.();
+    return h ? [h] : [];
+  }
+
   /** Get recent decision history */
   getDecisionHistory(): CommanderDecision[] {
     return [...this.decisionHistory];
@@ -272,6 +283,11 @@ export class Commander {
       reasoning: output.reasoning,
       thoughts,
       timestamp: new Date().toISOString(),
+      brainName: output.brainName,
+      latencyMs: output.latencyMs,
+      confidence: output.confidence,
+      tokenUsage: output.tokenUsage,
+      fallbackUsed: output.brainName === "ScoringBrain" && (this.brain.getHealth?.()?.name ?? "ScoringBrain") !== "ScoringBrain",
     };
 
     // Step 7: Log and record

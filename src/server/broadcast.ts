@@ -130,7 +130,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       });
     }
 
-    // Commander decision + economy (every 15s)
+    // Commander decision + economy + brain health (every 15s)
     if (tick % 5 === 0) {
       const decision = deps.commander.getLastDecision();
       if (decision) {
@@ -143,7 +143,28 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
             reasoning: decision.reasoning,
             thoughts: [],
             timestamp: decision.timestamp,
+            brainName: decision.brainName,
+            latencyMs: decision.latencyMs,
+            confidence: decision.confidence,
+            tokenUsage: decision.tokenUsage,
+            fallbackUsed: decision.fallbackUsed,
           },
+        });
+      }
+
+      // Brain health
+      const healthList = deps.commander.getBrainHealths();
+      if (healthList.length > 0) {
+        broadcast({
+          type: "brain_health_update",
+          brains: healthList.map(h => ({
+            name: h.name,
+            available: h.available,
+            avgLatencyMs: h.avgLatencyMs,
+            successRate: h.successRate,
+            lastError: h.lastError ?? null,
+            totalCalls: 0,
+          })),
         });
       }
 

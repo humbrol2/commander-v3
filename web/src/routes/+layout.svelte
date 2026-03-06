@@ -14,11 +14,13 @@
 		dismissNotification,
 	} from "$stores/websocket";
 	import ShortcutsOverlay from "$lib/components/ShortcutsOverlay.svelte";
+	import CommandPalette from "$lib/components/CommandPalette.svelte";
 
 	let { children } = $props();
 
 	let showNotifications = $state(false);
 	let showShortcuts = $state(false);
+	let showPalette = $state(false);
 
 	// Toast notifications (auto-dismiss after 5s)
 	let toasts = $state<Array<{ id: string; level: string; title: string; message: string; timestamp: number }>>([]);
@@ -61,6 +63,13 @@
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		// Ctrl+K opens command palette (works even in inputs)
+		if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+			e.preventDefault();
+			showPalette = !showPalette;
+			return;
+		}
+
 		// Don't trigger shortcuts when typing in inputs
 		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
 
@@ -288,6 +297,9 @@
 		{/each}
 	</div>
 {/if}
+
+<!-- Command palette (Ctrl+K) -->
+<CommandPalette bind:open={showPalette} onclose={() => (showPalette = false)} />
 
 <!-- Shortcuts overlay -->
 <ShortcutsOverlay open={showShortcuts} onclose={() => (showShortcuts = false)} />

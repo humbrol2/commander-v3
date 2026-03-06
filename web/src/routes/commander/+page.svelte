@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { commanderLog, activityLog, bots, send, goals } from "$stores/websocket";
 	import type { CommanderDecision, LogEntry } from "../../../../src/types/protocol";
+	import BrainPanel from "$lib/components/BrainPanel.svelte";
+	import BrainHealth from "$lib/components/BrainHealth.svelte";
 
 	/** Unified timeline entry for the conversational log */
 	interface TimelineEntry {
@@ -152,6 +154,9 @@
 		</button>
 	</div>
 
+	<div class="grid grid-cols-1 lg:grid-cols-[1fr_240px] gap-4">
+	<div class="space-y-4">
+
 	<!-- Quick stats -->
 	<div class="grid grid-cols-2 md:grid-cols-4 gap-3">
 		<div class="card p-4">
@@ -282,4 +287,15 @@
 			{/if}
 		</div>
 	</div>
+
+	</div><!-- end main column -->
+
+	<!-- AI Brain sidebar -->
+	<div class="hidden lg:block space-y-4">
+		<BrainPanel />
+	</div>
+	</div><!-- end grid -->
+
+	<!-- Brain Health (full width below) -->
+	<BrainHealth />
 </div>

@@ -177,6 +177,38 @@ export interface CommanderDecision {
   reasoning: string;
   thoughts: string[];
   timestamp: string;
+  /** AI brain metadata (v3) */
+  brainName?: string;
+  latencyMs?: number;
+  confidence?: number;
+  tokenUsage?: { input: number; output: number };
+  fallbackUsed?: boolean;
+}
+
+// ── Brain Health (v3) ──
+
+export interface BrainHealthStatus {
+  name: string;
+  available: boolean;
+  avgLatencyMs: number;
+  successRate: number;
+  lastError: string | null;
+  totalCalls: number;
+}
+
+// ── Supply Chain Flow Data ──
+
+export interface SupplyChainNode {
+  id: string;
+  label: string;
+  value: number;
+}
+
+export interface SupplyChainLink {
+  source: string;
+  target: string;
+  value: number;
+  label: string;
 }
 
 // ── Log Entry ──
@@ -324,7 +356,9 @@ export type ServerMessage =
   | { type: "faction_update"; faction: FactionState }
   | { type: "connected"; version: string }
   | { type: "fleet_settings_update"; settings: { factionTaxPercent: number; minBotCredits: number } }
-  | { type: "bot_storage"; botId: string; storage: BotStorageData };
+  | { type: "bot_storage"; botId: string; storage: BotStorageData }
+  | { type: "brain_health_update"; brains: BrainHealthStatus[] }
+  | { type: "supply_chain_flow"; nodes: SupplyChainNode[]; links: SupplyChainLink[] };
 
 // ── Dashboard → Server Messages ──
 

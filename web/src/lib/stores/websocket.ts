@@ -18,8 +18,11 @@ import type {
   MarketStationData,
   FactionState,
   BotStorageData,
+  BrainHealthStatus,
+  SupplyChainNode,
+  SupplyChainLink,
 } from "../../../../src/types/protocol";
-import type { Goal } from "../../../../src/types/config";
+import type { Goal } from "../../../../src/config/schema";
 
 // ── Connection State ──
 
@@ -46,6 +49,8 @@ export const goals = writable<Goal[]>([]);
 export const factionState = writable<FactionState | null>(null);
 export const botStorage = writable<Map<string, BotStorageData>>(new Map());
 export const fleetSettings = writable<{ factionTaxPercent: number; minBotCredits: number }>({ factionTaxPercent: 0, minBotCredits: 0 });
+export const brainHealth = writable<BrainHealthStatus[]>([]);
+export const supplyChain = writable<{ nodes: SupplyChainNode[]; links: SupplyChainLink[] }>({ nodes: [], links: [] });
 
 // Derived
 export const activeBots = derived(bots, ($bots) => $bots.filter((b) => b.status === "running"));
@@ -144,6 +149,14 @@ function handleMessage(event: MessageEvent) {
           next.set(msg.botId, msg.storage);
           return next;
         });
+        break;
+
+      case "brain_health_update":
+        brainHealth.set(msg.brains);
+        break;
+
+      case "supply_chain_flow":
+        supplyChain.set({ nodes: msg.nodes, links: msg.links });
         break;
 
       case "notification":
