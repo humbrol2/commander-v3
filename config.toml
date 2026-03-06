@@ -1,0 +1,51 @@
+# SpaceMolt Commander v3 Configuration
+
+[commander]
+brain = "tiered"                  # "scoring", "ollama", "gemini", "claude", "tiered"
+evaluation_interval = 60
+reassignment_cooldown = 300
+reassignment_threshold = 0.3
+switch_cost_weight = 1.0
+urgency_override = true
+
+[ai]
+ollama_base_url = "http://localhost:11434"
+ollama_model = "qwen3:8b"
+gemini_model = "gemini-2.0-flash"
+claude_model = "claude-3-5-haiku-latest"
+tier_order = ["ollama", "gemini", "claude", "scoring"]
+max_latency_ms = 10000
+shadow_mode = false
+
+[[goals]]
+type = "maximize_income"
+priority = 1
+
+[fleet]
+max_bots = 20
+login_stagger_ms = 5000
+snapshot_interval = 30
+default_storage_mode = "faction_deposit"
+
+[cache]
+market_ttl_ms = 300000
+system_ttl_ms = 3600000
+catalog_refresh = "on_version_change"
+
+[server]
+port = 3000
+host = "localhost"
+
+[training]
+log_decisions = true
+log_snapshots = true
+log_episodes = true
+log_market_history = true
+snapshot_interval = 30
+
+[economy]
+enable_premium_orders = true
+max_premium_pct = 50
+min_crafting_margin_pct = 30
+batch_sell_size = 100
+order_stale_timeout_min = 120

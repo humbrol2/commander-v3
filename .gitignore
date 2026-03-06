@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.svelte-kit/
+web/build/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+.env
+.DS_Store
+drizzle/
