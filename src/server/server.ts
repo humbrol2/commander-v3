@@ -6,6 +6,7 @@
 import type { ServerWebSocket } from "bun";
 import type { ServerMessage, ClientMessage } from "../types/protocol";
 import type { DB } from "../data/db";
+import type { TrainingLogger } from "../data/training-logger";
 import { gt } from "drizzle-orm";
 import { creditHistory } from "../data/schema";
 
@@ -21,6 +22,7 @@ export interface ServerOptions {
   host: string;
   staticDir: string;
   db?: DB;
+  trainingLogger?: TrainingLogger;
   onClientMessage?: (ws: ServerWebSocket<WsData>, msg: ClientMessage) => void;
   onClientConnect?: (ws: ServerWebSocket<WsData>) => void;
 }
@@ -130,6 +132,23 @@ async function handleApiRoute(url: URL, opts: ServerOptions): Promise<Response> 
 
   if (path === "credits" && opts.db) {
     return handleCreditsRoute(url, opts.db);
+  }
+
+  if (path === "training/shadow-stats" && opts.trainingLogger) {
+    const stats = opts.trainingLogger.getShadowStats();
+    return Response.json(stats);
+  }
+
+  if (path === "training/stats" && opts.trainingLogger) {
+    const stats = opts.trainingLogger.getStats();
+    return Response.json({
+      decisions: { count: stats.decisions, byAction: {}, byBot: {} },
+      snapshots: { count: stats.snapshots },
+      episodes: { count: stats.episodes, byType: {}, successRate: 0, avgDurationTicks: 0, totalProfit: 0 },
+      marketHistory: { count: stats.marketRecords, stationsTracked: 0, itemsTracked: 0 },
+      commanderLog: { count: stats.commanderDecisions, goalDistribution: {} },
+      database: { sizeBytes: stats.dbSizeBytes, sizeMB: +(stats.dbSizeBytes / 1048576).toFixed(2) },
+    });
   }
 
   return Response.json({ error: "Not found" }, { status: 404 });

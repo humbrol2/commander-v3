@@ -7,7 +7,7 @@ import { eq, sql, gte, desc } from "drizzle-orm";
 import type { DB } from "./db";
 import {
   decisionLog, stateSnapshots, episodes, marketHistory,
-  commanderLog, financialEvents, tradeLog,
+  commanderLog, financialEvents, tradeLog, llmDecisions,
 } from "./schema";
 
 const COMMANDER_VERSION = "3.0.0";
@@ -227,6 +227,70 @@ export class TrainingLogger {
         itemId: r.itemId, quantity: r.quantity, priceEach: r.priceEach,
         total: r.total, stationId: r.stationId,
       }));
+  }
+
+  logShadowComparison(params: {
+    tick: number;
+    primary: { brainName: string; latencyMs: number; confidence: number; tokenUsage?: { input: number; output: number }; assignments: Array<{ botId: string; routine: string }>; reasoning: string };
+    shadow: { brainName: string; assignments: Array<{ botId: string; routine: string }>; reasoning: string };
+    fleetInput: Record<string, unknown>;
+  }): void {
+    const pAssign = params.primary.assignments;
+    const sAssign = params.shadow.assignments;
+
+    // Agreement rate: fraction of bots assigned same routine by both brains
+    let matches = 0;
+    for (const pa of pAssign) {
+      const sa = sAssign.find(s => s.botId === pa.botId);
+      if (sa && sa.routine === pa.routine) matches++;
+    }
+    const totalBots = Math.max(pAssign.length, sAssign.length, 1);
+    const agreementRate = matches / totalBots;
+
+    this.db.insert(llmDecisions).values({
+      tick: params.tick,
+      brainName: params.primary.brainName,
+      latencyMs: params.primary.latencyMs,
+      confidence: params.primary.confidence,
+      tokenUsage: params.primary.tokenUsage
+        ? params.primary.tokenUsage.input + params.primary.tokenUsage.output
+        : null,
+      fleetInput: JSON.stringify(params.fleetInput),
+      assignments: JSON.stringify(pAssign),
+      reasoning: params.primary.reasoning,
+      scoringBrainAssignments: JSON.stringify(sAssign),
+      agreementRate,
+    }).run();
+  }
+
+  getShadowStats(): {
+    totalComparisons: number;
+    avgAgreementRate: number;
+    byBrain: Array<{ brainName: string; count: number; avgAgreement: number; avgLatency: number }>;
+  } {
+    const total = (this.db.all(sql`SELECT COUNT(*) as count FROM ${llmDecisions}`) as Array<{ count: number }>)[0]?.count ?? 0;
+    const avgRate = (this.db.all(sql`SELECT AVG(${llmDecisions.agreementRate}) as avg FROM ${llmDecisions}`) as Array<{ avg: number | null }>)[0]?.avg ?? 0;
+
+    const byBrain = this.db.all(sql`
+      SELECT
+        ${llmDecisions.brainName} as brain_name,
+        COUNT(*) as count,
+        AVG(${llmDecisions.agreementRate}) as avg_agreement,
+        AVG(${llmDecisions.latencyMs}) as avg_latency
+      FROM ${llmDecisions}
+      GROUP BY ${llmDecisions.brainName}
+    `) as Array<{ brain_name: string; count: number; avg_agreement: number; avg_latency: number }>;
+
+    return {
+      totalComparisons: total,
+      avgAgreementRate: avgRate,
+      byBrain: byBrain.map(r => ({
+        brainName: r.brain_name,
+        count: r.count,
+        avgAgreement: r.avg_agreement,
+        avgLatency: r.avg_latency,
+      })),
+    };
   }
 
   getStats(): {

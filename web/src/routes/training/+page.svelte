@@ -4,6 +4,7 @@
 	import type { TrainingStats } from "../../../../src/types/protocol";
 	import DecisionDistribution from "$lib/components/DecisionDistribution.svelte";
 	import EpisodeOutcomes from "$lib/components/EpisodeOutcomes.svelte";
+	import ShadowComparison from "$lib/components/ShadowComparison.svelte";
 
 	// Fetch training stats from REST API
 	let loading = $state(true);
@@ -191,6 +192,9 @@
 			</div>
 		</div>
 	</div>
+
+	<!-- Shadow Mode Comparison -->
+	<ShadowComparison />
 
 	<!-- Export controls -->
 	<div class="card p-4">

@@ -115,7 +115,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const economy = new EconomyEngine();
 
   // ── Commander Brain ──
-  const brain = buildBrain(config);
+  const brain = buildBrain(config, trainingLogger);
 
   const commanderConfig: CommanderConfig = {
     evaluationIntervalSec: config.commander.evaluation_interval,
@@ -193,6 +193,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     host: config.server.host,
     staticDir: "web/build",
     db,
+    trainingLogger,
     onClientMessage: (ws, msg) => handleClientMessage(ws, msg, routerDeps),
     onClientConnect: (ws) => {
       console.log("[WS] New client — sending initial state");
@@ -227,7 +228,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 }
 
 /** Build the brain based on config */
-function buildBrain(config: AppConfig): CommanderBrain {
+function buildBrain(config: AppConfig, logger: TrainingLogger): CommanderBrain {
   const scoringBrain = new ScoringBrain({
     reassignmentCooldownMs: config.commander.reassignment_cooldown * 1000,
   });
@@ -265,6 +266,23 @@ function buildBrain(config: AppConfig): CommanderBrain {
         ? (primary, shadow) => {
             console.log(`[Shadow] ${primary.brainName} vs ${shadow.brainName}: ` +
               `${primary.assignments.length} vs ${shadow.assignments.length} assignments`);
+            logger.logShadowComparison({
+              tick: Math.floor(Date.now() / 1000),
+              primary: {
+                brainName: primary.brainName,
+                latencyMs: primary.latencyMs,
+                confidence: primary.confidence,
+                tokenUsage: primary.tokenUsage,
+                assignments: primary.assignments.map(a => ({ botId: a.botId, routine: a.routine })),
+                reasoning: primary.reasoning,
+              },
+              shadow: {
+                brainName: shadow.brainName,
+                assignments: shadow.assignments.map(a => ({ botId: a.botId, routine: a.routine })),
+                reasoning: shadow.reasoning,
+              },
+              fleetInput: {},
+            });
           }
         : undefined,
     });
