@@ -501,11 +501,14 @@ export async function ensureInsurance(ctx: BotContext): Promise<void> {
  * Returns true if recovery succeeded (bot is now docked or respawned).
  */
 export async function recoverStranded(ctx: BotContext): Promise<{ recovered: boolean; method: string }> {
-  // Not stranded if docked or has fuel
+  // Not stranded if docked
   if (ctx.player.dockedAtBase) return { recovered: true, method: "already_docked" };
-  if (ctx.ship.fuel > 0) return { recovered: false, method: "has_fuel" };
+  // Has fuel AND can actually reach a station → not stranded
+  if (ctx.ship.fuel > 0 && !ctx.fuel.isStranded(ctx.player.currentSystem, ctx.ship)) {
+    return { recovered: false, method: "has_fuel" };
+  }
 
-  log(ctx, "STRANDED: 0 fuel, attempting recovery");
+  log(ctx, `STRANDED: ${ctx.ship.fuel} fuel, attempting recovery`);
 
   // Step 1: Try burning cargo fuel cells
   const fuelCells = ctx.cargo.getItemQuantity(ctx.ship, "fuel_cell");
@@ -917,7 +920,17 @@ export async function handleFuelEmergency(ctx: BotContext): Promise<boolean> {
     }
   }
 
-  // Stranded — stop the routine so commander can reassign (and rescue can find us)
+  // Stranded — attempt insurance/self-destruct recovery
+  if (ctx.fuel.isStranded(ctx.player.currentSystem, ctx.ship)) {
+    log(ctx, `stranded at ${ctx.player.currentSystem} with ${fuelPct.toFixed(0)}% fuel — attempting recovery`);
+    const recovery = await recoverStranded(ctx);
+    if (recovery.recovered) {
+      log(ctx, `fuel emergency recovery: ${recovery.method}`);
+      if (ctx.player.dockedAtBase) await serviceShip(ctx);
+      return true;
+    }
+  }
+
   logError(ctx, `STRANDED at ${ctx.player.currentSystem} with ${fuelPct.toFixed(0)}% fuel — waiting for rescue`);
   return false;
 }
@@ -991,8 +1004,8 @@ export async function handleEmergency(ctx: BotContext): Promise<boolean> {
     }
   }
 
-  // Last resort: if fuel is the issue and we're truly stranded, attempt recovery
-  if (issue === "fuel_critical" && ctx.ship.fuel === 0) {
+  // Last resort: if fuel is the issue and we're stranded (can't reach any station), attempt recovery
+  if (issue === "fuel_critical" && ctx.fuel.isStranded(ctx.player.currentSystem, ctx.ship)) {
     log(ctx, "attempting stranded recovery (insurance/self-destruct)");
     const recovery = await recoverStranded(ctx);
     if (recovery.recovered) {

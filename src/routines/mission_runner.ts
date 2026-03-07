@@ -185,6 +185,23 @@ function canCompleteMission(ctx: BotContext, mission: Mission, maxJumps: number,
       if (objJumps === Infinity) return { ok: false, reason: "objective in unreachable system" };
     }
 
+    // Survey objectives: check if bot has a survey scanner module
+    if (action === "survey") {
+      const hasSurveyScanner = ctx.ship.modules.some((m) => m.moduleId.includes("survey"));
+      if (!hasSurveyScanner) return { ok: false, reason: "no survey scanner equipped" };
+    }
+
+    // Mine objectives: check if bot has a mining laser
+    if (action === "mine") {
+      const hasMiningLaser = ctx.ship.modules.some((m) => m.moduleId.includes("mining"));
+      if (!hasMiningLaser) return { ok: false, reason: "no mining laser equipped" };
+    }
+
+    // Kill objectives: skip even if not globally blocked (bots rarely win combat)
+    if (action === "kill") {
+      return { ok: false, reason: "combat objective" };
+    }
+
     // Craft objectives: check if bot has crafting ability
     if (action === "craft") {
       const hasRecipes = ctx.crafting.getAllRecipes().length > 0;
@@ -252,14 +269,28 @@ export async function* mission_runner(ctx: BotContext): AsyncGenerator<RoutineYi
       activeMissions = await ctx.api.getActiveMissions();
     } catch { /* ok, will browse new ones */ }
 
-    // Resume an active mission if we have one
-    const activeMission = activeMissions.find(m => m.objectives.some(o => !o.complete));
+    // Resume an active mission if we have one (check feasibility first)
+    const activeMission = activeMissions.find(m => {
+      if (!m.objectives.some(o => !o.complete)) return false;
+      const check = canCompleteMission(ctx, m, maxJumps, skipCombat);
+      return check.ok;
+    });
     if (activeMission) {
       yield `resuming active mission: ${activeMission.title}`;
       const result = yield* executeMission(ctx, activeMission, hubStation);
       if (result === "stop") return;
       yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "mission_runner" });
       continue;
+    }
+
+    // Abandon infeasible active missions (equipment missing, too far, etc.)
+    for (const m of activeMissions) {
+      if (m.objectives.every(o => o.complete)) continue;
+      const check = canCompleteMission(ctx, m, maxJumps, skipCombat);
+      if (!check.ok) {
+        yield `abandoning infeasible mission: ${m.title} (${check.reason})`;
+        try { await ctx.api.abandonMission(m.id); } catch { /* ok */ }
+      }
     }
 
     // ── Go to hub station to browse new missions ──
