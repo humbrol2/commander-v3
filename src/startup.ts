@@ -598,6 +598,12 @@ function buildBrain(config: AppConfig, logger: TrainingLogger): CommanderBrain {
       maxTokens: config.ai.max_tokens,
       promptFile,
     }),
+    openai: () => createOpenAIBrain({
+      baseUrl: config.ai.openai_base_url,
+      model: config.ai.openai_model,
+      timeoutMs: config.ai.max_latency_ms,
+      maxTokens: config.ai.max_tokens,
+    }),
     gemini: () => createGeminiBrain({
       model: config.ai.gemini_model,
       timeoutMs: config.ai.max_latency_ms,
