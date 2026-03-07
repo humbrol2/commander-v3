@@ -197,11 +197,11 @@
 									<!-- Avatar -->
 									<div class="shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold mt-0.5
 										{msg.isOwnBot ? 'bg-plasma-cyan/20 border border-plasma-cyan/40 text-plasma-cyan' : 'bg-nebula-blue/40 border border-hull-grey/30 text-chrome-silver'}">
-										{msg.username.slice(0, 2).toUpperCase()}
+										{(msg.username || "??").slice(0, 2).toUpperCase()}
 									</div>
 									<div class="flex-1 min-w-0">
 										<div class="flex items-center gap-2 mb-0.5">
-											<span class="text-xs font-semibold {msg.isOwnBot ? 'text-plasma-cyan' : 'text-star-white'}">{msg.username}</span>
+											<span class="text-xs font-semibold {msg.isOwnBot ? 'text-plasma-cyan' : 'text-star-white'}">{msg.username || msg.playerId || "Unknown"}</span>
 											<span class="px-1 py-0.5 text-[9px] rounded {channelBg(msg.channel)} {channelColor(msg.channel)}">{msg.channel}</span>
 											<span class="text-[10px] text-hull-grey mono">{formatTime(msg.timestamp)}</span>
 										</div>

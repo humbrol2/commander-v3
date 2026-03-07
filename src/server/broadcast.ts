@@ -536,12 +536,17 @@ async function pollSocialFeed(deps: BroadcastDeps): Promise<void> {
   try {
     const channels = ["system", "faction", "local"] as const;
     const chatResults = await Promise.allSettled(
-      channels.map(ch => readyBot.api!.getChatHistory(ch, 30))
+      channels.map(ch => readyBot.api!.getChatHistory(ch, 50))
     );
 
     const allMessages: SocialChatMessage[] = [];
     for (const result of chatResults) {
       if (result.status === "fulfilled") {
+        // Debug: log first message to see field mapping (remove after debugging)
+        if (result.value.length > 0 && !(pollSocialFeed as any).__debugLogged) {
+          console.log("[Social] Sample chat message fields:", JSON.stringify(result.value[0]));
+          (pollSocialFeed as any).__debugLogged = true;
+        }
         for (const msg of result.value) {
           allMessages.push({
             ...msg,
@@ -587,7 +592,7 @@ async function pollSocialFeed(deps: BroadcastDeps): Promise<void> {
     // Fetch DMs from up to 5 bots in parallel to avoid hammering the API
     const dmBots = readyBots.slice(0, 5);
     const dmResults = await Promise.allSettled(
-      dmBots.map(b => b.api!.getChatHistory("private", 20))
+      dmBots.map(b => b.api!.getChatHistory("private", 50))
     );
 
     for (let i = 0; i < dmResults.length; i++) {

@@ -738,9 +738,9 @@ export class ApiClient {
     return messages.map((m: any) => ({
       id: String(m.id ?? m.message_id ?? ""),
       channel: String(m.channel ?? channel),
-      playerId: String(m.player_id ?? m.playerId ?? ""),
-      username: String(m.username ?? m.player_name ?? m.name ?? ""),
-      content: String(m.content ?? m.message ?? m.text ?? ""),
+      playerId: String(m.player_id ?? m.playerId ?? m.sender_id ?? m.author_id ?? ""),
+      username: String(m.username ?? m.player_name ?? m.name ?? m.sender ?? m.author ?? m.from ?? ""),
+      content: String(m.content ?? m.message ?? m.text ?? m.body ?? ""),
       timestamp: String(m.timestamp ?? m.created_at ?? m.sent_at ?? ""),
     }));
   }
