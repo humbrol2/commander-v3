@@ -47,8 +47,8 @@ class OpenAINativeBrain implements CommanderBrain {
   private reassignmentCooldownMs = 120_000;
 
   constructor(config: OpenAIBrainConfig = {}) {
-    this.model = config.model ?? "gpt-3.5-turbo";
-    this.baseUrl = config.baseUrl ?? "http://localhost:8000";
+    this.model = config.model ?? "openai/gpt-oss-20b";
+    this.baseUrl = config.baseUrl ?? "http://127.0.0.1:1234";
     this.apiKey = config.apiKey ?? "not-needed";
     this.maxTokens = config.maxTokens ?? 1024;
     this.timeoutMs = config.timeoutMs ?? 60_000;

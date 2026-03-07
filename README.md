@@ -67,7 +67,7 @@ reassignment_cooldown = 300   # Seconds before a bot can be reassigned
 ollama_model = "qwen3:8b"
 
 # OpenAI-compatible (LM Studio, vLLM, etc.)
-openai_model = "gpt-3.5-turbo"
+openai_model = "openai/gpt-oss-20b"
 
 # Google & Anthropic
 gemini_model = "gemini-2.5-pro"
