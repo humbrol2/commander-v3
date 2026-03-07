@@ -136,6 +136,9 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
   const enableArbitrage = getParam(ctx, "enableArbitrage", false);
   const traderIndex = getParam(ctx, "traderIndex", 0);
 
+  // Track items that failed to sell this session — prevents looping on unsellable goods
+  const blacklistedItems = new Set<string>();
+
   // Commander-assigned route (from scoring brain's arbitrage analysis)
   const assignedItem = getParam(ctx, "assignedItem", "");
   const assignedBuyStation = getParam(ctx, "assignedBuyStation", "");
@@ -171,11 +174,11 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
 
   // ── Faction supply chain mode (hybrid: faction sell + optional arbitrage) ──
   if (sellFromFaction) {
-    yield* factionSellLoop(ctx, maxRoundTrips);
+    yield* factionSellLoop(ctx, maxRoundTrips, blacklistedItems);
     // Hybrid: attempt 1 arbitrage trip after faction sell if insights exist
     if (enableArbitrage && !ctx.shouldStop && ctx.cargo.freeSpace(ctx.ship) > 0) {
       yield "faction sell complete — checking arbitrage opportunities";
-      yield* insightGatedArbitrageTrip(ctx);
+      yield* insightGatedArbitrageTrip(ctx, blacklistedItems);
     }
     return;
   }
@@ -215,7 +218,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
           // Only divert to faction sell if total value justifies the trip (>500cr)
           if (bestTotalValue >= 500) {
             yield `faction has ${bestItemQty} ${bestItemName} sellable @${bestItemPrice}cr (~${bestTotalValue}cr total) — selling free goods first`;
-            yield* factionSellLoop(ctx, maxRoundTrips);
+            yield* factionSellLoop(ctx, maxRoundTrips, blacklistedItems);
             return;
           }
         }
@@ -236,7 +239,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
     const cachedStationIds = ctx.cache.getAllMarketFreshness().map((f) => f.stationId);
     if (cachedStationIds.length >= 2) {
       const routes = ctx.market.findArbitrage(cachedStationIds, ctx.player.currentSystem, ctx.cargo.freeSpace(ctx.ship))
-        .filter((r) => !isOre(r.itemId)); // Traders don't trade ores
+        .filter((r) => !isOre(r.itemId) && !blacklistedItems.has(r.itemId)); // Skip ores and blacklisted items
       for (const r of routes) {
         candidateRoutes.push({
           itemId: r.itemId, itemName: r.itemName,
@@ -547,7 +550,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
           const cachedStationIds = ctx.cache.getAllMarketFreshness().map((f) => f.stationId);
           const freeWeight = ctx.cargo.freeSpace(ctx.ship);
           // Find anything here we can buy profitably
-          for (const order of localMarket.filter((m) => m.type === "sell" && m.quantity > 0 && m.priceEach > 0 && !isOre(m.itemId))) {
+          for (const order of localMarket.filter((m) => m.type === "sell" && m.quantity > 0 && m.priceEach > 0 && !isOre(m.itemId) && !blacklistedItems.has(m.itemId))) {
             for (const sid of cachedStationIds) {
               if (sid === ctx.player.dockedAtBase) continue;
               // Insight-gated price check (sell destination = sid)
@@ -673,7 +676,8 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
 
       // If we know the buy price and the sell price would be a loss, return to faction storage
       if (lastBuyPrice > 0 && liveSellPrice > 0 && liveSellPrice < lastBuyPrice) {
-        yield `unprofitable: paid ${lastBuyPrice}cr, sell price ${liveSellPrice}cr — returning goods to faction storage`;
+        yield `unprofitable: paid ${lastBuyPrice}cr, sell price ${liveSellPrice}cr — blacklisting ${item} for this session`;
+        blacklistedItems.add(item);
 
         // Try faction deposit
         const factionStation = ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase;
@@ -743,7 +747,8 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
             const actuallySold = creditsGained > 0 || (cargoAfterSell < cargoBeforeSell);
 
             if (!actuallySold && result.priceEach === 0 && result.total === 0) {
-              yield `no demand for ${item} at this station`;
+              yield `no demand for ${item} at this station — blacklisting for this session`;
+              blacklistedItems.add(item);
 
               // Zero out cached sell price so arbitrage won't rediscover this route
               adjustMarketCache(ctx, sellStation, item, "sell", qty, { zeroDemand: true });
@@ -842,7 +847,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
         const cachedStations = ctx.cache.getAllMarketFreshness().map((f) => f.stationId);
         let bestReturnItem: { itemId: string; buyPrice: number; sellPrice: number; targetStation: string; qty: number; name: string } | null = null;
         let bestReturnProfit = 0;
-        for (const order of returnMarket.filter((m) => m.type === "sell" && m.quantity > 0 && m.priceEach > 0 && !isOre(m.itemId))) {
+        for (const order of returnMarket.filter((m) => m.type === "sell" && m.quantity > 0 && m.priceEach > 0 && !isOre(m.itemId) && !blacklistedItems.has(m.itemId))) {
           for (const sid of cachedStations) {
             if (sid === sellStation) continue;
             // Insight-gated price check (sell destination = sid)
@@ -924,6 +929,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
  */
 async function* insightGatedArbitrageTrip(
   ctx: BotContext,
+  blacklistedItems: Set<string> = new Set(),
 ): AsyncGenerator<RoutineYield, void, void> {
   // Refresh to clear stale state from faction sell loop
   await ctx.refreshState();
@@ -944,7 +950,7 @@ async function* insightGatedArbitrageTrip(
 
   const routes = ctx.market.findArbitrage(
     cachedStationIds, ctx.player.currentSystem, ctx.cargo.freeSpace(ctx.ship),
-  ).filter((r) => !isOre(r.itemId)); // Traders don't trade ores
+  ).filter((r) => !isOre(r.itemId) && !blacklistedItems.has(r.itemId));
 
   // Filter routes through insight gate
   const gatedRoutes = routes.filter((r) => {
@@ -1116,6 +1122,7 @@ async function* insightGatedArbitrageTrip(
 async function* factionSellLoop(
   ctx: BotContext,
   maxTrips: number,
+  blacklistedItems: Set<string> = new Set(),
 ): AsyncGenerator<RoutineYield, void, void> {
   let tripCount = 0;
 
@@ -1172,9 +1179,18 @@ async function* factionSellLoop(
     // This prevents blind withdrawals that end up re-deposited.
     const cachedStations = ctx.cache.getAllMarketFreshness().map((f) => f.stationId);
     // Include non-ore items + ores with 5000+ units (overstocked, need to sell)
+    // Skip items that failed to sell this session
     const nonOreStorage = storageItems.filter((s) =>
-      s.quantity > 0 && (!isOre(s.itemId) || s.quantity >= 5000)
+      s.quantity > 0 && (!isOre(s.itemId) || s.quantity >= 5000) && !blacklistedItems.has(s.itemId)
     );
+
+    if (nonOreStorage.length === 0) {
+      const blCount = blacklistedItems.size;
+      yield `all sellable items blacklisted (${blCount} item${blCount !== 1 ? "s" : ""}) — waiting for new stock`;
+      await interruptibleSleep(ctx, 120_000);
+      yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
+      continue;
+    }
 
     // Build a ranked list of stations by total revenue for items in storage
     const stationBids: Array<{
@@ -1477,6 +1493,13 @@ async function* factionSellLoop(
     // Re-deposit anything still in cargo after sell orders
     const unsoldCargo = ctx.ship.cargo.filter((c) => !isOre(c.itemId) && !isProtectedItem(c.itemId) && c.quantity > 0);
     if (unsoldCargo.length > 0) {
+      // Blacklist unsold items so we don't loop on them
+      for (const c of unsoldCargo) {
+        if (withdrawnItems.some((w) => w.itemId === c.itemId)) {
+          blacklistedItems.add(c.itemId);
+          yield `blacklisted ${ctx.crafting.getItemName(c.itemId)} — unsellable this session`;
+        }
+      }
       if (!sold) {
         yield "all sell attempts failed — re-depositing cargo";
       }
