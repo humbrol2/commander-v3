@@ -32,6 +32,7 @@ import {
   ensureMinCredits,
   interruptibleSleep,
   isProtectedItem,
+  withdrawFromFaction,
   MAX_MATERIAL_BUY_PRICE,
 } from "./helpers";
 
@@ -385,7 +386,7 @@ async function sourceMaterials(
           const isFaction = ctx.settings.factionStorage || ctx.fleetConfig.defaultStorageMode === "faction_deposit";
           try {
             if (isFaction) {
-              await ctx.api.factionWithdrawItems(ing.itemId, safeQty);
+              await withdrawFromFaction(ctx, ing.itemId, safeQty);
             } else {
               await ctx.api.withdrawItems(ing.itemId, safeQty);
             }
@@ -399,7 +400,7 @@ async function sourceMaterials(
               const retryQty = Math.max(1, Math.floor(safeQty / 2));
               try {
                 if (isFaction) {
-                  await ctx.api.factionWithdrawItems(ing.itemId, retryQty);
+                  await withdrawFromFaction(ctx, ing.itemId, retryQty);
                 } else {
                   await ctx.api.withdrawItems(ing.itemId, retryQty);
                 }

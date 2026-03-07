@@ -193,6 +193,8 @@ export interface PendingUpgrade {
   alreadyOwned?: boolean;
   /** Ship instance ID to switch to (when alreadyOwned=true) */
   ownedShipId?: string;
+  /** Station ID where this ship can be purchased (from shipyard cache) */
+  buyStation?: string;
 }
 
 /** Goal-type weight profiles for routine scoring */

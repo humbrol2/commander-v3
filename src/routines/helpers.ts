@@ -191,7 +191,30 @@ export async function ensureSystemDetail(ctx: BotContext): Promise<void> {
  * Auto-scans market and services ship (refuel + repair) on every dock.
  */
 export async function dockAtCurrent(ctx: BotContext): Promise<void> {
-  if (ctx.player.dockedAtBase) return;
+  if (ctx.player.dockedAtBase) {
+    // Already docked — still scan market/shipyard if cache is stale (e.g., after restart)
+    if (!ctx.cache.getMarketPrices(ctx.player.dockedAtBase)) {
+      try {
+        const orders = await ctx.api.viewMarket();
+        if (orders.length > 0) cacheMarketData(ctx, ctx.player.dockedAtBase, orders);
+      } catch { /* non-critical */ }
+    }
+    if (!ctx.cache.getShipyardData(ctx.player.dockedAtBase)) {
+      try {
+        const showroom = await ctx.api.shipyardShowroom();
+        if (showroom.length > 0) {
+          const ships = showroom.map((s) => ({
+            id: String(s.id ?? s.ship_id ?? ""),
+            name: String(s.name ?? s.ship_name ?? "Unknown"),
+            classId: String(s.class_id ?? s.ship_class ?? s.classId ?? ""),
+            price: Number(s.price ?? s.cost ?? 0),
+          }));
+          ctx.cache.setShipyardData(ctx.player.dockedAtBase, ships);
+        }
+      } catch { /* non-critical */ }
+    }
+    return;
+  }
 
   // Ensure we have POI data for this system before checking dockability
   await ensureSystemDetail(ctx);
@@ -333,7 +356,7 @@ export async function refuelIfNeeded(ctx: BotContext, threshold = 60): Promise<b
     if (ctx.fuel.getPercentage(ctx.ship) < threshold) {
       if (ctx.settings.factionStorage || ctx.fleetConfig.defaultStorageMode === "faction_deposit") {
         try {
-          await ctx.api.factionWithdrawItems("fuel_cell", 5);
+          await withdrawFromFaction(ctx, "fuel_cell", 5);
           await ctx.refreshState();
         } catch {
           // No fuel in faction storage
@@ -446,7 +469,7 @@ export async function ensureFuelSafety(ctx: BotContext): Promise<void> {
       // Try faction storage first (free, no credits needed)
       if (ctx.settings.factionStorage || ctx.fleetConfig.defaultStorageMode === "faction_deposit") {
         try {
-          await ctx.api.factionWithdrawItems("fuel_cell", needCells);
+          await withdrawFromFaction(ctx, "fuel_cell", needCells);
           await ctx.refreshState();
           const afterWithdraw = ctx.cargo.getItemQuantity(ctx.ship, "fuel_cell");
           if (afterWithdraw > currentCells) {
@@ -612,6 +635,18 @@ export async function depositItem(ctx: BotContext, itemId: string): Promise<void
     await ctx.api.depositItems(itemId, qty);
   }
   await ctx.refreshState();
+}
+
+/**
+ * Withdraw items from faction storage with event tracking.
+ * Emits a "withdraw" event so faction-tracker can log it.
+ */
+export async function withdrawFromFaction(ctx: BotContext, itemId: string, quantity: number): Promise<void> {
+  await ctx.api.factionWithdrawItems(itemId, quantity);
+  ctx.eventBus.emit({
+    type: "withdraw", botId: ctx.botId, itemId, quantity,
+    source: "faction", stationId: ctx.player.dockedAtBase ?? "",
+  });
 }
 
 /**
@@ -1004,6 +1039,42 @@ export async function interruptibleSleep(ctx: BotContext, ms: number): Promise<b
  *
  * Returns an async generator of status messages (yields).
  */
+/**
+ * Check if a module can fit in the ship's remaining CPU/power capacity.
+ * When swapping (removing an old module), accounts for the freed resources.
+ * Returns { fits: true } or { fits: false, reason: string }.
+ */
+export function canFitModule(
+  ctx: BotContext,
+  newModuleId: string,
+  removingModuleId?: string,
+): { fits: boolean; reason?: string } {
+  const newSpecs = ctx.cache.getCatalogItem(newModuleId);
+  const cpuCost = newSpecs?.cpuCost ?? 0;
+  const powerCost = newSpecs?.powerCost ?? 0;
+
+  // If we don't know the module's cost, allow it (let the API reject if it doesn't fit)
+  if (cpuCost === 0 && powerCost === 0) return { fits: true };
+
+  let cpuFree = ctx.ship.cpuCapacity - ctx.ship.cpuUsed;
+  let powerFree = ctx.ship.powerCapacity - ctx.ship.powerUsed;
+
+  // Account for resources freed by removing the old module
+  if (removingModuleId) {
+    const oldSpecs = ctx.cache.getCatalogItem(removingModuleId);
+    cpuFree += oldSpecs?.cpuCost ?? 0;
+    powerFree += oldSpecs?.powerCost ?? 0;
+  }
+
+  if (cpuCost > cpuFree) {
+    return { fits: false, reason: `CPU: need ${cpuCost}, free ${cpuFree}` };
+  }
+  if (powerCost > powerFree) {
+    return { fits: false, reason: `Power: need ${powerCost}, free ${powerFree}` };
+  }
+  return { fits: true };
+}
+
 export async function* equipModulesForRoutine(
   ctx: BotContext,
   equipModules: string[],
@@ -1066,8 +1137,10 @@ export async function* equipModulesForRoutine(
       const cargoMatches = ctx.ship.cargo
         .filter((c) => c.itemId.includes(modPattern) && c.quantity > 0)
         .sort((a, b) => b.itemId.localeCompare(a.itemId));
-      if (cargoMatches.length > 0) {
-        const best = cargoMatches[0];
+      // Filter to modules that fit the ship
+      const fittingCargo = cargoMatches.filter(c => canFitModule(ctx, c.itemId).fits);
+      if (fittingCargo.length > 0) {
+        const best = fittingCargo[0];
         try {
           await ctx.api.installMod(best.itemId);
           await ctx.refreshState();
@@ -1075,13 +1148,17 @@ export async function* equipModulesForRoutine(
           continue;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          // CPU/power full — no point trying more modules
           if (msg.includes("cpu") || msg.includes("power") || msg.includes("slot")) {
             yield `ship slots full — ${msg}`;
             return;
           }
           yield `equip ${best.itemId} failed: ${msg}`;
         }
+      } else if (cargoMatches.length > 0) {
+        // Had matching modules but none fit
+        const check = canFitModule(ctx, cargoMatches[0].itemId);
+        yield `${cargoMatches[0].itemId} won't fit: ${check.reason}`;
+        break;
       }
 
       // Withdraw from faction storage — prefer highest tier
@@ -1090,11 +1167,11 @@ export async function* equipModulesForRoutine(
           factionStorage = await ctx.api.viewFactionStorage() ?? [];
         }
         const storageMatches = factionStorage
-          .filter((s) => s.itemId.includes(modPattern) && s.quantity > 0)
+          .filter((s) => s.itemId.includes(modPattern) && s.quantity > 0 && canFitModule(ctx, s.itemId).fits)
           .sort((a, b) => b.itemId.localeCompare(a.itemId)); // Highest tier first
         const mod = storageMatches[0];
         if (mod) {
-          await ctx.api.factionWithdrawItems(mod.itemId, 1);
+          await withdrawFromFaction(ctx, mod.itemId, 1);
           await ctx.refreshState();
           mod.quantity--;
           yield `withdrew ${mod.itemId} from faction storage`;
@@ -1118,7 +1195,33 @@ export async function* equipModulesForRoutine(
             yield `equip ${mod.itemId} failed: ${msg}`;
           }
         } else {
-          yield `no ${modPattern} in faction storage — continuing without`;
+          // Check other known stations for this module
+          const remote = ctx.cache.findItemSeller(modPattern, ctx.player.credits - 1000);
+          if (remote && remote.stationId !== ctx.player.dockedAtBase && canFitModule(ctx, remote.itemId).fits) {
+            yield `no ${modPattern} locally — traveling to buy at remote station`;
+            try {
+              await navigateAndDock(ctx, remote.stationId);
+              await ctx.api.buy(remote.itemId, 1);
+              await ctx.refreshState();
+              try {
+                await ctx.api.installMod(remote.itemId);
+                await ctx.refreshState();
+                yield `bought & equipped ${remote.itemId} for ${remote.price}cr (remote)`;
+                continue;
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                try { await ctx.api.factionDepositItems(remote.itemId, 1); await ctx.refreshState(); } catch { /* best effort */ }
+                if (msg.includes("cpu") || msg.includes("power") || msg.includes("slot")) {
+                  yield `ship slots full — ${msg}`;
+                  return;
+                }
+                yield `install ${remote.itemId} failed: ${msg}`;
+              }
+            } catch (err) {
+              yield `remote module buy failed: ${err instanceof Error ? err.message : String(err)}`;
+            }
+          }
+          yield `no ${modPattern} available — continuing without`;
           break; // No more of this pattern available, skip remaining count
         }
       } catch (err) {

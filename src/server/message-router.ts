@@ -11,6 +11,7 @@ import type { Commander } from "../commander/commander";
 import type { Galaxy } from "../core/galaxy";
 import type { DB } from "../data/db";
 import type { GameCache } from "../data/game-cache";
+import type { SessionStore } from "../data/session-store";
 import { broadcast, sendTo } from "./server";
 import { saveBotSettings, saveFleetSettings, saveGoals } from "../fleet/persistence";
 
@@ -20,6 +21,7 @@ export interface MessageRouterDeps {
   galaxy: Galaxy;
   db: DB;
   cache: GameCache;
+  sessionStore: SessionStore;
   ensureGalaxyLoaded: () => Promise<void>;
   runDiscovery: () => Promise<void>;
 }
@@ -150,6 +152,10 @@ export function handleClientMessage(
       case "add_bot": {
         try {
           const bot = botManager.addBot(msg.username);
+          // Persist credentials so bot survives restarts
+          if (msg.password) {
+            deps.sessionStore.upsertBot({ username: msg.username, password: msg.password, empire: null, playerId: null });
+          }
           broadcast({ type: "notification", level: "info", title: "Bot added", message: bot.username });
         } catch (err) {
           broadcast({ type: "notification", level: "warning", title: "Add failed", message: err instanceof Error ? err.message : String(err) });
@@ -309,6 +315,7 @@ export function handleClientMessage(
             }
 
             const baseShipyard = deps.cache.getAllShipyardData();
+
             sendTo(ws, { type: "galaxy_detail", systems, baseMarket, baseShipyard });
           } catch {
             sendTo(ws, { type: "galaxy_detail", systems: [], baseMarket: {}, baseShipyard: {} });
@@ -334,6 +341,39 @@ export function handleClientMessage(
             sendTo(ws, { type: "catalog_data", ships, items, skills, recipes });
           } catch (err) {
             sendTo(ws, { type: "catalog_data", ships: [], items: [], skills: [], recipes: [] });
+          }
+        })();
+        break;
+      }
+
+      case "prefer_ship": {
+        (async () => {
+          try {
+            const bot = botManager.getBot(msg.botId);
+            if (!bot) {
+              broadcast({ type: "notification", level: "warning", title: "Ship switch failed", message: "Bot not found" });
+              return;
+            }
+            if (bot.ship?.classId === msg.classId) {
+              broadcast({ type: "notification", level: "info", title: "Already active", message: `${bot.username} is already flying ${msg.classId}` });
+              return;
+            }
+            // Find location of the target ship from bot's owned ships list
+            const ownedShip = bot.ownedShips.find(s => s.id === msg.shipId);
+            const shipLocation = ownedShip?.location || undefined;
+
+            // Assign ship_upgrade routine with alreadyOwned mode
+            await botManager.assignRoutine(msg.botId, "ship_upgrade", {
+              targetShipClass: msg.classId,
+              alreadyOwned: true,
+              ownedShipId: msg.shipId,
+              shipLocation,
+              sellOldShip: false,
+              role: bot.lastRoutine ?? "default",
+            });
+            broadcast({ type: "notification", level: "info", title: "Ship switch", message: `${bot.username} switching to ${msg.classId}` });
+          } catch (err) {
+            broadcast({ type: "notification", level: "warning", title: "Ship switch failed", message: err instanceof Error ? err.message : String(err) });
           }
         })();
         break;

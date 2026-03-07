@@ -8,6 +8,7 @@
 	let shipSortDir = $state<"asc" | "desc">("asc");
 	let shipRegion = $state("all");
 	let shipCommission = $state("all");
+	let shipForSale = $state("all");
 	let skillCategory = $state("all");
 	let itemCategory = $state("all");
 	let galaxyEmpire = $state("all");
@@ -37,9 +38,23 @@
 		if ($galaxyDetail) galaxyRequested = false;
 	});
 
+	// Auto-refresh galaxy detail every 60s while on galaxy tab (picks up new market/shipyard scans)
+	$effect(() => {
+		if ($connectionState !== "connected" || activeTab !== "galaxy") return;
+		const interval = setInterval(() => {
+			send({ type: "request_galaxy_detail" });
+		}, 60_000);
+		return () => clearInterval(interval);
+	});
+
 	function reload() {
 		catalogData.set(null);
 		send({ type: "request_catalog" });
+	}
+
+	function reloadGalaxy() {
+		galaxyDetail.set(null);
+		send({ type: "request_galaxy_detail" });
 	}
 
 	const tabs: { id: Tab; label: string }[] = [
@@ -51,6 +66,29 @@
 	];
 
 	// ── Ships ──
+
+	/** Build a map of shipClassId → array of station names where it's for sale */
+	function getShipAvailability(detail: GalaxyDetailData | null): Map<string, Array<{ station: string; price: number }>> {
+		const map = new Map<string, Array<{ station: string; price: number }>>();
+		if (!detail) return map;
+		// Build baseId → station name lookup from galaxy systems
+		const baseNames = new Map<string, string>();
+		for (const sys of detail.systems) {
+			for (const poi of sys.pois) {
+				if (poi.baseId && poi.baseName) baseNames.set(poi.baseId, poi.baseName);
+				else if (poi.baseId) baseNames.set(poi.baseId, poi.name);
+			}
+		}
+		for (const [baseId, yard] of Object.entries(detail.baseShipyard)) {
+			const stationName = baseNames.get(baseId) ?? baseId;
+			for (const ship of yard.ships) {
+				if (!map.has(ship.classId)) map.set(ship.classId, []);
+				map.get(ship.classId)!.push({ station: stationName, price: ship.price });
+			}
+		}
+		return map;
+	}
+
 	// ── Galaxy ──
 	function getGalaxyEmpires(data: GalaxyDetailData): string[] {
 		return [...new Set(data.systems.map(s => s.empire).filter(Boolean))].sort();
@@ -121,6 +159,11 @@
 		if (shipRegion !== "all") ships = ships.filter(s => (s.region || "") === shipRegion);
 		if (shipCommission === "yes") ships = ships.filter(s => s.commissionable);
 		else if (shipCommission === "no") ships = ships.filter(s => !s.commissionable);
+		if (shipForSale !== "all") {
+			const avail = getShipAvailability($galaxyDetail);
+			if (shipForSale === "yes") ships = ships.filter(s => avail.has(s.id));
+			else ships = ships.filter(s => !avail.has(s.id));
+		}
 		ships.sort((a, b) => {
 			let cmp = 0;
 			switch (shipSort) {
@@ -139,6 +182,9 @@
 		if (shipSort === col) shipSortDir = shipSortDir === "asc" ? "desc" : "asc";
 		else { shipSort = col; shipSortDir = col === "name" ? "asc" : "desc"; }
 	}
+
+	// Reactive ship availability from galaxy detail data
+	let shipAvailability = $derived(getShipAvailability($galaxyDetail));
 
 	function shipRoleFit(ship: CatalogData["ships"][0]): string {
 		const roles: string[] = [];
@@ -291,6 +337,14 @@
 				<option value="yes">Commissionable</option>
 				<option value="no">Not Commissionable</option>
 			</select>
+			<select
+				bind:value={shipForSale}
+				class="px-2 py-2 bg-nebula-blue/30 border border-hull-grey/30 rounded text-sm text-star-white"
+			>
+				<option value="all">All Ships</option>
+				<option value="yes">For Sale Now</option>
+				<option value="no">Not For Sale</option>
+			</select>
 		{/if}
 		{#if activeTab === "skills" && $catalogData}
 			<select
@@ -419,7 +473,7 @@
 													{#if poi.resources.length > 0}
 														<span class="text-[10px] text-bio-green">{poi.resources.length} ore{poi.resources.length > 1 ? "s" : ""}</span>
 													{/if}
-t												{#if poi.baseId && $galaxyDetail.baseShipyard[poi.baseId]}
+													{#if poi.baseId && $galaxyDetail.baseShipyard[poi.baseId]}
 														<span class="text-[10px] px-1 py-0.5 rounded bg-plasma-cyan/15 text-plasma-cyan">{$galaxyDetail.baseShipyard[poi.baseId].ships.length} ships</span>
 													{/if}
 													<span class="ml-auto text-hull-grey text-[10px]">{isPoiExpanded ? "▲" : "▼"}</span>
@@ -596,11 +650,13 @@ t												{#if poi.baseId && $galaxyDetail.baseShipyard[poi.baseId]}
 							<th class="px-3 py-2 text-chrome-silver text-right">Power</th>
 							<th class="px-3 py-2 text-chrome-silver">Region</th>
 							<th class="px-3 py-2 text-chrome-silver">Commission</th>
+							<th class="px-3 py-2 text-chrome-silver">For Sale</th>
 							<th class="px-3 py-2 text-chrome-silver">Best For</th>
 						</tr>
 					</thead>
 					<tbody>
 						{#each getShips($catalogData) as ship (ship.id)}
+							{@const forSale = shipAvailability.get(ship.id)}
 							<tr
 								class="border-b border-hull-grey/10 hover:bg-nebula-blue/20 cursor-pointer transition-colors"
 								onclick={() => expandedShip = expandedShip === ship.id ? null : ship.id}
@@ -624,11 +680,20 @@ t												{#if poi.baseId && $galaxyDetail.baseShipyard[poi.baseId]}
 										<span class="text-[10px] px-1.5 py-0.5 rounded bg-hull-grey/20 text-hull-grey">No</span>
 									{/if}
 								</td>
+								<td class="px-3 py-2">
+									{#if forSale && forSale.length > 0}
+										<span class="text-[10px] px-1.5 py-0.5 rounded bg-bio-green/20 text-bio-green" title="{forSale.map(s => s.station).join(', ')}">
+											{forSale.length} station{forSale.length !== 1 ? 's' : ''}
+										</span>
+									{:else}
+										<span class="text-[10px] text-hull-grey">—</span>
+									{/if}
+								</td>
 								<td class="px-3 py-2 text-plasma-cyan text-xs">{shipRoleFit(ship)}</td>
 							</tr>
 							{#if expandedShip === ship.id}
 								<tr class="bg-nebula-blue/10">
-									<td colspan="14" class="px-4 py-3">
+									<td colspan="15" class="px-4 py-3">
 										<div class="space-y-2">
 											<p class="text-sm text-chrome-silver">{ship.description || "No description available."}</p>
 											<div class="flex flex-wrap gap-4 text-xs text-hull-grey">
@@ -729,16 +794,46 @@ t												{#if poi.baseId && $galaxyDetail.baseShipyard[poi.baseId]}
 													</div>
 												{/if}
 
-												<!-- Remaining extra fields not covered above -->
-												{@const knownExtraKeys = new Set(["class", "tier", "scale", "faction", "shipyard_tier", "weapon_slots", "defense_slots", "utility_slots", "base_shield_recharge", "default_modules", "required_skills", "build_materials", "lore"])}
-												{@const remaining = Object.entries(ex).filter(([k]) => !knownExtraKeys.has(k))}
-												{#if remaining.length > 0}
-													<div class="mt-1 text-[10px] text-hull-grey/60">
-														{#each remaining as [key, val]}
-															<span class="mr-2">{key}: {typeof val === "object" ? JSON.stringify(val) : String(val)}</span>
+												<!-- Additional ship properties -->
+												{#if ex.build_time || ex.tow_speed_bonus || ex.starter_ship || ex.passive_recipes}
+													<div class="flex flex-wrap gap-3 mt-1 text-xs">
+														{#if ex.build_time}
+															<span class="text-hull-grey">Build Time: <span class="text-chrome-silver">{ex.build_time}s</span></span>
+														{/if}
+														{#if ex.tow_speed_bonus}
+															<span class="text-hull-grey">Tow Speed: <span class="text-bio-green">+{ex.tow_speed_bonus}</span></span>
+														{/if}
+														{#if ex.starter_ship}
+															<span class="text-[10px] px-1.5 py-0.5 rounded bg-warning-yellow/15 text-warning-yellow">Starter Ship</span>
+														{/if}
+														{#if ex.passive_recipes && Array.isArray(ex.passive_recipes)}
+															<span class="text-hull-grey">Passive Recipes: <span class="text-plasma-cyan">{ex.passive_recipes.map(r => String(r).replace(/_/g, " ")).join(", ")}</span></span>
+														{/if}
+													</div>
+												{/if}
+												{#if ex.flavor_tags && Array.isArray(ex.flavor_tags) && ex.flavor_tags.length > 0}
+													<div class="flex flex-wrap gap-1 mt-1">
+														{#each ex.flavor_tags as tag}
+															<span class="text-[10px] px-1.5 py-0.5 rounded bg-hull-grey/10 text-hull-grey/70">{String(tag).replace(/_/g, " ")}</span>
 														{/each}
 													</div>
 												{/if}
+											{/if}
+
+											<!-- Where to buy -->
+											{#if forSale && forSale.length > 0}
+												<div class="bg-deep-void/50 rounded p-2 mt-2 text-xs">
+													<div class="text-hull-grey mb-1">Currently For Sale ({forSale.length} station{forSale.length !== 1 ? 's' : ''})</div>
+													<div class="flex flex-wrap gap-2">
+														{#each forSale as loc}
+															<span class="px-1.5 py-0.5 rounded bg-bio-green/10 text-bio-green">
+																{loc.station} — <span class="mono text-warning-yellow">{formatNum(loc.price)} cr</span>
+															</span>
+														{/each}
+													</div>
+												</div>
+											{:else}
+												<p class="text-[10px] text-hull-grey italic mt-2">Not currently listed at any scanned shipyard</p>
 											{/if}
 										</div>
 									</td>

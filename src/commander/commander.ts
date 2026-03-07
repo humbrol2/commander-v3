@@ -17,7 +17,7 @@ import type { ShipClass } from "../types/game";
 import type { CommanderBrain, EvaluationOutput, Assignment, WorldContext, PendingUpgrade, BrainHealth } from "./types";
 import { EconomyEngine } from "./economy-engine";
 import { ScoringBrain, type ScoringConfig } from "./scoring-brain";
-import { findBestUpgrade, calculateROI, scoreShipForRole, LEGACY_SHIPS } from "../core/ship-fitness";
+import { findBestUpgrade, calculateROI, scoreShipForRole, checkSkillRequirements, describeUpgrade, LEGACY_SHIPS } from "../core/ship-fitness";
 import { StuckDetector } from "./stuck-detector";
 import { PerformanceTracker } from "./performance-tracker";
 import { ChatIntelligence } from "./chat-intelligence";
@@ -320,12 +320,18 @@ export class Commander {
     // Step 5b: Execute assignments — skip bots already running the same routine
     const executedAssignments: FleetAssignment[] = [];
     const botStatusMap = new Map(fleet.bots.map((b) => [b.botId, b]));
+    // One-shot routines must not be interrupted mid-execution
+    const PROTECTED_ROUTINES = new Set(["ship_upgrade", "refit", "return_home"]);
 
     for (const assignment of cappedAssignments) {
-      // Skip re-assigning a bot that's already running this exact routine
       const botInfo = botStatusMap.get(assignment.botId);
+      // Skip re-assigning a bot that's already running this exact routine
       if (botInfo && botInfo.routine === assignment.routine && botInfo.status === "running") {
         continue; // Already doing this — don't interrupt
+      }
+      // Don't interrupt one-shot routines (ship_upgrade, refit, return_home)
+      if (botInfo && botInfo.status === "running" && botInfo.routine && PROTECTED_ROUTINES.has(botInfo.routine)) {
+        continue;
       }
 
       try {
@@ -497,6 +503,11 @@ export class Commander {
           const ownedShipClass = catalog.find((s) => s.id === owned.classId)
             ?? LEGACY_SHIPS.find((s) => s.id === owned.classId);
           if (!ownedShipClass) continue;
+
+          // Skill gate: skip ships the bot can't fly
+          const skillCheck = checkSkillRequirements(ownedShipClass, bot.skills);
+          if (!skillCheck.met) continue;
+
           const score = scoreShipForRole(ownedShipClass, role);
           if (score > bestOwnedScore + 3) { // Must be noticeably better
             bestOwnedScore = score;
@@ -515,7 +526,8 @@ export class Commander {
             alreadyOwned: true,
             ownedShipId: bestOwned.id,
           });
-          console.log(`[Commander] Ship switch queued (already owned): ${bot.botId} ${bot.shipClass} → ${bestOwned.classId} (role=${role}, FREE)`);
+          const stats = describeUpgrade(currentClass, bestOwnedClass);
+          console.log(`[Commander] Ship switch queued (already owned): ${bot.botId} ${bot.shipClass} → ${bestOwned.classId} (role=${role}, FREE) [${stats}]`);
           continue;
         }
       }
@@ -525,18 +537,34 @@ export class Commander {
       if (budget <= 0) continue;
 
       const availableCatalog = catalog.filter((s) => !this.shipBlacklist.has(s.id));
-      const upgrade = findBestUpgrade(currentClass.id, role, availableCatalog, budget);
+      const upgrade = findBestUpgrade(currentClass.id, role, availableCatalog, budget, bot.skills);
       if (!upgrade) continue;
 
+      // Double-check skill requirements before queuing
+      const skillCheck = checkSkillRequirements(upgrade, bot.skills);
+      if (!skillCheck.met) {
+        const missingStr = skillCheck.missing.map(m => `${m.skill} ${m.current}/${m.required}`).join(", ");
+        console.log(`[Commander] Ship upgrade skipped: ${bot.botId} → ${upgrade.id} (missing skills: ${missingStr})`);
+        continue;
+      }
+
       const roi = calculateROI(currentClass, upgrade, role);
+      const currentScore = scoreShipForRole(currentClass, role);
+      const upgradeScore = scoreShipForRole(upgrade, role);
+      const stats = describeUpgrade(currentClass, upgrade);
+
+      // Find which station sells this ship (from cached shipyard scans)
+      const shipyard = this.deps.cache.findShipyardForClass(upgrade.id);
+
       brain.pendingUpgrades.set(bot.botId, {
         targetShipClass: upgrade.id,
         targetPrice: upgrade.basePrice,
         role,
         roi,
+        buyStation: shipyard?.stationId,
       });
 
-      console.log(`[Commander] Ship upgrade queued: ${bot.botId} ${currentClass.id} → ${upgrade.id} (role=${role}, price=${upgrade.basePrice}cr, ROI=${roi.toFixed(2)})`);
+      console.log(`[Commander] Ship upgrade queued: ${bot.botId} ${currentClass.id} → ${upgrade.id} (role=${role}, price=${upgrade.basePrice}cr, score ${currentScore}→${upgradeScore}, ROI=${roi.toFixed(2)}) [${stats}]`);
     }
   }
 

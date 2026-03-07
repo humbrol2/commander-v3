@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from "$app/stores";
 	import { untrack } from "svelte";
-	import { bots, send, activityLog, botStorage } from "$stores/websocket";
+	import { bots, send, activityLog, botStorage, catalogData } from "$stores/websocket";
 	import CreditsChart from "$lib/components/CreditsChart.svelte";
 	import SkillRadar from "$lib/components/SkillRadar.svelte";
 
@@ -22,6 +22,13 @@
 
 	const storage = $derived($botStorage.get(botId));
 	let storageRequested = $state(false);
+
+	// Request catalog if not loaded (needed for ship stats)
+	$effect(() => {
+		if ($catalogData === null && botId) {
+			send({ type: "request_catalog" });
+		}
+	});
 
 	// Request storage when switching to storage tab
 	$effect(() => {
@@ -100,6 +107,17 @@
 	/** Format item_id to display name */
 	function formatId(id: string): string {
 		return id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+	}
+
+	/** Get catalog ship stats by class ID */
+	function getShipStats(classId: string) {
+		return $catalogData?.ships.find(s => s.id === classId) ?? null;
+	}
+
+	/** Switch bot to a different owned ship */
+	function switchShip(shipId: string, classId: string) {
+		if (!bot) return;
+		send({ type: "prefer_ship", botId: bot.id, shipId, classId } as any);
 	}
 </script>
 
@@ -274,8 +292,8 @@
 					</div>
 				</div>
 
-				<!-- Modules + Cargo + Owned Ships -->
-				<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+				<!-- Modules + Cargo -->
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
 					<div>
 						<h3 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-2">Installed Modules</h3>
 						{#if bot.modules && bot.modules.length > 0}
@@ -307,24 +325,87 @@
 							<p class="text-xs text-hull-grey">Empty</p>
 						{/if}
 					</div>
+				</div>
 
-					<div>
-						<h3 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-2">Owned Ships</h3>
-						{#if bot.ownedShips && bot.ownedShips.length > 0}
-							<div class="space-y-1 max-h-40 overflow-y-auto">
-								{#each bot.ownedShips as ship}
-									<div class="flex justify-between text-xs py-1 px-2 rounded bg-deep-void/50">
-										<span class="text-star-white {ship.classId === bot.shipClass ? 'font-bold' : ''}">{formatId(ship.classId)}</span>
-										{#if ship.classId === bot.shipClass}
-											<span class="text-plasma-cyan text-[10px] font-medium">ACTIVE</span>
+				<!-- Owned Ships (full width with stats) -->
+				<div class="mt-4">
+					<h3 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-2">
+						Owned Ships
+						{#if bot.ownedShips && bot.ownedShips.length > 1}
+							<span class="text-hull-grey font-normal">({bot.ownedShips.length})</span>
+						{/if}
+					</h3>
+					{#if bot.ownedShips && bot.ownedShips.length > 0}
+						<div class="space-y-2">
+							{#each bot.ownedShips as ship}
+								{@const stats = getShipStats(ship.classId)}
+								{@const isActive = ship.classId === bot.shipClass}
+								<div class="rounded-lg border {isActive ? 'border-plasma-cyan/40 bg-plasma-cyan/5' : 'border-hull-grey/20 bg-deep-void/50'} p-3">
+									<div class="flex items-center justify-between mb-2">
+										<div class="flex items-center gap-2">
+											<span class="text-sm font-medium {isActive ? 'text-plasma-cyan' : 'text-star-white'}">{stats?.name ?? formatId(ship.classId)}</span>
+											{#if stats?.category}
+												<span class="text-[10px] px-1.5 py-0.5 rounded bg-hull-grey/15 text-hull-grey">{stats.category}</span>
+											{/if}
+											{#if isActive}
+												<span class="text-[10px] px-1.5 py-0.5 rounded bg-plasma-cyan/20 text-plasma-cyan font-medium">ACTIVE</span>
+											{:else if ship.location}
+												<span class="text-[10px] text-hull-grey" title={ship.location}>📍 {formatId(ship.location)}</span>
+											{/if}
+										</div>
+										{#if !isActive && (bot.status === "ready" || bot.status === "running")}
+											<button
+												class="px-3 py-1 text-xs font-medium rounded bg-plasma-cyan/15 text-plasma-cyan border border-plasma-cyan/30 hover:bg-plasma-cyan/25 transition-colors"
+												onclick={() => switchShip(ship.id, ship.classId)}
+											>
+												Use This Ship
+											</button>
 										{/if}
 									</div>
-								{/each}
-							</div>
-						{:else}
-							<p class="text-xs text-hull-grey">No ship data</p>
-						{/if}
-					</div>
+									{#if stats}
+										<div class="grid grid-cols-4 md:grid-cols-8 gap-2 text-xs">
+											<div>
+												<span class="text-hull-grey">Hull</span>
+												<p class="mono text-star-white">{stats.hull}</p>
+											</div>
+											<div>
+												<span class="text-hull-grey">Shield</span>
+												<p class="mono text-laser-blue">{stats.shield}</p>
+											</div>
+											<div>
+												<span class="text-hull-grey">Armor</span>
+												<p class="mono text-chrome-silver">{stats.armor}</p>
+											</div>
+											<div>
+												<span class="text-hull-grey">Speed</span>
+												<p class="mono text-plasma-cyan">{stats.speed}</p>
+											</div>
+											<div>
+												<span class="text-hull-grey">Cargo</span>
+												<p class="mono text-bio-green">{stats.cargoCapacity}</p>
+											</div>
+											<div>
+												<span class="text-hull-grey">Fuel</span>
+												<p class="mono text-star-white">{stats.fuel}</p>
+											</div>
+											<div>
+												<span class="text-hull-grey">CPU</span>
+												<p class="mono text-star-white">{stats.cpuCapacity}</p>
+											</div>
+											<div>
+												<span class="text-hull-grey">Power</span>
+												<p class="mono text-star-white">{stats.powerCapacity}</p>
+											</div>
+										</div>
+									{:else}
+										<p class="text-xs text-hull-grey mono">{ship.classId}</p>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="text-xs text-hull-grey">No ship data</p>
+					{/if}
 				</div>
 
 				{#if bot.error}

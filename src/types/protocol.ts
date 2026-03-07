@@ -81,7 +81,7 @@ export interface BotSummary {
   uptime: number; // ms since login
   cargo: Array<{ itemId: string; quantity: number }>;
   modules: Array<{ id: string; moduleId: string; name: string }>;
-  ownedShips: Array<{ id: string; classId: string; name: string | null }>;
+  ownedShips: Array<{ id: string; classId: string; name: string | null; location: string | null }>;
   skills: Record<string, { level: number; xp: number; xpNext: number }>;
   settings: {
     fuelEmergencyThreshold: number;
@@ -490,4 +490,5 @@ export type ClientMessage =
   | { type: "request_bot_storage"; botId: string }
   | { type: "request_catalog" }
   | { type: "request_galaxy" }
-  | { type: "request_galaxy_detail" };
+  | { type: "request_galaxy_detail" }
+  | { type: "prefer_ship"; botId: string; shipId: string; classId: string };

@@ -25,6 +25,7 @@ import {
   getParam,
   cacheMarketData,
   interruptibleSleep,
+  withdrawFromFaction,
   MAX_MATERIAL_BUY_PRICE,
 } from "./helpers";
 
@@ -398,7 +399,7 @@ async function* manageFactionSales(
     if (listQty <= 0) continue; // Item too heavy for remaining space
     try {
       try {
-        await ctx.api.factionWithdrawItems(item.itemId, listQty);
+        await withdrawFromFaction(ctx, item.itemId, listQty);
       } catch (wErr: unknown) {
         // Item heavier than expected (size unknown until in cargo) — retry with less
         if (wErr instanceof Error && wErr.message.includes("cargo_full")) {
@@ -410,7 +411,7 @@ async function* manageFactionSales(
           }
           listQty = Math.max(1, Math.floor(listQty / 3));
           try {
-            await ctx.api.factionWithdrawItems(item.itemId, listQty);
+            await withdrawFromFaction(ctx, item.itemId, listQty);
           } catch (wErr2: unknown) {
             if (wErr2 instanceof Error && wErr2.message.includes("cargo_full")) {
               oversizedItems.add(item.itemId);
@@ -488,7 +489,7 @@ async function* manageFactionSales(
           } catch {
             // Faction orders not supported — fall back to personal sell order
             try {
-              await ctx.api.factionWithdrawItems(item.itemId, sellQty);
+              await withdrawFromFaction(ctx, item.itemId, sellQty);
               await ctx.refreshState();
             } catch { /* ok */ }
             result = await ctx.api.createSellOrder(item.itemId, sellQty, listPrice) as Record<string, unknown>;

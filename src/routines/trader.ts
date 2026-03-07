@@ -39,6 +39,7 @@ import {
   payFactionTax,
   ensureMinCredits,
   interruptibleSleep,
+  withdrawFromFaction,
   MAX_MATERIAL_BUY_PRICE,
   INSIGHT_GATE_PRICE,
 } from "./helpers";
@@ -1311,7 +1312,7 @@ async function* factionSellLoop(
       let actualQty = withdrawQty;
       try {
         const cargoBefore = ctx.cargo.getItemQuantity(ctx.ship, item.itemId);
-        await ctx.api.factionWithdrawItems(item.itemId, actualQty);
+        await withdrawFromFaction(ctx, item.itemId, actualQty);
         await ctx.refreshState();
         const cargoAfter = ctx.cargo.getItemQuantity(ctx.ship, item.itemId);
         const actualReceived = cargoAfter - cargoBefore;
@@ -1329,7 +1330,7 @@ async function* factionSellLoop(
           yield `retrying with ${actualQty} ${item.name} (item heavier than expected)`;
           try {
             const cargoBefore = ctx.cargo.getItemQuantity(ctx.ship, item.itemId);
-            await ctx.api.factionWithdrawItems(item.itemId, actualQty);
+            await withdrawFromFaction(ctx, item.itemId, actualQty);
             await ctx.refreshState();
             const cargoAfter = ctx.cargo.getItemQuantity(ctx.ship, item.itemId);
             const actualReceived = cargoAfter - cargoBefore;

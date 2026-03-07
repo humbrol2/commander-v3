@@ -21,14 +21,16 @@ export class Galaxy {
   /** Dirty flag: set when galaxy data changes, cleared after broadcast */
   dirty = true;
 
-  /** Load systems into the graph. Preserves existing non-zero coordinates (layout-generated). */
+  /** Load systems into the graph. Preserves existing enriched data (POIs, coordinates). */
   load(systems: StarSystem[]): void {
-    // Preserve existing layout coordinates before clearing
-    const oldCoords = new Map<string, { x: number; y: number }>();
+    // Preserve existing data before clearing
+    const oldData = new Map<string, { x: number; y: number; system: StarSystem }>();
     for (const node of this.graph.values()) {
-      if (node.system.x !== 0 || node.system.y !== 0) {
-        oldCoords.set(node.system.id, { x: node.system.x, y: node.system.y });
-      }
+      oldData.set(node.system.id, {
+        x: node.system.x,
+        y: node.system.y,
+        system: node.system,
+      });
     }
 
     this.graph.clear();
@@ -36,12 +38,23 @@ export class Galaxy {
     this.baseToSystem.clear();
 
     for (let sys of systems) {
+      const old = oldData.get(sys.id);
       // Preserve generated layout coordinates when API returns (0,0)
-      const old = oldCoords.get(sys.id);
-      if (sys.x === 0 && sys.y === 0 && old) {
+      if (sys.x === 0 && sys.y === 0 && old && (old.x !== 0 || old.y !== 0)) {
         sys = { ...sys, x: old.x, y: old.y };
       }
+      // Preserve enriched POI data: if new system has no POIs but old one does,
+      // keep the old POIs (get_map returns minimal data, get_system returns full POIs)
+      if (sys.pois.length === 0 && old && old.system.pois.length > 0) {
+        sys = { ...sys, pois: old.system.pois };
+      }
       this.addSystemToGraph(sys);
+    }
+    // Re-add any enriched systems that weren't in the new map (edge case: partial map response)
+    for (const [id, old] of oldData) {
+      if (!this.graph.has(id) && old.system.pois.length > 0) {
+        this.addSystemToGraph(old.system);
+      }
     }
     this.dirty = true;
   }

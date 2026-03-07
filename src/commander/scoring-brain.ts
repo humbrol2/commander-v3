@@ -317,8 +317,14 @@ export class ScoringBrain implements CommanderBrain {
     // They MUST switch — skip their current routine entirely.
     // KEY: Evaluate ALL valid routines and pick the highest ADJUSTED score,
     // not the first positive one (which would ignore diversity penalties).
+    const PROTECTED_ROUTINES = new Set(["ship_upgrade", "refit", "return_home"]);
     for (const bot of candidates) {
       if (assignedBots.has(bot.botId)) continue;
+      // Never interrupt one-shot routines mid-execution
+      if (bot.routine && PROTECTED_ROUTINES.has(bot.routine)) {
+        lockBot(bot, bot.routine as RoutineName);
+        continue;
+      }
 
       const effectiveRoutine = bot.routine ?? bot.lastRoutine;
       // This bot's current routine is over the diversity threshold — must switch
@@ -1070,6 +1076,7 @@ export class ScoringBrain implements CommanderBrain {
       sellOldShip: !pending.alreadyOwned, // Don't sell when switching to an already-owned ship
       alreadyOwned: pending.alreadyOwned ?? false,
       ownedShipId: pending.ownedShipId ?? "",
+      buyStation: pending.buyStation ?? "",
       role: pending.role || this.inferPrimaryRole(bot),
     };
   }
@@ -1464,9 +1471,11 @@ export class ScoringBrain implements CommanderBrain {
       // Factor 8: Inventory saturation — aggressive overproduction prevention
       // End products (not used in other recipes) get a tight ceiling (15 units).
       // Intermediates (ingredients for higher-tier recipes) get a lenient ceiling (100 units).
+      // Fleet consumables (fuel cells) get a generous ceiling (200 units) — every bot burns these.
       const outputInStorage = economy.factionStorage.get(recipe.outputItem) ?? 0;
       const isIntermediate = usageCount > 0;
-      const stockCeiling = isIntermediate ? 100 : 15;
+      const isFleetConsumable = recipe.outputItem === "fuel_cell" || recipe.outputItem === "fuel_cell_premium";
+      const stockCeiling = isFleetConsumable ? 200 : isIntermediate ? 100 : 15;
 
       if (outputInStorage >= stockCeiling) {
         // Over ceiling: harsh penalty that scales with excess ratio
@@ -1483,14 +1492,20 @@ export class ScoringBrain implements CommanderBrain {
       }
 
       // Factor 9: Fleet consumable bonus — fuel cells are burned constantly by every bot
-      if (recipe.outputItem === "fuel_cell" || recipe.outputItem === "fuel_cell_premium") {
+      if (isFleetConsumable) {
         const fuelStock = economy.factionStorage.get(recipe.outputItem) ?? 0;
         const fleetSize = existingAssignments.length || 1;
         const fuelTarget = fleetSize * 10; // ~10 cells per bot as comfortable buffer
         if (fuelStock < fuelTarget) {
-          const urgency = Math.min(60, Math.round((1 - fuelStock / fuelTarget) * 60));
+          // Strong urgency: up to +80 when empty, ensures fuel crafting beats other recipes
+          const urgency = Math.min(80, Math.round((1 - fuelStock / fuelTarget) * 80));
           score += urgency;
           reason += ` +fuel_need(${fuelStock}/${fuelTarget})`;
+        } else if (fuelStock < 200) {
+          // Moderate bonus to keep topping up toward 200 stockpile
+          const topUpBonus = Math.round((1 - fuelStock / 200) * 30);
+          score += topUpBonus;
+          reason += ` +fuel_topup(${fuelStock}/200)`;
         }
       }
 

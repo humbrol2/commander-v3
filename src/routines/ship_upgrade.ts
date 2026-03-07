@@ -56,6 +56,8 @@ export async function* ship_upgrade(ctx: BotContext): AsyncGenerator<RoutineYiel
   const sellOldShip = getParam(ctx, "sellOldShip", true);
   const alreadyOwned = getParam(ctx, "alreadyOwned", false);
   const ownedShipId = getParam(ctx, "ownedShipId", "");
+  const shipLocation = getParam(ctx, "shipLocation", "");
+  const buyStation = getParam(ctx, "buyStation", "");
   const role = getParam(ctx, "role", "default");
 
   if (!targetShipClass) {
@@ -71,15 +73,22 @@ export async function* ship_upgrade(ctx: BotContext): AsyncGenerator<RoutineYiel
     return;
   }
 
-  // Step 1: Navigate to home station (has shipyard + faction storage for module fitting)
-  const homeBase = ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase;
-  if (homeBase) {
-    if (ctx.player.dockedAtBase !== homeBase) {
-      yield "traveling to home station for upgrade";
+  // Step 1: Navigate to the right station.
+  // Priority: ship's parked location (owned switch) > known shipyard selling it (buy) > home station
+  const targetStation = (alreadyOwned && shipLocation)
+    ? shipLocation
+    : (buyStation || ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase);
+  if (targetStation) {
+    if (ctx.player.dockedAtBase !== targetStation) {
+      yield alreadyOwned && shipLocation
+        ? `traveling to ship location (${shipLocation})`
+        : buyStation
+          ? `traveling to shipyard (${buyStation}) for ${targetShipClass}`
+          : "traveling to home station for upgrade";
       try {
-        await navigateAndDock(ctx, homeBase);
+        await navigateAndDock(ctx, targetStation);
       } catch (err) {
-        yield `home station nav failed: ${err instanceof Error ? err.message : String(err)} — trying nearest`;
+        yield `station nav failed: ${err instanceof Error ? err.message : String(err)} — trying nearest`;
         // Fallback to nearest station
         if (!ctx.player.dockedAtBase) {
           try {
@@ -193,6 +202,25 @@ export async function* ship_upgrade(ctx: BotContext): AsyncGenerator<RoutineYiel
     yield `invalid price for ${targetShipClass}`;
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "ship_upgrade" });
     return;
+  }
+
+  // Step 3b: Verify skill requirements (safety net — Commander should have checked already)
+  const rawSkills = (targetShip.required_skills ?? targetShip.requiredSkills) as Record<string, unknown> | undefined;
+  if (rawSkills && typeof rawSkills === "object") {
+    const botSkills = ctx.player.skills ?? {};
+    const missing: string[] = [];
+    for (const [skill, level] of Object.entries(rawSkills)) {
+      const required = Number(level);
+      const current = botSkills[skill] ?? 0;
+      if (current < required) {
+        missing.push(`${skill} need lv${required} (have lv${current})`);
+      }
+    }
+    if (missing.length > 0) {
+      yield `can't fly ${targetShipClass} — missing skills: ${missing.join(", ")}`;
+      yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "ship_upgrade" });
+      return;
+    }
   }
 
   // Step 4: Verify budget

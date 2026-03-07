@@ -309,10 +309,11 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       chatIntel.updateBotNames(deps.botManager.getAllBots().map(b => b.username));
       readAndRespondToChat(deps, chatIntel).catch(() => {});
     }
-    if (tick - lastSocialChatTick >= SOCIAL_CHAT_INTERVAL_TICKS) {
-      lastSocialChatTick = tick;
-      postFactionChatUpdate(deps).catch(() => {});
-    }
+    // Disabled: generic chat messages spam public channels when multiple fleets are active
+    // if (tick - lastSocialChatTick >= SOCIAL_CHAT_INTERVAL_TICKS) {
+    //   lastSocialChatTick = tick;
+    //   postFactionChatUpdate(deps).catch(() => {});
+    // }
 
   }, TICK_INTERVAL_MS);
 

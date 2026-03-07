@@ -68,7 +68,7 @@ export class Bot {
   /** When skills were last refreshed (epoch ms) */
   private _skillsRefreshedAt = 0;
   /** All ships this bot owns (populated after login) */
-  private _ownedShips: Array<{ id: string; classId: string }> = [];
+  private _ownedShips: Array<{ id: string; classId: string; location?: string }> = [];
 
   /** Cached name resolution for toSummary() — updated on location change */
   private _cachedSystemName: string | null = null;
@@ -148,7 +148,7 @@ export class Bot {
     }
     return this._rapidRoutines;
   }
-  get ownedShips(): Array<{ id: string; classId: string }> {
+  get ownedShips(): Array<{ id: string; classId: string; location?: string }> {
     return this._ownedShips;
   }
   /** Record a faction treasury withdrawal (not real revenue) */
@@ -252,7 +252,7 @@ export class Bot {
       uptime: this.uptime,
       cargo: this._ship?.cargo.map((c) => ({ itemId: c.itemId, quantity: c.quantity })) ?? [],
       modules: this._ship?.modules.map((m) => ({ id: m.id, moduleId: m.moduleId, name: m.name })) ?? [],
-      ownedShips: this._ownedShips.map((s) => ({ id: s.id, classId: s.classId, name: null })),
+      ownedShips: this._ownedShips.map((s) => ({ id: s.id, classId: s.classId, name: null, location: s.location || null })),
       skills: this.buildSkillsSummary(),
       settings: {
         fuelEmergencyThreshold: this.settings.fuelEmergencyThreshold,
@@ -439,6 +439,7 @@ export class Bot {
         this._ownedShips = ships.map((s) => ({
           id: String(s.ship_id ?? s.id ?? ""),
           classId: String(s.class_id ?? s.classId ?? s.ship_class ?? ""),
+          location: String(s.location ?? s.docked_at ?? s.station ?? s.base_id ?? ""),
         })).filter((s) => s.id && s.classId);
         if (this._ownedShips.length > 1) {
           console.log(`[Bot:${this.username}] Owns ${this._ownedShips.length} ships: ${this._ownedShips.map((s) => s.classId).join(", ")}`);

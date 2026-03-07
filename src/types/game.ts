@@ -180,6 +180,12 @@ export interface CatalogItem {
   description: string;
   basePrice: number;
   stackSize: number;
+  /** Module-specific: CPU cost to install */
+  cpuCost?: number;
+  /** Module-specific: Power cost to install */
+  powerCost?: number;
+  /** Module-specific: Slot type (weapon, defense, utility) */
+  slotType?: string;
 }
 
 export interface ShipClass {

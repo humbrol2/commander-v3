@@ -134,7 +134,62 @@ export function calculateROI(current: ShipClass, upgrade: ShipClass, role: strin
 }
 
 /**
+ * Extract required skills from a ship's extra field.
+ * Returns Record<skillId, requiredLevel> or empty if none.
+ */
+export function getShipRequiredSkills(ship: ShipClass): Record<string, number> {
+  const raw = ship.extra?.required_skills ?? ship.extra?.requiredSkills;
+  if (!raw || typeof raw !== "object") return {};
+  const result: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "number") result[k] = v;
+  }
+  return result;
+}
+
+/**
+ * Check if a bot meets the skill requirements for a ship.
+ * Returns { met: true } or { met: false, missing: [...] }.
+ */
+export function checkSkillRequirements(
+  ship: ShipClass,
+  botSkills: Record<string, number>,
+): { met: boolean; missing: Array<{ skill: string; required: number; current: number }> } {
+  const required = getShipRequiredSkills(ship);
+  const missing: Array<{ skill: string; required: number; current: number }> = [];
+  for (const [skill, level] of Object.entries(required)) {
+    const current = botSkills[skill] ?? 0;
+    if (current < level) {
+      missing.push({ skill, required: level, current });
+    }
+  }
+  return { met: missing.length === 0, missing };
+}
+
+/**
+ * Describe the stat changes between current and upgrade ship for logging.
+ */
+export function describeUpgrade(current: ShipClass, upgrade: ShipClass): string {
+  const diffs: string[] = [];
+  const compare = (label: string, cur: number, upg: number) => {
+    if (upg !== cur) {
+      const sign = upg > cur ? "+" : "";
+      diffs.push(`${label}: ${cur}→${upg} (${sign}${upg - cur})`);
+    }
+  };
+  compare("cargo", current.cargoCapacity, upgrade.cargoCapacity);
+  compare("fuel", current.fuel, upgrade.fuel);
+  compare("hull", current.hull, upgrade.hull);
+  compare("shield", current.shield, upgrade.shield);
+  compare("speed", current.speed, upgrade.speed);
+  compare("cpu", current.cpuCapacity, upgrade.cpuCapacity);
+  compare("power", current.powerCapacity, upgrade.powerCapacity);
+  return diffs.join(", ");
+}
+
+/**
  * Find the best affordable upgrade for a bot's role.
+ * Checks skill requirements, price, and role fitness.
  * Returns null if no upgrade is worth buying.
  */
 export function findBestUpgrade(
@@ -142,6 +197,7 @@ export function findBestUpgrade(
   role: string,
   catalog: ShipClass[],
   maxPrice: number,
+  botSkills?: Record<string, number>,
 ): ShipClass | null {
   const current = catalog.find((s) => s.id === currentClassId);
   if (!current) return null;
@@ -154,6 +210,12 @@ export function findBestUpgrade(
   for (const ship of catalog) {
     if (ship.id === currentClassId) continue;
     if (ship.basePrice <= 0 || ship.basePrice > maxPrice) continue;
+
+    // Skill gate: skip ships the bot can't fly
+    if (botSkills) {
+      const { met } = checkSkillRequirements(ship, botSkills);
+      if (!met) continue;
+    }
 
     const score = scoreShipForRole(ship, role);
     // Must be at least 5 points better for the role

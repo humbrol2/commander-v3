@@ -1641,6 +1641,9 @@ export function normalizeRecipe(raw: Record<string, unknown>): Recipe {
 }
 
 export function normalizeCatalogItem(raw: Record<string, unknown>): CatalogItem {
+  const cpuCost = num(raw.cpu_cost ?? raw.cpuCost ?? raw.cpu);
+  const powerCost = num(raw.power_cost ?? raw.powerCost ?? raw.power);
+  const slotType = str(raw.slot_type ?? raw.slotType ?? raw.slot ?? "");
   return {
     id: str(raw.id ?? raw.item_id),
     name: str(raw.name),
@@ -1648,6 +1651,9 @@ export function normalizeCatalogItem(raw: Record<string, unknown>): CatalogItem 
     description: str(raw.description),
     basePrice: num(raw.base_price ?? raw.basePrice ?? raw.price),
     stackSize: num(raw.stack_size ?? raw.stackSize ?? 100) || 100,
+    ...(cpuCost > 0 ? { cpuCost } : {}),
+    ...(powerCost > 0 ? { powerCost } : {}),
+    ...(slotType ? { slotType } : {}),
   };
 }
 

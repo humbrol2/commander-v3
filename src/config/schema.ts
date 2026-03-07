@@ -52,6 +52,7 @@ export const AiConfigSchema = z.object({
   claude_model: z.string().default("claude-3-5-haiku-latest"),
   tier_order: z.array(z.enum(["ollama", "gemini", "claude", "scoring"])).default(["ollama", "gemini", "claude", "scoring"]),
   max_latency_ms: z.number().default(10000),
+  max_tokens: z.number().default(2048),
   shadow_mode: z.boolean().default(false),
 });
 

@@ -22,6 +22,8 @@ import {
   refuelIfNeeded,
   repairIfNeeded,
   getParam,
+  withdrawFromFaction,
+  canFitModule,
 } from "./helpers";
 
 /** Role -> desired module patterns (highest priority first, duplicates = multiple slots) */
@@ -204,6 +206,13 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
 
       if (!source) continue;
 
+      // Pre-check: will the new module fit if we swap out the old one?
+      const fitCheck = canFitModule(ctx, sourceItemId, mod.moduleId);
+      if (!fitCheck.fits) {
+        yield `skip upgrade ${mod.moduleId} → ${sourceItemId}: ${fitCheck.reason}`;
+        continue;
+      }
+
       // Uninstall current module
       try {
         await ctx.api.uninstallMod(mod.moduleId);
@@ -230,7 +239,7 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
       // Acquire the better module
       if (source === "storage") {
         try {
-          await ctx.api.factionWithdrawItems(sourceItemId, 1);
+          await withdrawFromFaction(ctx, sourceItemId, 1);
           await ctx.refreshState();
           storageModules[0].quantity--;
           yield `withdrew ${sourceItemId} (tier ${getModuleTier(sourceItemId)}) from faction storage`;
@@ -298,8 +307,13 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
       // Try faction storage first (free)
       if (availStorage.length > 0) {
         const mod = availStorage[0];
+        const fitCheck = canFitModule(ctx, mod.itemId);
+        if (!fitCheck.fits) {
+          yield `skip ${mod.itemId}: ${fitCheck.reason}`;
+          break;
+        }
         try {
-          await ctx.api.factionWithdrawItems(mod.itemId, 1);
+          await withdrawFromFaction(ctx, mod.itemId, 1);
           await ctx.refreshState();
           mod.quantity--;
 
@@ -331,6 +345,11 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
       // Try market (costs credits)
       if (availMarket.length > 0) {
         const order = availMarket[0];
+        const fitCheck = canFitModule(ctx, order.itemId);
+        if (!fitCheck.fits) {
+          yield `skip ${order.itemId}: ${fitCheck.reason}`;
+          break;
+        }
         try {
           await ctx.api.buy(order.itemId, 1);
           await ctx.refreshState();
@@ -359,8 +378,35 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
         }
       }
 
-      // If neither source has modules, stop trying this pattern
+      // If neither source has modules, check other known stations
       if (availStorage.length === 0 && availMarket.length === 0) {
+        const remote = ctx.cache.findItemSeller(pattern, budget);
+        if (remote && remote.stationId !== ctx.player.dockedAtBase && canFitModule(ctx, remote.itemId).fits) {
+          yield `${pattern}: found at remote station — traveling to buy`;
+          try {
+            await navigateAndDock(ctx, remote.stationId);
+            await ctx.api.buy(remote.itemId, 1);
+            await ctx.refreshState();
+            budget -= remote.price;
+            try {
+              await ctx.api.installMod(remote.itemId);
+              await ctx.refreshState();
+              yield `bought & equipped ${remote.itemId} for ${remote.price}cr (remote)`;
+              installs++;
+              continue;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              try { await ctx.api.factionDepositItems(remote.itemId, 1); await ctx.refreshState(); } catch { /* best effort */ }
+              if (msg.includes("cpu") || msg.includes("power") || msg.includes("slot")) {
+                yield `ship slots full — ${msg}`;
+                break;
+              }
+              yield `install ${remote.itemId} failed: ${msg}`;
+            }
+          } catch (err) {
+            yield `remote buy failed: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        }
         yield `${pattern}: not available in storage or market`;
         break;
       }

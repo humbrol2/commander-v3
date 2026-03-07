@@ -123,7 +123,11 @@ export class GameCache {
     const cached = this.getStatic("item_catalog", this.gameVersion);
     if (cached) {
       const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
-      if (raw.length >= 50) return raw.map(normalizeCatalogItem);
+      // Re-fetch if cache is missing cpuCost field (added later for module fit checks)
+      const hasModuleFields = raw.some(r => "cpuCost" in r && (r.cpuCost as number) > 0);
+      const hasModules = raw.some(r => r.category === "module");
+      const needsRefresh = hasModules && !hasModuleFields;
+      if (raw.length >= 50 && !needsRefresh) return raw.map(normalizeCatalogItem);
     }
 
     const categories = ["ore", "refined", "component", "module", "artifact", "fuel", "ammo", "equipment"];
@@ -336,6 +340,44 @@ export class GameCache {
       }
     }
     return result;
+  }
+
+  /** Get a catalog item by ID (from cached item catalog) */
+  getCatalogItem(itemId: string): CatalogItem | null {
+    const cached = this.getStatic("item_catalog", this.gameVersion);
+    if (!cached) return null;
+    const items = JSON.parse(cached) as CatalogItem[];
+    return items.find(i => i.id === itemId) ?? null;
+  }
+
+  /** Find a station that sells a specific item (from cached market scans) */
+  findItemSeller(itemPattern: string, maxPrice: number): { stationId: string; itemId: string; price: number } | null {
+    let best: { stationId: string; itemId: string; price: number } | null = null;
+    for (const [key] of this.marketFetchedAt) {
+      const stationId = key;
+      const prices = this.getMarketPrices(stationId);
+      if (!prices) continue;
+      for (const p of prices) {
+        if (!p.itemId.includes(itemPattern)) continue;
+        if (!p.sellPrice || p.sellPrice <= 0 || p.sellVolume <= 0) continue;
+        if (p.sellPrice > maxPrice) continue;
+        if (!best || p.sellPrice < best.price) {
+          best = { stationId, itemId: p.itemId, price: p.sellPrice };
+        }
+      }
+    }
+    return best;
+  }
+
+  /** Find a station that sells a specific ship class (from cached shipyard scans) */
+  findShipyardForClass(classId: string): { stationId: string; price: number } | null {
+    const now = Date.now();
+    for (const [stationId, entry] of this.shipyardCache) {
+      if (now - entry.fetchedAt > 1_800_000) continue;
+      const ship = entry.ships.find(s => s.classId === classId);
+      if (ship) return { stationId, price: ship.price };
+    }
+    return null;
   }
 
   // ── Market Data Recovery (from SQLite history) ──
