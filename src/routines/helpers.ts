@@ -116,19 +116,51 @@ export async function navigateTo(
       throw new Error(`No route from ${ctx.player.currentSystem} to ${targetSystemId}`);
     }
 
-    log(ctx, `navigating ${ctx.player.currentSystem} → ${targetSystemId} (${path.length - 1} jump(s))`);
+    const jumpsNeeded = path.length - 1;
+    log(ctx, `navigating ${ctx.player.currentSystem} → ${targetSystemId} (${jumpsNeeded} jump(s))`);
+
+    // Pre-flight fuel check: ensure we have enough fuel for the full route
+    // Each jump costs ~1 fuel. Require fuel for the route + safety margin for return.
+    const fuelSafetyMargin = 3; // Reserve 3 fuel units to reach nearest station if needed
+    if (ctx.ship.fuel < jumpsNeeded + fuelSafetyMargin) {
+      // Try to dock and refuel first
+      if (!ctx.player.dockedAtBase) {
+        const canDock = ctx.station.canDock(ctx.player);
+        if (canDock) {
+          try {
+            await ctx.api.dock();
+            await ctx.refreshState();
+            await refuelIfNeeded(ctx);
+            await ctx.api.undock();
+            await ctx.refreshState();
+          } catch { /* best effort */ }
+        }
+      }
+      // Re-check after refuel attempt
+      if (ctx.ship.fuel < jumpsNeeded + fuelSafetyMargin) {
+        throw new Error(`Insufficient fuel: need ${jumpsNeeded + fuelSafetyMargin}, have ${ctx.ship.fuel}. Route: ${jumpsNeeded} jumps to ${targetSystemId}`);
+      }
+    }
 
     // Skip first element (current system)
     for (let i = 1; i < path.length; i++) {
       if (ctx.shouldStop) return;
 
-      // Mid-route fuel check: burn cargo cells if running low
-      if (ctx.fuel.getLevel(ctx.ship) === "critical" || ctx.fuel.getLevel(ctx.ship) === "low") {
-        logWarn(ctx, `low fuel mid-route, burning fuel cells`);
+      // Mid-route fuel check: if critically low, abort and dock at nearest station
+      if (ctx.ship.fuel <= fuelSafetyMargin) {
+        logWarn(ctx, `fuel critically low (${ctx.ship.fuel} remaining), aborting route`);
         await burnFuelCells(ctx);
+        // If still low, try to dock at nearest station
+        if (ctx.ship.fuel <= 1) {
+          const dockTarget = ctx.station.chooseDockTarget(ctx.player, ctx.ship);
+          if (dockTarget) {
+            try { await navigateTo(ctx, dockTarget.systemId, dockTarget.poiId); } catch { /* stranded */ }
+          }
+          throw new Error(`Fuel emergency: aborted route to ${targetSystemId} at jump ${i}/${jumpsNeeded}`);
+        }
       }
 
-      log(ctx, `jumping to ${path[i]} (${i}/${path.length - 1})`);
+      log(ctx, `jumping to ${path[i]} (${i}/${jumpsNeeded})`);
       await ctx.api.jump(path[i]);
       await ctx.refreshState();
 
@@ -435,8 +467,8 @@ export async function serviceShip(ctx: BotContext): Promise<void> {
  * Refuels first, then checks if fuel is still low (station out of fuel)
  * and attempts to buy fuel cells from the local market as a backup.
  */
-/** Minimum fuel cells to carry as emergency reserve (0 = don't buy, save credits) */
-const FUEL_CELL_RESERVE = 0;
+/** Minimum fuel cells to carry as emergency reserve */
+const FUEL_CELL_RESERVE = 3;
 
 export async function ensureFuelSafety(ctx: BotContext): Promise<void> {
   if (!ctx.player.dockedAtBase) return;

@@ -98,11 +98,13 @@ function estimateJumps(ctx: BotContext, targetSystemId: string | undefined): num
   return path ? path.length - 1 : Infinity;
 }
 
-/** Check if bot has enough fuel for a trip (rough estimate: ~10% fuel per jump) */
+/** Check if bot has enough fuel for a round trip (rough estimate: 1 fuel unit per jump) */
 function hasFuelForJumps(ctx: BotContext, jumps: number): boolean {
   if (jumps <= 0) return true;
-  const fuelPerJump = 10; // rough estimate
-  return ctx.player.skills ? true : (ctx.ship.fuel / ctx.ship.maxFuel * 100) > (jumps * fuelPerJump + 15);
+  // Need fuel for the trip there AND back, plus a safety margin
+  const roundTripJumps = jumps * 2;
+  const fuelNeeded = roundTripJumps + 2; // +2 safety buffer
+  return ctx.ship.fuel >= fuelNeeded;
 }
 
 /** Find the target system for a mission from mission data or objective data */
@@ -134,6 +136,14 @@ function findMissionRequiredItem(mission: Mission): { itemId: string; quantity: 
   return undefined;
 }
 
+/** Estimate fuel cost in credits for a round trip */
+function estimateTripCost(ctx: BotContext, jumps: number): number {
+  if (jumps <= 0) return 0;
+  // Fuel cost: ~15cr per fuel cell, ~1 cell per jump, round trip
+  const fuelCost = jumps * 2 * 15;
+  return fuelCost;
+}
+
 /** Check if a mission is completable by this bot */
 function canCompleteMission(ctx: BotContext, mission: Mission, maxJumps: number, skipCombat: boolean): { ok: boolean; reason?: string } {
   // Skip combat missions
@@ -152,7 +162,14 @@ function canCompleteMission(ctx: BotContext, mission: Mission, maxJumps: number,
       return { ok: false, reason: "unreachable system" };
     }
     if (!hasFuelForJumps(ctx, jumps)) {
-      return { ok: false, reason: "not enough fuel" };
+      return { ok: false, reason: `not enough fuel (need ${jumps * 2 + 2}, have ${ctx.ship.fuel})` };
+    }
+
+    // Check reward vs travel cost — don't accept missions that cost more to complete than they pay
+    const creditReward = mission.rewards.find(r => r.type === "credits")?.amount ?? 0;
+    const tripCost = estimateTripCost(ctx, jumps);
+    if (creditReward > 0 && tripCost >= creditReward) {
+      return { ok: false, reason: `unprofitable (reward ${creditReward}cr < trip cost ~${tripCost}cr)` };
     }
   }
 
@@ -322,7 +339,7 @@ export async function* mission_runner(ctx: BotContext): AsyncGenerator<RoutineYi
     }
 
     // ── Score and sort missions ──
-    // Prefer: higher reward, closer target, fewer objectives
+    // Prefer: highest net profit per effort (reward minus travel cost, divided by effort)
     feasible.sort((a, b) => {
       const rewardA = a.mission.rewards.find((r) => r.type === "credits")?.amount ?? 0;
       const rewardB = b.mission.rewards.find((r) => r.type === "credits")?.amount ?? 0;
@@ -330,12 +347,16 @@ export async function* mission_runner(ctx: BotContext): AsyncGenerator<RoutineYi
       const jumpsA = estimateJumps(ctx, findMissionTargetSystem(a.mission));
       const jumpsB = estimateJumps(ctx, findMissionTargetSystem(b.mission));
 
-      // Score: reward per estimated effort (jumps + objectives)
+      // Net profit = reward minus estimated fuel cost
+      const netA = rewardA - estimateTripCost(ctx, jumpsA);
+      const netB = rewardB - estimateTripCost(ctx, jumpsB);
+
+      // Score: net profit per estimated effort (jumps + objectives)
       const effortA = Math.max(1, jumpsA + a.mission.objectives.length);
       const effortB = Math.max(1, jumpsB + b.mission.objectives.length);
 
-      const scoreA = rewardA / effortA;
-      const scoreB = rewardB / effortB;
+      const scoreA = netA / effortA;
+      const scoreB = netB / effortB;
 
       return scoreB - scoreA;
     });
