@@ -10,3 +10,9 @@ web/build/
 .env
 .DS_Store
 drizzle/
+
+# User config (may contain sensitive settings) — use config.toml.example as template
+config.toml
+
+# Claude Code project data
+.claude/
