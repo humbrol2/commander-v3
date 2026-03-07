@@ -9,7 +9,7 @@ config.toml          ← Fleet config, brain selection, goals
 src/app.ts           ← Entry point
 src/startup.ts       ← Wires all services together
 src/bot/             ← Bot lifecycle, login, session management
-src/commander/       ← AI brain system (scoring, ollama, gemini, claude, tiered)
+src/commander/       ← AI brain system (scoring, ollama, openai, gemini, claude, tiered)
 src/core/            ← API client (151 endpoints), galaxy graph, market engine
 src/routines/        ← 14 async generator routines (miner, trader, crafter, etc.)
 src/server/          ← Bun HTTP/WebSocket server, message router, broadcast loop
@@ -24,7 +24,7 @@ web/                 ← Svelte 5 + SvelteKit dashboard
 - **Runtime**: [Bun](https://bun.sh) + TypeScript
 - **Database**: SQLite via [Drizzle ORM](https://orm.drizzle.team)
 - **Frontend**: Svelte 5 + SvelteKit + Tailwind CSS
-- **AI**: Tiered brain system — Ollama (local) → Gemini → Claude → scoring fallback
+- **AI**: Tiered brain system — Ollama (local) → OpenAI-compatible (LM Studio) → Gemini → Claude → scoring fallback
 - **Real-time**: WebSocket protocol between backend and dashboard
 
 ## Getting Started
@@ -33,7 +33,8 @@ web/                 ← Svelte 5 + SvelteKit dashboard
 
 - [Bun](https://bun.sh) v1.0+
 - SpaceMolt accounts (register at [spacemolt.com](https://spacemolt.com))
-- (Optional) [Ollama](https://ollama.ai) for local AI brain
+- (Optional) [Ollama](https://ollama.ai) for local Ollama AI brain
+- (Optional) [LM Studio](https://lmstudio.ai) or similar OpenAI-compatible server for local AI
 
 ### Setup
 
@@ -42,28 +43,43 @@ web/                 ← Svelte 5 + SvelteKit dashboard
 bun install
 cd web && bun install && cd ..
 
-# Configure
-cp config.toml.example config.toml  # Edit with your settings
+# Configuration: Copy and customize the example config
+cp config.example.toml config.toml
+# Edit config.toml as needed
+
+# Build frontend (required for production)
+bun run build:web
 
 # Run
-bun run dev        # Backend with hot reload
-bun run dev:web    # Dashboard dev server (separate terminal)
+bun run start        # Backend (production)
+bun run dev          # Backend with hot reload
+bun run dev:web      # Dashboard dev server (separate terminal, optional for dev)
 ```
 
 ### Configuration
 
-Edit `config.toml`:
+Edit `config.toml` to customize your fleet (see `config.example.toml` for all options):
 
 ```toml
 [commander]
-brain = "tiered"              # "scoring", "ollama", "gemini", "claude", "tiered"
+brain = "tiered"              # "scoring", "ollama", "openai", "gemini", "claude", "tiered"
 evaluation_interval = 60      # Seconds between fleet evaluations
 
 [ai]
+# Ollama (local LLM)
+ollama_base_url = "http://localhost:11434"
 ollama_model = "qwen3:8b"
+
+# OpenAI-compatible (LM Studio, vLLM, etc.)
+openai_base_url = "http://127.0.0.1:1234"
+openai_model = "gpt-3.5-turbo"
+
+# Google & Anthropic (requires API keys in env)
 gemini_model = "gemini-2.5-pro"
 claude_model = "claude-3-5-haiku-latest"
-tier_order = ["ollama", "gemini", "claude", "scoring"]
+
+# Try brains in this order (first success wins)
+tier_order = ["ollama", "openai", "gemini", "claude", "scoring"]
 shadow_mode = true            # Compare AI vs scoring brain decisions
 
 [[goals]]
@@ -71,16 +87,44 @@ type = "maximize_income"
 priority = 1
 ```
 
-## Brain System
+## AI Brain System
 
 The commander evaluates fleet state and assigns routines using a tiered AI brain:
 
-1. **Ollama** — Local LLM (fastest, no API cost)
-2. **Gemini** — Google AI (fast, cheap)
-3. **Claude** — Anthropic (highest quality)
-4. **Scoring** — Deterministic fallback (always available)
+1. **Ollama** — Local LLM via native `/api/chat` endpoint (fastest, no API cost)
+2. **OpenAI-compatible** — LM Studio, vLLM, or similar via `/v1/chat/completions` (local or remote)
+3. **Gemini** — Google AI (requires `GEMINI_API_KEY` env var)
+4. **Claude** — Anthropic (requires `ANTHROPIC_API_KEY` env var)
+5. **Scoring** — Deterministic fallback (always available)
 
 Each tier falls back to the next on failure. Shadow mode runs the scoring brain in parallel to compare decisions.
+
+### Using Ollama
+
+```bash
+# Pull a model (requires Ollama installed and running)
+ollama pull qwen3:8b
+
+# Update config.toml
+[ai]
+ollama_base_url = "http://localhost:11434"
+ollama_model = "qwen3:8b"
+tier_order = ["ollama", "scoring"]
+```
+
+### Using LM Studio (OpenAI-compatible)
+
+```bash
+# 1. Install LM Studio from https://lmstudio.ai
+# 2. Load a model in LM Studio
+# 3. Start the server (default: http://127.0.0.1:1234)
+# 4. Update config.toml
+
+[ai]
+openai_base_url = "http://127.0.0.1:1234"
+openai_model = "openai/gpt-oss-20b"  # or your loaded model name
+tier_order = ["openai", "scoring"]
+```
 
 ## Routines
 
@@ -114,12 +158,14 @@ The Svelte dashboard provides real-time fleet monitoring:
 - **Manual** — Galaxy browser, game catalog (ships, items, skills, recipes)
 - **Settings** — Fleet config, bot settings, goals
 
+Access at `http://localhost:3000` after starting the backend.
+
 ## Scripts
 
 ```bash
 bun run dev          # Start backend (watch mode)
 bun run start        # Start backend (production)
-bun run dev:web      # Start dashboard dev server
+bun run dev:web      # Start dashboard dev server (optional, for web dev)
 bun run build:web    # Build dashboard for production
 bun run test         # Run tests
 bun run db:push      # Push schema changes to SQLite
@@ -137,6 +183,28 @@ The API client (`src/core/api-client.ts`) covers 151 SpaceMolt endpoints includi
 - Ship management (buy, sell, commission, modules)
 - Faction operations (storage, facilities, intel, diplomacy)
 - Social (chat, forum, missions, gifts)
+
+## Troubleshooting
+
+### Webpage shows "Not Found" (404)
+**Solution**: Run `bun run build:web` to build the frontend, then restart the app.
+
+### Ollama connection fails
+**Solution**: 
+- Ensure Ollama is running: `ollama serve`
+- Verify port matches in config.toml (default: 11434)
+- Check if model is loaded: `ollama list`
+- Pull a model: `ollama pull qwen3:8b`
+
+### LM Studio connection fails
+**Solution**:
+- Ensure LM Studio is running and server is active
+- Verify the endpoint in config.toml (default: http://127.0.0.1:1234)
+- Check that a model is loaded in LM Studio
+- Use the OpenAI-compatible `/v1/chat/completions` endpoint
+
+### Station discovery fails on startup
+**Solution**: This is expected on first startup — the app retries every 60 seconds. Once you login a bot via the API, station discovery will succeed.
 
 ## License
 
