@@ -24,7 +24,7 @@ web/                 ← Svelte 5 + SvelteKit dashboard
 - **Runtime**: [Bun](https://bun.sh) + TypeScript
 - **Database**: SQLite via [Drizzle ORM](https://orm.drizzle.team)
 - **Frontend**: Svelte 5 + SvelteKit + Tailwind CSS
-- **AI**: Tiered brain system — Ollama (local) → Gemini → Claude → scoring fallback
+- **AI**: Tiered brain system — Ollama (local) → OpenAI-compatible (LM Studio) → Gemini → Claude → scoring fallback
 - **Real-time**: WebSocket protocol between backend and dashboard
 
 ## Getting Started
@@ -34,6 +34,7 @@ web/                 ← Svelte 5 + SvelteKit dashboard
 - [Bun](https://bun.sh) v1.0+
 - SpaceMolt accounts (register at [spacemolt.com](https://spacemolt.com))
 - (Optional) [Ollama](https://ollama.ai) for local AI brain
+- (Optional) [LM Studio](https://lmstudio.ai) or similar OpenAI-compatible server for local AI
 
 ### Setup
 
@@ -42,12 +43,13 @@ web/                 ← Svelte 5 + SvelteKit dashboard
 bun install
 cd web && bun install && cd ..
 
-# Configure
-cp config.toml.example config.toml  # Edit with your settings
+# Build frontend
+bun run build:web
 
 # Run
-bun run dev        # Backend with hot reload
-bun run dev:web    # Dashboard dev server (separate terminal)
+bun run start        # Start backend (production)
+bun run dev          # Start backend (watch mode)
+bun run dev:web      # Start dashboard dev server (separate terminal)
 ```
 
 ### Configuration
@@ -56,15 +58,23 @@ Edit `config.toml` (see `config.toml.example` for all options):
 
 ```toml
 [commander]
-brain = "tiered"              # "scoring", "ollama", "gemini", "claude", "tiered"
+brain = "tiered"              # "scoring", "ollama", "openai", "gemini", "claude", "tiered"
 evaluation_interval = 60      # Seconds between fleet evaluations
 reassignment_cooldown = 300   # Seconds before a bot can be reassigned
 
 [ai]
+# Ollama (local LLM)
 ollama_model = "qwen3:8b"
+
+# OpenAI-compatible (LM Studio, vLLM, etc.)
+openai_model = "gpt-3.5-turbo"
+
+# Google & Anthropic
 gemini_model = "gemini-2.5-pro"
 claude_model = "claude-3-5-haiku-latest"
-tier_order = ["ollama", "gemini", "claude", "scoring"]
+
+# Tier order - tries each brain in sequence, first success wins
+tier_order = ["ollama", "openai", "gemini", "claude", "scoring"]
 max_tokens = 2048
 shadow_mode = true            # Compare AI vs scoring brain decisions
 
@@ -84,10 +94,11 @@ priority = 1
 
 The commander evaluates fleet state and assigns routines using a tiered AI brain:
 
-1. **Ollama** — Local LLM (fastest, no API cost)
-2. **Gemini** — Google AI (fast, cheap)
-3. **Claude** — Anthropic (highest quality)
-4. **Scoring** — Deterministic fallback (always available)
+1. **Ollama** — Local LLM via native `/api/chat` endpoint (fastest, no API cost)
+2. **OpenAI-compatible** — LM Studio, vLLM, or similar via `/v1/chat/completions` (local or remote)
+3. **Gemini** — Google AI (fast, requires `GEMINI_API_KEY`)
+4. **Claude** — Anthropic (highest quality, requires `ANTHROPIC_API_KEY`)
+5. **Scoring** — Deterministic fallback (always available)
 
 Each tier falls back to the next on failure. Shadow mode runs the scoring brain in parallel to compare decisions.
 

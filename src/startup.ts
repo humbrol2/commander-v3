@@ -24,6 +24,7 @@ import { Commander, type CommanderConfig, type CommanderDeps } from "./commander
 import { ScoringBrain } from "./commander/scoring-brain";
 import { TieredBrain } from "./commander/tiered-brain";
 import { createOllamaBrain } from "./commander/ollama-brain";
+import { createOpenAIBrain } from "./commander/openai-brain";
 import { createGeminiBrain } from "./commander/gemini-brain";
 import { createClaudeBrain } from "./commander/claude-brain";
 import { EconomyEngine } from "./commander/economy-engine";
@@ -377,6 +378,12 @@ function buildBrain(config: AppConfig, logger: TrainingLogger): CommanderBrain {
     ollama: () => createOllamaBrain({
       baseUrl: config.ai.ollama_base_url,
       model: config.ai.ollama_model,
+      timeoutMs: config.ai.max_latency_ms,
+      maxTokens: config.ai.max_tokens,
+    }),
+    openai: () => createOpenAIBrain({
+      baseUrl: config.ai.openai_base_url,
+      model: config.ai.openai_model,
       timeoutMs: config.ai.max_latency_ms,
       maxTokens: config.ai.max_tokens,
     }),

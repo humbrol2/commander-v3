@@ -48,9 +48,11 @@ export const CommanderConfigSchema = z.object({
 export const AiConfigSchema = z.object({
   ollama_base_url: z.string().default("http://localhost:11434"),
   ollama_model: z.string().default("qwen3:8b"),
+  openai_base_url: z.string().default("http://localhost:8000"),
+  openai_model: z.string().default("gpt-3.5-turbo"),
   gemini_model: z.string().default("gemini-2.5-pro"),
   claude_model: z.string().default("claude-3-5-haiku-latest"),
-  tier_order: z.array(z.enum(["ollama", "gemini", "claude", "scoring"])).default(["ollama", "gemini", "claude", "scoring"]),
+  tier_order: z.array(z.enum(["ollama", "openai", "gemini", "claude", "scoring"])).default(["ollama", "gemini", "claude", "scoring"]),
   max_latency_ms: z.number().default(10000),
   max_tokens: z.number().default(2048),
   shadow_mode: z.boolean().default(false),
