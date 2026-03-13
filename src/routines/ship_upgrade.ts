@@ -37,18 +37,7 @@ import {
   getParam,
   equipModulesForRoutine,
 } from "./helpers";
-
-/** Role → module patterns to equip (highest priority first) */
-const ROLE_MODULES: Record<string, string[]> = {
-  miner:     ["mining_laser", "mining_laser", "mining_laser"],
-  harvester: ["mining_laser", "mining_laser"],
-  explorer:  ["survey_scanner"],
-  hunter:    ["weapon_laser", "weapon_laser", "weapon_laser"],
-  crafter:   ["mining_laser"],
-  trader:    [],
-  quartermaster: [],
-  default:   ["mining_laser"],
-};
+import { getModulesForRole } from "../commander/roles";
 
 export async function* ship_upgrade(ctx: BotContext): AsyncGenerator<RoutineYield, void, void> {
   const targetShipClass = getParam(ctx, "targetShipClass", "");
@@ -169,6 +158,16 @@ export async function* ship_upgrade(ctx: BotContext): AsyncGenerator<RoutineYiel
     await refuelIfNeeded(ctx);
     await repairIfNeeded(ctx);
 
+    // Auto-insure after switch
+    try {
+      const quote = await ctx.api.getInsuranceQuote();
+      const premium = Number(quote?.premium ?? quote?.cost ?? 0);
+      if (premium > 0 && ctx.player.credits > premium * 7) {
+        await ctx.api.buyInsurance(360);
+        yield `insured ship (${premium}cr)`;
+      }
+    } catch { /* optional */ }
+
     console.log(`[${ctx.botId}] Ship switch (owned): ${oldShipClass} → ${targetShipClass} (FREE)`);
     yield `switch complete: ${oldShipClass} → ${targetShipClass}`;
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "ship_upgrade" });
@@ -197,8 +196,17 @@ export async function* ship_upgrade(ctx: BotContext): AsyncGenerator<RoutineYiel
     return;
   }
 
-  const price = Number(targetShip.price ?? targetShip.base_price ?? targetShip.basePrice ?? 0);
+  let price = Number(targetShip.price ?? targetShip.base_price ?? targetShip.basePrice ?? targetShip.cost ?? 0);
+  // Fallback: check cached shipyard data (already normalized with correct field names)
+  if (price <= 0 && ctx.player.dockedAtBase) {
+    const cached = ctx.cache.getShipyardData(ctx.player.dockedAtBase);
+    const cachedShip = cached?.find(s => s.classId === targetShipClass);
+    if (cachedShip && cachedShip.price > 0) {
+      price = cachedShip.price;
+    }
+  }
   if (price <= 0) {
+    console.warn(`[${ctx.botId}] ship_upgrade: shipyard entry for ${targetShipClass} has no price. Keys: ${Object.keys(targetShip).join(", ")}. Values: ${JSON.stringify(targetShip)}`);
     yield `invalid price for ${targetShipClass}`;
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "ship_upgrade" });
     return;
@@ -297,6 +305,17 @@ export async function* ship_upgrade(ctx: BotContext): AsyncGenerator<RoutineYiel
   await refuelIfNeeded(ctx);
   await repairIfNeeded(ctx);
 
+  // Step 10: Auto-insure the new ship (protect investment)
+  try {
+    const quote = await ctx.api.getInsuranceQuote();
+    const premium = Number(quote?.premium ?? quote?.cost ?? 0);
+    const walletPct = ctx.player.credits > 0 ? premium / ctx.player.credits : 1;
+    if (premium > 0 && walletPct <= 0.15) { // Max 15% of wallet on insurance
+      await ctx.api.buyInsurance(360); // ~1 hour coverage
+      yield `insured new ship (${premium}cr premium)`;
+    }
+  } catch { /* insurance optional — don't fail upgrade */ }
+
   // Log the upgrade
   console.log(`[${ctx.botId}] Ship upgrade: ${oldShipClass} → ${targetShipClass} (cost ${price}cr)`);
 
@@ -313,7 +332,7 @@ async function* fitModulesForRole(
   ctx: BotContext,
   role: string,
 ): AsyncGenerator<RoutineYield, void, void> {
-  const desiredModules = ROLE_MODULES[role] ?? ROLE_MODULES.default;
+  const desiredModules = getModulesForRole(role);
   if (desiredModules.length === 0) return;
 
   yield `fitting modules for ${role} role`;

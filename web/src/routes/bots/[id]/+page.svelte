@@ -119,6 +119,50 @@
 		if (!bot) return;
 		send({ type: "prefer_ship", botId: bot.id, shipId, classId } as any);
 	}
+
+	/** Ships available for purchase (from catalog, excluding already-owned classes) */
+	const shopShips = $derived.by(() => {
+		if (!$catalogData?.ships || !bot) return [];
+		const ownedClasses = new Set(bot.ownedShips?.map(s => s.classId) ?? []);
+		return $catalogData.ships
+			.filter(s => !ownedClasses.has(s.id) && s.basePrice > 0)
+			.sort((a, b) => a.basePrice - b.basePrice);
+	});
+
+	/** Modules available (from catalog items with category "module") */
+	const shopModules = $derived.by(() => {
+		if (!$catalogData?.items) return [];
+		return $catalogData.items
+			.filter(i => i.category === "module" && i.basePrice > 0)
+			.sort((a, b) => a.basePrice - b.basePrice);
+	});
+
+	let shopShipSearch = $state("");
+	let shopModuleSearch = $state("");
+	let showShipShop = $state(false);
+	let showModuleShop = $state(false);
+
+	const filteredShopShips = $derived(
+		shopShipSearch
+			? shopShips.filter(s => s.name.toLowerCase().includes(shopShipSearch.toLowerCase()) || s.category.toLowerCase().includes(shopShipSearch.toLowerCase()))
+			: shopShips
+	);
+
+	const filteredShopModules = $derived(
+		shopModuleSearch
+			? shopModules.filter(m => m.name.toLowerCase().includes(shopModuleSearch.toLowerCase()) || (m.slotType ?? "").toLowerCase().includes(shopModuleSearch.toLowerCase()))
+			: shopModules
+	);
+
+	function buyShip(classId: string) {
+		if (!bot) return;
+		send({ type: "buy_ship_upgrade", botId: bot.id, shipClass: classId } as any);
+	}
+
+	function buyModule(moduleId: string) {
+		if (!bot) return;
+		send({ type: "buy_module", botId: bot.id, moduleId } as any);
+	}
 </script>
 
 <svelte:head>
@@ -219,6 +263,12 @@
 								<span class="text-chrome-silver">State</span>
 								<span class="text-star-white">{bot.routineState || "Idle"}</span>
 							</div>
+							{#if bot.description}
+							<div class="flex justify-between">
+								<span class="text-chrome-silver">Bio</span>
+								<span class="text-star-white italic">{bot.description}</span>
+							</div>
+							{/if}
 							<div class="flex justify-between">
 								<span class="text-chrome-silver">Empire</span>
 								<span class="text-star-white">{bot.empire}</span>
@@ -327,6 +377,47 @@
 					</div>
 				</div>
 
+				<!-- Active Missions -->
+				{#if bot.activeMissions && bot.activeMissions.length > 0}
+				<div class="mt-4">
+					<h3 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-2">
+						Active Missions
+						<span class="text-hull-grey font-normal">({bot.activeMissions.length})</span>
+					</h3>
+					<div class="space-y-2">
+						{#each bot.activeMissions as mission}
+							<div class="rounded-lg border border-hull-grey/20 bg-deep-void/50 p-3">
+								<div class="flex items-center justify-between mb-2">
+									<span class="text-sm font-medium text-star-white">{mission.title}</span>
+									<span class="text-[10px] px-1.5 py-0.5 rounded bg-plasma-cyan/15 text-plasma-cyan">{mission.type}</span>
+								</div>
+								<div class="space-y-1.5">
+									{#each mission.objectives as obj}
+										<div class="flex items-center gap-2">
+											<div class="flex-1">
+												<div class="flex justify-between text-xs mb-0.5">
+													<span class="text-chrome-silver">{obj.description}</span>
+													<span class="mono {obj.complete ? 'text-bio-green' : 'text-hull-grey'}">{obj.progress}/{obj.target}</span>
+												</div>
+												<div class="w-full h-1.5 bg-hull-grey/20 rounded-full overflow-hidden">
+													<div
+														class="h-full rounded-full transition-all {obj.complete ? 'bg-bio-green' : 'bg-plasma-cyan/60'}"
+														style="width: {obj.target > 0 ? Math.min(100, (obj.progress / obj.target) * 100) : 0}%"
+													></div>
+												</div>
+											</div>
+											{#if obj.complete}
+												<span class="text-bio-green text-xs">✓</span>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							</div>
+						{/each}
+					</div>
+				</div>
+				{/if}
+
 				<!-- Owned Ships (full width with stats) -->
 				<div class="mt-4">
 					<h3 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-2">
@@ -405,6 +496,134 @@
 						</div>
 					{:else}
 						<p class="text-xs text-hull-grey">No ship data</p>
+					{/if}
+				</div>
+
+				<!-- Ship Shop -->
+				<div class="mt-4">
+					<div class="flex items-center justify-between mb-2">
+						<h3 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider">
+							Ship Shop
+							<span class="text-hull-grey font-normal">({shopShips.length})</span>
+						</h3>
+						<button
+							class="px-3 py-1 text-xs font-medium rounded bg-nebula-blue text-chrome-silver hover:text-star-white border border-hull-grey/30 transition-colors"
+							onclick={() => (showShipShop = !showShipShop)}
+						>
+							{showShipShop ? "Hide" : "Browse"}
+						</button>
+					</div>
+					{#if showShipShop}
+						<input
+							type="text"
+							bind:value={shopShipSearch}
+							placeholder="Search ships..."
+							class="w-full px-3 py-1.5 mb-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-xs focus:border-plasma-cyan focus:outline-none"
+						/>
+						<div class="space-y-2 max-h-72 overflow-y-auto">
+							{#each filteredShopShips as ship}
+								{@const canAfford = bot.credits >= ship.basePrice}
+								<div class="rounded-lg border {canAfford ? 'border-hull-grey/20' : 'border-hull-grey/10'} bg-deep-void/50 p-3 {canAfford ? '' : 'opacity-50'}">
+									<div class="flex items-center justify-between mb-1.5">
+										<div class="flex items-center gap-2">
+											<span class="text-sm font-medium text-star-white">{ship.name}</span>
+											{#if ship.category}
+												<span class="text-[10px] px-1.5 py-0.5 rounded bg-hull-grey/15 text-hull-grey">{ship.category}</span>
+											{/if}
+											{#if ship.region}
+												<span class="text-[10px] text-hull-grey">{ship.region}</span>
+											{/if}
+										</div>
+										<div class="flex items-center gap-2">
+											<span class="text-xs mono {canAfford ? 'text-bio-green' : 'text-claw-red'}">{ship.basePrice.toLocaleString()} cr</span>
+											{#if canAfford && (bot.status === "ready" || bot.status === "running")}
+												<button
+													class="px-2.5 py-1 text-xs font-medium rounded bg-bio-green/15 text-bio-green border border-bio-green/30 hover:bg-bio-green/25 transition-colors"
+													onclick={() => buyShip(ship.id)}
+												>
+													Buy
+												</button>
+											{/if}
+										</div>
+									</div>
+									<div class="grid grid-cols-4 md:grid-cols-8 gap-2 text-xs">
+										<div><span class="text-hull-grey">Hull</span><p class="mono text-star-white">{ship.hull}</p></div>
+										<div><span class="text-hull-grey">Shield</span><p class="mono text-laser-blue">{ship.shield}</p></div>
+										<div><span class="text-hull-grey">Armor</span><p class="mono text-chrome-silver">{ship.armor}</p></div>
+										<div><span class="text-hull-grey">Speed</span><p class="mono text-plasma-cyan">{ship.speed}</p></div>
+										<div><span class="text-hull-grey">Cargo</span><p class="mono text-bio-green">{ship.cargoCapacity}</p></div>
+										<div><span class="text-hull-grey">Fuel</span><p class="mono text-star-white">{ship.fuel}</p></div>
+										<div><span class="text-hull-grey">CPU</span><p class="mono text-star-white">{ship.cpuCapacity}</p></div>
+										<div><span class="text-hull-grey">Power</span><p class="mono text-star-white">{ship.powerCapacity}</p></div>
+									</div>
+								</div>
+							{/each}
+							{#if filteredShopShips.length === 0}
+								<p class="text-xs text-hull-grey text-center py-4">
+									{shopShipSearch ? "No ships match your search" : "No ships available — catalog not loaded"}
+								</p>
+							{/if}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Module Shop -->
+				<div class="mt-4">
+					<div class="flex items-center justify-between mb-2">
+						<h3 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider">
+							Module Shop
+							<span class="text-hull-grey font-normal">({shopModules.length})</span>
+						</h3>
+						<button
+							class="px-3 py-1 text-xs font-medium rounded bg-nebula-blue text-chrome-silver hover:text-star-white border border-hull-grey/30 transition-colors"
+							onclick={() => (showModuleShop = !showModuleShop)}
+						>
+							{showModuleShop ? "Hide" : "Browse"}
+						</button>
+					</div>
+					{#if showModuleShop}
+						<input
+							type="text"
+							bind:value={shopModuleSearch}
+							placeholder="Search modules..."
+							class="w-full px-3 py-1.5 mb-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-xs focus:border-plasma-cyan focus:outline-none"
+						/>
+						<div class="space-y-1 max-h-72 overflow-y-auto">
+							{#each filteredShopModules as mod}
+								{@const canAfford = bot.credits >= mod.basePrice}
+								<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-deep-void/50 border border-hull-grey/10 {canAfford ? '' : 'opacity-50'}">
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2">
+											<span class="text-sm text-star-white">{mod.name}</span>
+											{#if mod.slotType}
+												<span class="text-[10px] px-1.5 py-0.5 rounded bg-hull-grey/15 text-hull-grey">{mod.slotType}</span>
+											{/if}
+										</div>
+										<div class="flex items-center gap-3 mt-0.5 text-[11px] text-hull-grey">
+											{#if mod.cpuCost}<span>CPU: {mod.cpuCost}</span>{/if}
+											{#if mod.powerCost}<span>PWR: {mod.powerCost}</span>{/if}
+											{#if mod.description}<span class="truncate">{mod.description}</span>{/if}
+										</div>
+									</div>
+									<div class="flex items-center gap-2 shrink-0 ml-2">
+										<span class="text-xs mono {canAfford ? 'text-bio-green' : 'text-claw-red'}">{mod.basePrice.toLocaleString()} cr</span>
+										{#if canAfford && (bot.status === "ready" || bot.status === "running")}
+											<button
+												class="px-2.5 py-1 text-xs font-medium rounded bg-bio-green/15 text-bio-green border border-bio-green/30 hover:bg-bio-green/25 transition-colors"
+												onclick={() => buyModule(mod.id)}
+											>
+												Buy
+											</button>
+										{/if}
+									</div>
+								</div>
+							{/each}
+							{#if filteredShopModules.length === 0}
+								<p class="text-xs text-hull-grey text-center py-4">
+									{shopModuleSearch ? "No modules match your search" : "No modules available — catalog not loaded"}
+								</p>
+							{/if}
+						</div>
 					{/if}
 				</div>
 

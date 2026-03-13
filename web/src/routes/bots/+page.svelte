@@ -138,6 +138,12 @@
 							<span class="text-chrome-silver">Ship</span>
 							<span class="text-star-white">{bot.shipName ?? bot.shipClass ?? "Unknown"}</span>
 						</div>
+						{#if bot.role}
+						<div class="flex justify-between">
+							<span class="text-chrome-silver">Role</span>
+							<span class="text-plasma-cyan text-[10px] px-1.5 py-0.5 rounded bg-plasma-cyan/10 border border-plasma-cyan/20">{bot.role.replace(/_/g, ' ')}</span>
+						</div>
+						{/if}
 						<div class="flex justify-between">
 							<span class="text-chrome-silver">Routine</span>
 							{#if bot.routine}

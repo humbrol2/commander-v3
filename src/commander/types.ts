@@ -158,6 +158,23 @@ export interface EconomySnapshot {
   netProfit: number;
   /** Faction storage inventory (itemId → quantity) */
   factionStorage: Map<string, number>;
+  /** Prioritized work orders computed by the economy engine */
+  workOrders: FleetWorkOrder[];
+}
+
+/** A prioritized task for the fleet to execute, produced by market/storage analysis */
+export interface FleetWorkOrder {
+  type: "mine" | "craft" | "trade" | "explore";
+  /** Target item/recipe/system ID */
+  targetId: string;
+  /** Human-readable description */
+  description: string;
+  /** Priority score (higher = more urgent, 0-100) */
+  priority: number;
+  /** Why this order was created */
+  reason: string;
+  /** Desired quantity (for mine/craft) */
+  quantity?: number;
 }
 
 // ── Scoring ──
@@ -213,6 +230,7 @@ export interface StrategyWeights {
   scavenger: number;
   ship_upgrade: number;
   refit: number;
+  ship_dealer: number;
 }
 
 // ── Reassignment Tracking ──

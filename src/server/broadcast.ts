@@ -39,7 +39,14 @@ let cachedFactionStorage: Array<{ itemId: string; itemName: string; quantity: nu
 let cachedFactionCredits: number | null = null;
 let cachedFacilities: FactionFacility[] | null = null;
 let cachedFactionOrders: OpenOrder[] = [];
+let cachedFacilityTypes: import("../types/protocol").FacilityTypeInfo[] | null = null;
 let factionDebugLogged = false;
+
+// Concurrency guards — prevent overlapping async polls from racing
+let factionPolling = false;
+let ordersPolling = false;
+let socialPolling = false;
+let chatPolling = false;
 
 /** Per-bot credit snapshots for rate calculation */
 interface CreditSnapshot {
@@ -230,6 +237,21 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       const ecoEngine = deps.commander.getEconomy();
       if (ecoEngine) {
         const snap = ecoEngine.analyze(fleet);
+
+        // Map work orders to assigned bots by matching order type → routine
+        const workOrderTypeToRoutine: Record<string, string> = {
+          mine: "miner", craft: "crafter", trade: "trader", explore: "explorer",
+        };
+        const routineBotMap = new Map<string, string>();
+        for (const bot of fleet.bots) {
+          if (bot.status === "running" && bot.routine) {
+            // First bot per routine wins — work orders get one assignee
+            if (!routineBotMap.has(bot.routine)) {
+              routineBotMap.set(bot.routine, bot.botId);
+            }
+          }
+        }
+
         broadcast({
           type: "economy_update",
           economy: {
@@ -253,6 +275,15 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
             totalRevenue24h: cached24hTotals.revenue,
             totalCosts24h: cached24hTotals.cost,
             netProfit24h: cached24hTotals.profit,
+            workOrders: snap.workOrders.map(wo => ({
+              type: wo.type,
+              targetId: wo.targetId,
+              description: wo.description,
+              priority: wo.priority,
+              reason: wo.reason,
+              quantity: wo.quantity,
+              assignedBot: routineBotMap.get(workOrderTypeToRoutine[wo.type] ?? "") ?? null,
+            })),
           },
         });
       }
@@ -269,29 +300,38 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
 
     // Faction state polling (every 60s)
     if (tick % 20 === 0) {
-      pollFactionState(deps).catch(() => {});
+      if (!factionPolling) {
+        factionPolling = true;
+        pollFactionState(deps)
+          .catch(err => console.warn(`[Broadcast] pollFactionState failed:`, err instanceof Error ? err.message : err))
+          .finally(() => { factionPolling = false; });
+      }
     }
 
     // Auto-diplomacy: accept peace proposals (every 5 minutes)
     if (tick % 100 === 0) {
-      handleAutoDiplomacy(deps).catch(() => {});
+      handleAutoDiplomacy(deps).catch(err => console.warn(`[Broadcast] handleAutoDiplomacy failed:`, err instanceof Error ? err.message : err));
     }
 
     // Faction bulletin board update (every 10 minutes)
     if (tick % 200 === 0) {
-      updateFactionBulletinBoard(deps).catch(() => {});
+      updateFactionBulletinBoard(deps).catch(err => console.warn(`[Broadcast] updateFactionBulletinBoard failed:`, err instanceof Error ? err.message : err));
     }
 
     // Faction missions for missing materials (every 10 minutes)
     if (tick % 200 === 5) {
-      postFactionMissionsForDeficits(deps).catch(() => {});
+      postFactionMissionsForDeficits(deps).catch(err => console.warn(`[Broadcast] postFactionMissionsForDeficits failed:`, err instanceof Error ? err.message : err));
     }
 
     // Open orders polling (every 30s)
     if (tick % 10 === 0) {
-      pollOpenOrders(deps).then(orders => {
-        cachedOrders = orders;
-      }).catch(() => {});
+      if (!ordersPolling) {
+        ordersPolling = true;
+        pollOpenOrders(deps).then(orders => {
+          cachedOrders = orders;
+        }).catch(err => console.warn(`[Broadcast] pollOpenOrders failed:`, err instanceof Error ? err.message : err))
+          .finally(() => { ordersPolling = false; });
+      }
 
       // Refresh 24h financial totals from DB (persists across restarts)
       if (deps.trainingLogger) {
@@ -301,13 +341,23 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
 
     // Social feed polling (every 30s — uses bot API queries)
     if (tick % 10 === 0) {
-      pollSocialFeed(deps).catch(() => {});
+      if (!socialPolling) {
+        socialPolling = true;
+        pollSocialFeed(deps)
+          .catch(err => console.warn(`[Broadcast] pollSocialFeed failed:`, err instanceof Error ? err.message : err))
+          .finally(() => { socialPolling = false; });
+      }
     }
 
     // Chat intelligence: read + analyze + reply (~every 30s for reading, ~5min for status posting)
     if (tick % 10 === 0) {
       chatIntel.updateBotNames(deps.botManager.getAllBots().map(b => b.username));
-      readAndRespondToChat(deps, chatIntel).catch(() => {});
+      if (!chatPolling) {
+        chatPolling = true;
+        readAndRespondToChat(deps, chatIntel)
+          .catch(err => console.warn(`[Broadcast] readAndRespondToChat failed:`, err instanceof Error ? err.message : err))
+          .finally(() => { chatPolling = false; });
+      }
     }
     // Disabled: generic chat messages spam public channels when multiple fleets are active
     // if (tick - lastSocialChatTick >= SOCIAL_CHAT_INTERVAL_TICKS) {
@@ -337,7 +387,7 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
   try {
     // Storage requires docking; faction_info and faction_rooms work anywhere
     const isDocked = !!readyBot.player?.dockedAtBase;
-    const [factionInfo, storageFull, factionRooms, intelStatus, tradeIntelStatus, factionMissions, factionOrders] = await Promise.all([
+    const [factionInfo, storageFull, intelStatus, tradeIntelStatus, factionMissions, factionOrders] = await Promise.all([
       api.factionInfo().catch((e: unknown) => {
         console.log(`[Broadcast] factionInfo() failed: ${e instanceof Error ? e.message : e}`);
         return null;
@@ -348,11 +398,6 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
             return null;
           })
         : Promise.resolve(null),
-      // faction_rooms doesn't require docking — always try
-      api.factionRooms().catch((e: unknown) => {
-        console.log(`[Broadcast] Faction rooms fetch failed: ${e instanceof Error ? e.message : e}`);
-        return [];
-      }),
       api.factionIntelStatus().catch(() => null),
       api.factionTradeIntelStatus().catch(() => null),
       api.factionListMissions().catch(() => []),
@@ -361,6 +406,48 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
       Promise.resolve([]),
     ]);
 
+    // Facility types catalog — fetch once, cache permanently (types don't change)
+    // Only fetch faction+personal types (most relevant for build queue UI)
+    let rawFacilityTypes: Array<Record<string, unknown>> = [];
+    if (!cachedFacilityTypes) {
+      try {
+        // Fetch faction types (the main ones for the build queue)
+        const factionTypes = await api.facilityTypes({ category: "faction" });
+        rawFacilityTypes.push(...factionTypes);
+        // Page 2 if needed (faction has 24 types, 20 per page)
+        if (factionTypes.length >= 20) {
+          const page2 = await api.facilityTypes({ category: "faction", page: 2 });
+          rawFacilityTypes.push(...page2);
+        }
+        // Also fetch personal types
+        const personalTypes = await api.facilityTypes({ category: "personal" });
+        rawFacilityTypes.push(...personalTypes);
+        if (rawFacilityTypes.length > 0) {
+          console.log(`[Broadcast] Loaded ${rawFacilityTypes.length} facility types (faction + personal)`);
+        }
+      } catch (e) {
+        console.log(`[Broadcast] Facility types fetch failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+
+    // Faction facilities — use ONE docked bot (faction_list returns all faction facilities at that station)
+    // Uses mutation() throttling, so only poll a single bot to avoid 10s+ delays per bot
+    let factionFacilities: Array<Record<string, unknown>> = [];
+    const dockedBots = bots.filter(b => (b.status === "running" || b.status === "ready") && b.api && b.player?.dockedAtBase);
+    if (dockedBots.length > 0) {
+      const facBot = dockedBots[0];
+      try {
+        factionFacilities = await facBot.api!.factionListFacilities();
+        // Inject station context if not provided
+        for (const f of factionFacilities) {
+          if (!f.system_id && !f.systemId) f.system_id = facBot.player?.currentSystem ?? "";
+          if (!f.station_id && !f.stationId) f.station_id = facBot.player?.dockedAtBase ?? "";
+        }
+      } catch (e) {
+        console.log(`[Broadcast] faction_list failed (${facBot.id}): ${e instanceof Error ? e.message : e}`);
+      }
+    }
+
     if (!factionInfo) {
       console.log(`[Broadcast] factionInfo() returned null — bot may not be in a faction`);
       return;
@@ -368,15 +455,11 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
 
     const info = factionInfo as Record<string, unknown>;
 
-    // Debug: log faction_info keys once to understand API response shape
+    // Debug: log facility data once
     if (!factionDebugLogged) {
       factionDebugLogged = true;
-      console.log(`[Broadcast] faction_info keys: ${Object.keys(info).join(", ")}`);
-      console.log(`[Broadcast] faction rooms: ${factionRooms.length} room(s) ${JSON.stringify(factionRooms).slice(0, 300)}`);
-      if (isDocked) {
-        console.log(`[Broadcast] faction storage: ${storageFull ? `${storageFull.items.length} items, ${storageFull.credits} credits` : "null"}`);
-      } else {
-        console.log(`[Broadcast] Bot not docked — skipped storage fetch (rooms fetched independently)`);
+      if (factionFacilities.length > 0) {
+        console.log(`[Broadcast] Found ${factionFacilities.length} facilities from ${dockedBots.length} docked bots`);
       }
     }
 
@@ -393,30 +476,45 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
       lastSeen: m.last_seen ? String(m.last_seen) : null,
     }));
 
-    // Parse facilities — from faction_rooms API, faction_info fallback, then cache
+    // Parse facilities — from factionListFacilities (polled across all docked bots), faction_info fallback, then cache
+    const parseFacility = (f: Record<string, unknown>): FactionFacility => {
+      const sysId = String(f.system_id ?? f.systemId ?? f.system ?? "");
+      const sysName = String(f.system_name ?? f.systemName ?? "");
+      // Resolve system name from galaxy if API didn't provide it
+      const resolvedSysName = sysName || (sysId ? (deps.galaxy.getSystem(sysId)?.name ?? sysId) : "");
+      // Resolve station name from galaxy
+      const stationId = String(f.station_id ?? f.stationId ?? f.base_id ?? f.baseId ?? "");
+      const stationName = String(f.station_name ?? f.stationName ?? f.base_name ?? f.baseName ?? "");
+      const resolvedStationName = stationName || (stationId ? (() => {
+        const stationSys = deps.galaxy.getSystemForBase(stationId);
+        if (!stationSys) return stationId;
+        const sys = deps.galaxy.getSystem(stationSys);
+        const poi = sys?.pois.find(p => p.baseId === stationId);
+        return poi?.baseName ?? poi?.name ?? stationId;
+      })() : "");
+      return {
+        id: String(f.id ?? f.facility_id ?? ""),
+        name: String(f.name ?? "Unknown"),
+        type: String(f.type ?? f.facility_type ?? "facility"),
+        systemId: sysId,
+        systemName: resolvedStationName ? `${resolvedSysName} — ${resolvedStationName}` : resolvedSysName,
+        status: f.active === false ? "inactive" : String(f.status ?? "active"),
+        level: Number(f.level ?? 1),
+        output: String(f.output ?? f.faction_service ?? f.produces ?? ""),
+        upgradeAvailable: Boolean(f.upgrade_available ?? f.upgradeAvailable ?? f.upgrades_to ?? false),
+        upgradeCost: f.upgrade_cost != null ? Number(f.upgrade_cost) : (f.upgradeCost != null ? Number(f.upgradeCost) : null),
+      };
+    };
+
     let facilities: FactionFacility[];
-    if (factionRooms.length > 0) {
-      facilities = factionRooms.map(f => ({
-        id: String(f.id ?? f.room_id ?? ""),
-        name: String(f.name ?? f.room_name ?? "Unknown"),
-        type: String(f.type ?? f.room_type ?? "room"),
-        systemId: String(f.system_id ?? f.systemId ?? f.system ?? ""),
-        systemName: String(f.system_name ?? f.systemName ?? ""),
-        status: String(f.status ?? "active"),
-      }));
+    if (factionFacilities.length > 0) {
+      facilities = factionFacilities.map(parseFacility);
       cachedFacilities = facilities;
     } else {
       // Try faction_info fields, then cache
-      const infoFacilities = (info.facilities ?? info.rooms ?? info.stations ?? []) as Array<Record<string, unknown>>;
+      const infoFacilities = (info.facilities ?? info.stations ?? []) as Array<Record<string, unknown>>;
       if (infoFacilities.length > 0) {
-        facilities = infoFacilities.map(f => ({
-          id: String(f.id ?? f.facility_id ?? f.room_id ?? ""),
-          name: String(f.name ?? f.room_name ?? "Unknown"),
-          type: String(f.type ?? f.facility_type ?? f.room_type ?? "room"),
-          systemId: String(f.system_id ?? f.systemId ?? f.system ?? ""),
-          systemName: String(f.system_name ?? f.systemName ?? ""),
-          status: String(f.status ?? "active"),
-        }));
+        facilities = infoFacilities.map(parseFacility);
         cachedFacilities = facilities;
       } else {
         facilities = cachedFacilities ?? [];
@@ -498,6 +596,23 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
         status: String(m.status ?? "active"),
         createdAt: String(m.created_at ?? m.createdAt ?? new Date().toISOString()),
       })),
+      facilityTypes: (() => {
+        const types = rawFacilityTypes as Array<Record<string, unknown>>;
+        if (types.length > 0 && !cachedFacilityTypes) {
+          cachedFacilityTypes = types.map(t => ({
+            id: String(t.id ?? t.type_id ?? ""),
+            name: String(t.name ?? "Unknown"),
+            category: String(t.category ?? "faction"),
+            description: String(t.description ?? ""),
+            level: Number(t.level ?? 1),
+            cost: Number(t.build_cost ?? t.cost ?? 0),
+            prerequisite: String(t.prerequisite ?? t.requires ?? ""),
+            effect: String(t.effect ?? t.bonus ?? ""),
+          }));
+        }
+        return cachedFacilityTypes ?? [];
+      })(),
+      buildQueue: fleetConfig.facilityBuildQueue ?? [],
     };
 
     // Cache faction orders as OpenOrder[] for economy tab

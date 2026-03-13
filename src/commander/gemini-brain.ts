@@ -10,6 +10,7 @@ export interface GeminiBrainConfig {
   model?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  promptFile?: string;
 }
 
 export function createGeminiBrain(config: GeminiBrainConfig = {}): LlmBrain {
@@ -21,5 +22,6 @@ export function createGeminiBrain(config: GeminiBrainConfig = {}): LlmBrain {
     model,
     maxTokens: config.maxTokens ?? 1024,
     timeoutMs: config.timeoutMs ?? 30_000,
+    promptFile: config.promptFile,
   });
 }

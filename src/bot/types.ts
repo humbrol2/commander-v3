@@ -27,6 +27,9 @@ export interface FleetConfig {
   factionStorageStation: string;
   factionTaxPercent: number;
   minBotCredits: number;
+  maxBotCredits: number;
+  /** Facility types queued for building by the user (QM will build these) */
+  facilityBuildQueue: string[];
 }
 
 // ── Bot Settings ──
@@ -37,6 +40,8 @@ export interface BotSettings {
   maxCargoFillPct: number;
   storageMode: "sell" | "deposit" | "faction_deposit";
   factionStorage: boolean;
+  /** Specialist role — locks bot to role-specific routines */
+  role: string | null;
 }
 
 // ── Routine Types ──
@@ -67,6 +72,9 @@ export interface FleetBotInfo {
   moduleIds: string[];
   shipClass: string | null;
   cargoCapacity: number;
+  speed: number;
+  /** Specialist role — null means generalist (legacy behavior) */
+  role: string | null;
   ownedShips: Array<{ id: string; classId: string }>;
   skills: Record<string, number>;
   rapidRoutines: Map<RoutineName, number>;
@@ -127,4 +135,5 @@ export interface BotContext {
 
   refreshState: () => Promise<void>;
   recordFactionWithdrawal: (amount: number) => void;
+  setActiveMissions: (missions: Array<{ id: string; title: string; type: string; objectives: Array<{ description: string; progress: number; target: number; complete: boolean }> }>) => void;
 }

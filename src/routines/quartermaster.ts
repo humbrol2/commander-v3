@@ -26,6 +26,8 @@ import {
   cacheMarketData,
   interruptibleSleep,
   withdrawFromFaction,
+  ensureMinCredits,
+  depositExcessCredits,
   MAX_MATERIAL_BUY_PRICE,
 } from "./helpers";
 
@@ -34,7 +36,33 @@ const MODULE_TARGETS = [
   { pattern: "ice_harvester", target: 4, label: "Ice Harvester", fallbackIds: ["ice_harvester_1", "ice_harvester_2"], fallbackPrice: 15000 },
   { pattern: "gas_harvester", target: 4, label: "Gas Harvester", fallbackIds: ["gas_harvester_1", "gas_harvester_2"], fallbackPrice: 15000 },
   { pattern: "survey", target: 3, label: "Survey Scanner", fallbackIds: ["survey_scanner_1", "survey_scanner_2"], fallbackPrice: 20000 },
+  { pattern: "mining_laser", target: 10, label: "Mining Laser", fallbackIds: ["mining_laser_i", "mining_laser_ii"], fallbackPrice: 500 },
+  { pattern: "shield_booster", target: 10, label: "Shield Booster", fallbackIds: ["shield_booster_i", "shield_booster_ii"], fallbackPrice: 300 },
+  { pattern: "cargo_expander", target: 10, label: "Cargo Expander", fallbackIds: ["cargo_expander_i", "cargo_expander_ii"], fallbackPrice: 500 },
+  { pattern: "pulse_laser", target: 10, label: "Pulse Laser", fallbackIds: ["pulse_laser_i", "pulse_laser_ii"], fallbackPrice: 500 },
 ];
+
+// Minimum sell prices for modules — max(5x craft cost, market price)
+// Prevents dumping valuable crafted modules at low prices
+const MODULE_MIN_PRICES: Record<string, number> = {
+  mining_laser_ii: 2500,    // craft cost ~500, 5x = 2500
+  shield_booster_i: 1500,   // craft cost ~300, 5x = 1500
+  survey_scanner_i: 2000,   // craft cost ~400, 5x = 2000
+  cargo_expander_i: 2500,   // craft cost ~500, 5x = 2500
+  pulse_laser_i: 2500,      // craft cost ~500, 5x = 2500
+  mining_laser_i: 1000,     // craft cost ~200, 5x = 1000
+  ice_harvester_i: 5000,    // high value
+  gas_harvester_i: 5000,    // high value
+};
+
+// Strategic crafting materials — never sell from faction storage
+const PROTECTED_MATERIALS = new Set([
+  "energy_crystal", "phase_crystal", "quantum_fragments",
+  "focused_crystal", "circuit_board", "titanium_alloy",
+  "steel_plate", "copper_wiring", "sensor_array",
+  "thruster_nozzle", "power_battery", "ceramite_plating",
+  "silver_wiring", "premium_fuel_cell",
+]);
 
 // Items that look like ship modules (don't sell these from faction storage)
 const MODULE_PATTERNS = [
@@ -42,6 +70,95 @@ const MODULE_PATTERNS = [
   "shield", "armor", "engine", "thruster", "cloak",
   "tow", "salvage", "drill", "weapon", "mod_", "module",
 ];
+
+// ── Price index (built once per sell cycle, replaces O(n²) scans) ──
+
+interface PriceEntry {
+  cheapestBuy: number;   // Lowest buy price across all stations (what sellers charge)
+  bestSell: number;      // Highest sell/demand price (what buyers will pay)
+  hasBuyVolume: boolean; // Any station has buy orders with volume > 0
+  medianBuy: number;     // Volume-weighted median buy price (0 if no data)
+  medianSell: number;    // Volume-weighted median sell price (0 if no data)
+}
+
+/** Compute volume-weighted median from price/volume pairs */
+function computeMedian(entries: Array<{ price: number; volume: number }>): number {
+  if (entries.length === 0) return 0;
+  // Expand into individual units, sorted by price
+  const expanded: number[] = [];
+  for (const { price, volume } of entries) {
+    // Cap expansion to avoid memory issues with huge volumes
+    const units = Math.min(volume, 1000);
+    for (let i = 0; i < units; i++) expanded.push(price);
+  }
+  if (expanded.length === 0) return 0;
+  expanded.sort((a, b) => a - b);
+  const mid = Math.floor(expanded.length / 2);
+  return expanded.length % 2 === 1
+    ? expanded[mid]
+    : (expanded[mid - 1] + expanded[mid]) / 2;
+}
+
+/** Build a per-item price index from all cached station markets. */
+function buildPriceIndex(ctx: BotContext, excludeStation?: string): Map<string, PriceEntry> {
+  const index = new Map<string, PriceEntry>();
+  // Collect raw buy/sell observations for median calculation
+  const buyObs = new Map<string, Array<{ price: number; volume: number }>>();
+  const sellObs = new Map<string, Array<{ price: number; volume: number }>>();
+
+  const freshness = ctx.cache.getAllMarketFreshness();
+  for (const { stationId } of freshness) {
+    if (stationId === excludeStation) continue;
+    const prices = ctx.cache.getMarketPrices(stationId);
+    if (!prices) continue;
+    for (const p of prices) {
+      let entry = index.get(p.itemId);
+      if (!entry) {
+        entry = { cheapestBuy: Infinity, bestSell: 0, hasBuyVolume: false, medianBuy: 0, medianSell: 0 };
+        index.set(p.itemId, entry);
+      }
+      if (p.buyPrice && p.buyPrice > 0) {
+        if (p.buyPrice < entry.cheapestBuy) entry.cheapestBuy = p.buyPrice;
+        if (p.buyVolume > 0) {
+          entry.hasBuyVolume = true;
+          let obs = buyObs.get(p.itemId);
+          if (!obs) { obs = []; buyObs.set(p.itemId, obs); }
+          obs.push({ price: p.buyPrice, volume: p.buyVolume });
+        }
+      }
+      if (p.sellPrice && p.sellPrice > 0) {
+        if (p.sellPrice > entry.bestSell) entry.bestSell = p.sellPrice;
+        if (p.sellVolume > 0) {
+          let obs = sellObs.get(p.itemId);
+          if (!obs) { obs = []; sellObs.set(p.itemId, obs); }
+          obs.push({ price: p.sellPrice, volume: p.sellVolume });
+        }
+      }
+    }
+  }
+
+  // Compute medians
+  for (const [itemId, entry] of index) {
+    const buys = buyObs.get(itemId);
+    if (buys) entry.medianBuy = computeMedian(buys);
+    const sells = sellObs.get(itemId);
+    if (sells) entry.medianSell = computeMedian(sells);
+  }
+
+  return index;
+}
+
+/** Look up best known price for an item across ALL cached stations (including home). */
+function bestKnownPrice(ctx: BotContext, itemId: string): number {
+  const idx = buildPriceIndex(ctx);
+  const entry = idx.get(itemId);
+  let best = 0;
+  if (entry) {
+    if (entry.cheapestBuy < Infinity) best = entry.cheapestBuy;
+    if (entry.bestSell > best) best = entry.bestSell;
+  }
+  return best;
+}
 
 // ── Supply chain buy order tracking ──
 
@@ -180,6 +297,12 @@ export async function* quartermaster(ctx: BotContext): AsyncGenerator<RoutineYie
 
     await refuelIfNeeded(ctx);
 
+    // Credit management — top up if low, deposit excess to faction
+    const minCr = await ensureMinCredits(ctx);
+    if (minCr.message) yield minCr.message;
+    const maxCr = await depositExcessCredits(ctx);
+    if (maxCr.message) yield maxCr.message;
+
     // Moderate cycle — shorter sleep to capitalize on opportunities faster
     await interruptibleSleep(ctx, 30_000);
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "quartermaster" });
@@ -225,11 +348,26 @@ async function* manageFactionSales(
     return;
   }
 
+  // Get facility material needs — don't sell items needed for facility builds
+  const facilityNeeds = ctx.cache.getFacilityMaterialNeeds();
+
   // Filter for sellable goods (not raw ores unless 5000+; modules only if excess above fleet targets)
   const sellable: Array<{ itemId: string; quantity: number }> = [];
-  for (const s of storageItems) {
+  for (let s of storageItems) {
+    // Reserve items needed for facility builds
+    const facilityReserve = facilityNeeds.get(s.itemId) ?? 0;
+    if (facilityReserve > 0) {
+      const available = s.quantity - facilityReserve;
+      if (available <= 0) continue; // All reserved for facility build
+      // Only sell the excess above what's reserved
+      s = { ...s, quantity: available };
+    }
+
     const isOre = s.itemId.startsWith("ore_") || s.itemId.endsWith("_ore");
     if (isOre && s.quantity < 5000) continue; // Keep ores for crafters unless overstocked
+
+    // Protect strategic crafting materials from being sold
+    if (PROTECTED_MATERIALS.has(s.itemId)) continue;
 
     if (isModuleItem(s.itemId)) {
       // Check if this module is a target type — only sell excess above target
@@ -249,6 +387,21 @@ async function* manageFactionSales(
     sellable.push(s);
   }
 
+  // Sort sellable items: in-demand items first, then by quantity descending
+  const demandItemIds = new Set<string>();
+  const cachedInsights = ctx.cache.getAllCachedInsights();
+  for (const insight of cachedInsights) {
+    if ((insight.category === "demand" || insight.category === "arbitrage") && insight.priority >= 3) {
+      demandItemIds.add(insight.item_id);
+    }
+  }
+  sellable.sort((a, b) => {
+    const aDemand = demandItemIds.has(a.itemId) ? 1 : 0;
+    const bDemand = demandItemIds.has(b.itemId) ? 1 : 0;
+    if (aDemand !== bDemand) return bDemand - aDemand; // Demand items first
+    return b.quantity - a.quantity; // Then by quantity
+  });
+
   if (sellable.length === 0) {
     const oreCount = storageItems.filter((s) => s.itemId.startsWith("ore_") || s.itemId.endsWith("_ore")).length;
     const modCount = storageItems.filter((s) => isModuleItem(s.itemId)).length;
@@ -260,6 +413,9 @@ async function* manageFactionSales(
   const cachedStationIds = ctx.cache.getAllMarketFreshness()
     .map((f) => f.stationId)
     .filter((id) => id !== homeBase);
+
+  // Build price index once for this sell cycle (avoids O(n²) per-item scans)
+  const priceIndex = buildPriceIndex(ctx, homeBase);
 
   // Check what we already have listed at our station
   const ourSellOrders = localMarket.filter(
@@ -303,7 +459,7 @@ async function* manageFactionSales(
     const age = now - tracked.placedAt;
     if (age < 1_200_000) continue; // < 20 min — too early to adjust
 
-    const priceResult = calculateSellPrice(ctx, tracked.itemId, tracked.costBasis, cachedStationIds, homeBase, undercutPct);
+    const priceResult = calculateSellPrice(ctx, tracked.itemId, tracked.costBasis, cachedStationIds, homeBase, undercutPct, priceIndex);
     if (!priceResult) continue;
 
     const priceDiff = Math.abs(priceResult.listPrice - tracked.priceEach) / tracked.priceEach;
@@ -361,31 +517,22 @@ async function* manageFactionSales(
 
     if (costBasis <= 0) {
       // Fallback: use any known market price as cost basis
-      let fallbackCost = 0;
-      for (const stationId of [...cachedStationIds, homeBase]) {
-        const prices = ctx.cache.getMarketPrices(stationId);
-        const p = prices?.find((pd) => pd.itemId === item.itemId);
-        if (p?.sellPrice && p.sellPrice > fallbackCost) fallbackCost = p.sellPrice;
-        if (p?.buyPrice && p.buyPrice > fallbackCost) fallbackCost = p.buyPrice;
-      }
+      const fallbackCost = bestKnownPrice(ctx, item.itemId);
       if (fallbackCost <= 0) continue; // Truly unknown — can't price it
     }
 
-    const effectiveCostBasis = costBasis > 0 ? costBasis : (() => {
-      let fb = 0;
-      for (const stationId of [...cachedStationIds, homeBase]) {
-        const prices = ctx.cache.getMarketPrices(stationId);
-        const p = prices?.find((pd) => pd.itemId === item.itemId);
-        if (p?.sellPrice && p.sellPrice > fb) fb = p.sellPrice;
-        if (p?.buyPrice && p.buyPrice > fb) fb = p.buyPrice;
-      }
-      return fb;
-    })();
+    const effectiveCostBasis = costBasis > 0 ? costBasis : bestKnownPrice(ctx, item.itemId);
 
-    const priceResult = calculateSellPrice(ctx, item.itemId, effectiveCostBasis, cachedStationIds, homeBase, undercutPct);
+    const priceResult = calculateSellPrice(ctx, item.itemId, effectiveCostBasis, cachedStationIds, homeBase, undercutPct, priceIndex);
     if (!priceResult) continue;
 
-    const { listPrice, cheapestElsewhere } = priceResult;
+    let { listPrice, cheapestElsewhere } = priceResult;
+
+    // Enforce minimum price floor for modules (max of 5x craft cost or market price)
+    const moduleFloor = MODULE_MIN_PRICES[item.itemId];
+    if (moduleFloor && listPrice < moduleFloor) {
+      listPrice = moduleFloor;
+    }
 
     // Skip items where per-unit revenue is essentially zero
     if (listPrice < 2) continue;
@@ -441,10 +588,13 @@ async function* manageFactionSales(
 
       const sellQty = Math.min(inCargo, listQty);
 
-      // ALWAYS try direct sell first — instant revenue at whatever the station pays.
-      // Any sale > 0cr is better than a sell order sitting unfilled for hours.
-      const directResult = await ctx.api.sell(item.itemId, sellQty);
-      await ctx.refreshState();
+      // Try direct sell first — but skip for modules with a price floor
+      // (don't dump crafted modules at whatever the station offers)
+      const hasFloor = MODULE_MIN_PRICES[item.itemId] != null;
+      const directResult = hasFloor
+        ? { quantity: 0, total: 0, priceEach: 0 }
+        : await ctx.api.sell(item.itemId, sellQty);
+      if (!hasFloor) await ctx.refreshState();
 
       if (directResult.total > 0) {
         yield `sold ${directResult.quantity} ${itemName} @ ${directResult.priceEach}cr (${directResult.total}cr) — direct sell`;
@@ -467,12 +617,7 @@ async function* manageFactionSales(
       } else {
         // No NPC buyer at this station — create a sell order as fallback
         // Check if ANY station has buy orders for this item (someone wants it)
-        let hasBuyOrders = false;
-        for (const sid of cachedStationIds) {
-          const prices = ctx.cache.getMarketPrices(sid);
-          const p = prices?.find((pd) => pd.itemId === item.itemId);
-          if (p?.buyPrice && p.buyPrice > 0 && p.buyVolume > 0) { hasBuyOrders = true; break; }
-        }
+        const hasBuyOrders = priceIndex.get(item.itemId)?.hasBuyVolume ?? false;
 
         // List if: buy orders exist anywhere (demand confirmed), or per-unit price is reasonable
         const worthListing = hasBuyOrders || listPrice >= 10;
@@ -583,19 +728,24 @@ async function* buyEquipmentModules(
     const equippedOnBots = fleet.bots
       .filter((b) => b.moduleIds.some((m) => m.includes(t.pattern)))
       .length;
+    // Count our sell orders on the market (items listed but not yet sold)
+    const listedForSale = localMarket
+      .filter((o) => o.itemId.includes(t.pattern) && o.type === "sell")
+      .reduce((sum, o) => sum + o.quantity, 0);
     return {
       ...t,
       target: Math.min(t.target, targetCount), // Respect param override
-      count: inStorage + equippedOnBots,
+      count: inStorage + equippedOnBots + listedForSale,
       inStorage,
       equippedOnBots,
     };
   });
 
   // Report inventory
-  const inv = targets.map((t) =>
-    `${t.label}: ${t.count}/${t.target} (${t.inStorage} stored, ${t.equippedOnBots} equipped)`
-  ).join(", ");
+  const inv = targets.map((t) => {
+    const listed = t.count - t.inStorage - t.equippedOnBots;
+    return `${t.label}: ${t.count}/${t.target} (${t.inStorage} stored, ${t.equippedOnBots} equipped${listed > 0 ? `, ${listed} listed` : ""})`;
+  }).join(", ");
   yield `modules: ${inv}`;
 
   // Find what's still needed
@@ -708,6 +858,9 @@ async function* manageMaterialBuyOrders(
   let actionsThisCycle = 0;
   const MAX_ACTIONS = 4;
 
+  // Build price index once for all buy-price calculations this cycle
+  const buyPriceIndex = buildPriceIndex(ctx);
+
   // ── Reconcile: check current orders vs tracked ──
   let myBuyOrders: MarketOrder[] = [];
   try {
@@ -815,7 +968,7 @@ async function* manageMaterialBuyOrders(
     const recipe = ctx.crafting.getRecipe(order.forRecipeId);
     if (!recipe) continue;
 
-    const priceInfo = calculateBuyPrice(ctx, order.itemId, recipe);
+    const priceInfo = calculateBuyPrice(ctx, order.itemId, recipe, buyPriceIndex);
     if (!priceInfo) continue;
 
     const priceDiff = Math.abs(priceInfo.recommendedPrice - order.priceEach) / order.priceEach;
@@ -850,7 +1003,7 @@ async function* manageMaterialBuyOrders(
   }
 
   const orderedItems = new Set([...tracked.values()].map((o) => o.itemId));
-  const targets = identifyBuyOrderTargets(ctx, factionStock, remainingBudget);
+  const targets = identifyBuyOrderTargets(ctx, factionStock, remainingBudget, buyPriceIndex);
   let newOrdersPlaced = 0;
 
   for (const target of targets) {
@@ -907,27 +1060,59 @@ async function* manageMaterialBuyOrders(
 }
 
 /**
- * Identify gap materials the fleet can't self-produce.
- * Walks all profitable recipes, finds inputs that aren't ores and aren't craftable.
- * Returns top 5 targets sorted by expected margin descending.
+ * Identify materials to buy — both gap materials AND ores when stock is low.
+ * Prioritizes in-demand items using market insights.
+ *
+ * Strategy:
+ * - Gap materials: recipe inputs that aren't ores and aren't craftable (same as before)
+ * - Ores: buy at ~50% market rate when faction stock is low (<50 units)
+ *   and the ore is needed for profitable recipes
+ * - Demand boost: items with high-priority market insights get priority bump
+ *
+ * Returns top 8 targets sorted by expected margin × demand priority.
  */
 function identifyBuyOrderTargets(
   ctx: BotContext,
   factionStock: Map<string, number>,
   budget: number,
+  priceIdx?: Map<string, PriceEntry>,
 ): BuyOrderTarget[] {
   const recipes = ctx.crafting.getAllRecipes();
+  const idx = priceIdx ?? buildPriceIndex(ctx);
   const targets = new Map<string, BuyOrderTarget>();
+
+  // Collect market demand insights for priority boosting
+  const demandItems = new Set<string>();
+  const allInsights = ctx.cache.getAllCachedInsights();
+  for (const insight of allInsights) {
+    if ((insight.category === "demand" || insight.category === "arbitrage") && insight.priority >= 3) {
+      demandItems.add(insight.item_id);
+    }
+  }
+
+  // Track which ores are needed by profitable recipes (and how much margin they generate)
+  const oreRecipeMargins = new Map<string, number>(); // oreId → best recipe margin
 
   for (const recipe of recipes) {
     const { profit } = ctx.crafting.estimateMarketProfit(recipe.id);
     if (profit <= 0) continue;
 
+    // Check if this recipe's output is in demand — boost its inputs
+    const outputInDemand = demandItems.has(recipe.outputItem);
+
     const rawMaterials = ctx.crafting.getRawMaterials(recipe.id);
 
     for (const [itemId, _qty] of rawMaterials) {
-      // Skip ores (miners produce these)
-      if (itemId.startsWith("ore_") || itemId.endsWith("_ore")) continue;
+      const isOre = itemId.startsWith("ore_") || itemId.endsWith("_ore");
+
+      if (isOre) {
+        // Track ore → recipe margin for ore buy order decisions
+        const existing = oreRecipeMargins.get(itemId) ?? 0;
+        const boostedProfit = outputInDemand ? profit * 1.5 : profit;
+        if (boostedProfit > existing) oreRecipeMargins.set(itemId, boostedProfit);
+        continue;
+      }
+
       // Skip craftable items (crafters handle these)
       if (ctx.crafting.isCraftable(itemId)) continue;
 
@@ -938,17 +1123,19 @@ function identifyBuyOrderTargets(
       const quantityNeeded = Math.max(1, 20 - stock);
 
       // Calculate price from recipe profitability
-      const priceInfo = calculateBuyPrice(ctx, itemId, recipe);
+      const priceInfo = calculateBuyPrice(ctx, itemId, recipe, idx);
       if (!priceInfo) continue;
+
+      // Demand boost: items whose recipe output is in demand get higher margin score
+      const demandMultiplier = (outputInDemand || demandItems.has(itemId)) ? 1.5 : 1.0;
 
       const existing = targets.get(itemId);
       if (existing) {
         existing.recipeIds.push(recipe.id);
-        // Use lowest maxBuyPrice across recipes (most conservative)
         if (priceInfo.maxBuyPrice < existing.maxBuyPrice) {
           existing.maxBuyPrice = priceInfo.maxBuyPrice;
           existing.recommendedPrice = priceInfo.recommendedPrice;
-          existing.expectedMargin = priceInfo.expectedMargin;
+          existing.expectedMargin = priceInfo.expectedMargin * demandMultiplier;
         }
       } else {
         targets.set(itemId, {
@@ -958,15 +1145,56 @@ function identifyBuyOrderTargets(
           maxBuyPrice: priceInfo.maxBuyPrice,
           recommendedPrice: priceInfo.recommendedPrice,
           recipeIds: [recipe.id],
-          expectedMargin: priceInfo.expectedMargin,
+          expectedMargin: priceInfo.expectedMargin * demandMultiplier,
         });
       }
     }
   }
 
+  // ── Ore buy orders: buy ores at ~50% market rate when stock is low ──
+  const ORE_LOW_STOCK = 50;   // Below this, place buy orders
+  const ORE_TARGET_STOCK = 100; // Buy up to this amount
+  const ORE_PRICE_FRACTION = 0.50; // Buy at 50% of market rate
+
+  for (const [oreId, recipeMargin] of oreRecipeMargins) {
+    const stock = factionStock.get(oreId) ?? 0;
+    if (stock >= ORE_LOW_STOCK) continue; // Miners are keeping up
+
+    const quantityNeeded = Math.min(ORE_TARGET_STOCK - stock, 50); // Cap per order
+    if (quantityNeeded <= 0) continue;
+
+    // Find market price for this ore
+    const entry = idx.get(oreId);
+    const marketPrice = entry?.medianBuy ?? entry?.cheapestBuy ?? 0;
+    if (!marketPrice || marketPrice === Infinity) continue;
+
+    // Buy at 50% of going market rate — cheap enough to still profit after crafting
+    const buyPrice = Math.max(1, Math.floor(marketPrice * ORE_PRICE_FRACTION));
+
+    // Sanity: don't buy ore for more than the recipe can justify
+    // Use 30% of recipe margin as max ore spend
+    const maxOreSpend = Math.floor(recipeMargin * 0.30);
+    if (buyPrice > maxOreSpend && maxOreSpend > 0) continue;
+
+    // Hard cap on ore buy price
+    if (buyPrice > MAX_MATERIAL_BUY_PRICE) continue;
+
+    const demandMultiplier = demandItems.has(oreId) ? 1.5 : 1.0;
+
+    targets.set(oreId, {
+      itemId: oreId,
+      itemName: ctx.crafting.getItemName(oreId) || oreId.replace(/_/g, " "),
+      quantityNeeded,
+      maxBuyPrice: buyPrice,
+      recommendedPrice: buyPrice,
+      recipeIds: [],
+      expectedMargin: recipeMargin * demandMultiplier,
+    });
+  }
+
   return [...targets.values()]
     .sort((a, b) => b.expectedMargin - a.expectedMargin)
-    .slice(0, 5);
+    .slice(0, 8);
 }
 
 /**
@@ -983,6 +1211,7 @@ function calculateBuyPrice(
   ctx: BotContext,
   gapItemId: string,
   recipe: Recipe,
+  priceIdx?: Map<string, PriceEntry>,
 ): { maxBuyPrice: number; recommendedPrice: number; expectedMargin: number } | null {
   const rawMaterials = ctx.crafting.getRawMaterials(recipe.id);
   const gapQty = rawMaterials.get(gapItemId);
@@ -1002,17 +1231,10 @@ function calculateBuyPrice(
   const maxBuyPrice = Math.floor((endProductPrice - otherCosts) / gapQty * 0.70);
   if (maxBuyPrice <= 0) return null;
 
-  // Find cheapest sell price across all cached stations
-  let cheapestSellPrice = Infinity;
-  const freshness = ctx.cache.getAllMarketFreshness();
-  for (const { stationId } of freshness) {
-    const prices = ctx.cache.getMarketPrices(stationId);
-    if (!prices) continue;
-    const p = prices.find((pd) => pd.itemId === gapItemId);
-    if (p?.buyPrice && p.buyPrice > 0 && p.buyPrice < cheapestSellPrice) {
-      cheapestSellPrice = p.buyPrice;
-    }
-  }
+  // Find cheapest sell price across all cached stations (O(1) via index)
+  const idx = priceIdx ?? buildPriceIndex(ctx);
+  const gapEntry = idx.get(gapItemId);
+  const cheapestSellPrice = gapEntry?.cheapestBuy ?? Infinity;
 
   const catalogPrice = ctx.crafting.getItemBasePrice(gapItemId);
   if (catalogPrice <= 0) return null;
@@ -1043,26 +1265,174 @@ function calculateBuyPrice(
 
 /**
  * Check faction facilities at the home station and upgrade if possible.
- * Runs once per cycle — checks for available upgrades on existing facilities,
- * and builds essential missing facilities if the faction can afford it.
+ * Runs once per cycle — builds essential missing facilities, then checks
+ * existing facilities for available upgrades. Max one build/upgrade per cycle.
  */
 async function* manageFactionFacilities(
   ctx: BotContext,
 ): AsyncGenerator<RoutineYield, void, void> {
-  // List faction facilities at current station
+  if (!ctx.player.dockedAtBase) return;
+
+  // User-queued facilities + essential prereqs (faction_quarters is always needed first)
+  const userQueue = ctx.fleetConfig.facilityBuildQueue ?? [];
+  const ESSENTIAL_FACILITIES = [
+    "faction_quarters",     // Common Space — prerequisite for most others
+    ...userQueue.filter(f => f !== "faction_quarters"),
+  ];
+
+  // Check faction treasury
+  let factionCredits = 0;
+  try {
+    factionCredits = await ctx.api.viewFactionStorageCredits();
+  } catch { /* ok */ }
+
+  // List existing faction facilities at this station
   let facilities: Array<Record<string, unknown>> = [];
   try {
     facilities = await ctx.api.factionListFacilities();
-  } catch {
-    return; // No faction facilities access
+  } catch { /* no access */ }
+
+  const existingTypes = new Set(
+    facilities.map(f => String(f.type ?? f.facility_type ?? ""))
+  );
+
+  // ── Gather faction storage for material deficit calculation ──
+  let storageItems: Array<{ itemId: string; quantity: number }> = [];
+  try {
+    storageItems = (await ctx.api.viewFactionStorage()) ?? [];
+  } catch { /* ok */ }
+  const storageMap = new Map(storageItems.map(s => [s.itemId, s.quantity]));
+
+  // Accumulate material needs across all queued facilities
+  const allMaterialNeeds = new Map<string, number>();
+
+  // ── Build missing essential facilities ──
+  for (const facilityType of ESSENTIAL_FACILITIES) {
+    if (ctx.shouldStop) return;
+    if (existingTypes.has(facilityType)) continue;
+
+    // Check if we can afford it (query facility types for cost + materials)
+    let buildCost = 0;
+    let materials: Array<{ itemId: string; quantity: number }> = [];
+    try {
+      const types = await ctx.api.facilityTypes({ name: facilityType.replace(/^faction_/, "") });
+      const typeInfo = types.find(t =>
+        String(t.id ?? t.type_id ?? t.facility_type ?? "") === facilityType
+        || String(t.id ?? "").includes(facilityType.replace("faction_", ""))
+      );
+      if (typeInfo) {
+        buildCost = Number(typeInfo.cost ?? typeInfo.credits ?? typeInfo.build_cost ?? 0);
+        // Extract material requirements (API may use various field names)
+        const rawMats = typeInfo.materials ?? typeInfo.requirements ?? typeInfo.build_materials ?? typeInfo.material_cost ?? [];
+        if (Array.isArray(rawMats)) {
+          for (const m of rawMats) {
+            const mObj = m as Record<string, unknown>;
+            const itemId = String(mObj.item_id ?? mObj.itemId ?? mObj.id ?? "");
+            const qty = Number(mObj.quantity ?? mObj.amount ?? mObj.count ?? 0);
+            if (itemId && qty > 0) materials.push({ itemId, quantity: qty });
+          }
+        } else if (rawMats && typeof rawMats === "object") {
+          // Object form: { steel_plate: 100, ... }
+          for (const [itemId, qty] of Object.entries(rawMats as Record<string, unknown>)) {
+            const n = Number(qty);
+            if (n > 0) materials.push({ itemId, quantity: n });
+          }
+        }
+      }
+    } catch { /* cost unknown — try anyway */ }
+
+    // Track material needs (deficit = required - current storage)
+    for (const mat of materials) {
+      const inStorage = storageMap.get(mat.itemId) ?? 0;
+      const deficit = Math.max(0, mat.quantity - inStorage);
+      if (deficit > 0) {
+        allMaterialNeeds.set(mat.itemId, (allMaterialNeeds.get(mat.itemId) ?? 0) + deficit);
+      }
+    }
+
+    // Require 2x cost as reserve (or just try if cost is unknown)
+    if (buildCost > 0 && factionCredits < buildCost * 2) {
+      yield `${facilityType.replace(/_/g, " ")} needs ${buildCost}cr — faction has ${factionCredits}cr`;
+      continue;
+    }
+
+    // Check if we have enough materials (skip build attempt if short)
+    const missingMats = materials.filter(m => (storageMap.get(m.itemId) ?? 0) < m.quantity);
+    if (missingMats.length > 0) {
+      const matList = missingMats.map(m => {
+        const have = storageMap.get(m.itemId) ?? 0;
+        return `${ctx.crafting.getItemName(m.itemId)}: ${have}/${m.quantity}`;
+      }).join(", ");
+      yield `${facilityType.replace(/_/g, " ")} needs materials: ${matList}`;
+      continue;
+    }
+
+    yield `building ${facilityType.replace(/_/g, " ")}${buildCost > 0 ? ` (${buildCost}cr)` : ""}`;
+    try {
+      await ctx.api.factionFacilityBuild(facilityType);
+      await ctx.refreshState();
+      // Remove from build queue on success
+      const qi = ctx.fleetConfig.facilityBuildQueue.indexOf(facilityType);
+      if (qi >= 0) ctx.fleetConfig.facilityBuildQueue.splice(qi, 1);
+      yield `built ${facilityType.replace(/_/g, " ")} successfully`;
+      // Clear material needs for this facility (they were consumed)
+      for (const mat of materials) allMaterialNeeds.delete(mat.itemId);
+      ctx.cache.setFacilityMaterialNeeds(allMaterialNeeds);
+      return; // Max one build per cycle (rate limited)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Skip if already exists (another bot built it) or if we lack permissions
+      if (msg.includes("already") || msg.includes("exists")) {
+        existingTypes.add(facilityType);
+        const qi2 = ctx.fleetConfig.facilityBuildQueue.indexOf(facilityType);
+        if (qi2 >= 0) ctx.fleetConfig.facilityBuildQueue.splice(qi2, 1);
+        continue;
+      }
+      // Skip if prerequisite not met (e.g., need faction_quarters first)
+      if (msg.includes("prerequisite") || msg.includes("requires")) {
+        yield `${facilityType.replace(/_/g, " ")}: ${msg}`;
+        continue;
+      }
+      // Parse material requirements from error message (e.g., "needs 100 steel_plate")
+      const matMatch = msg.match(/needs?\s+(\d+)\s+(\w+)/gi);
+      if (matMatch) {
+        for (const m of matMatch) {
+          const parts = m.match(/(\d+)\s+(\w+)/);
+          if (parts) {
+            const qty = Number(parts[1]);
+            const itemId = parts[2];
+            if (qty > 0 && itemId !== "cr" && itemId !== "credits") {
+              const inStorage = storageMap.get(itemId) ?? 0;
+              const deficit = Math.max(0, qty - inStorage);
+              if (deficit > 0) {
+                allMaterialNeeds.set(itemId, (allMaterialNeeds.get(itemId) ?? 0) + deficit);
+              }
+            }
+          }
+        }
+      }
+      yield `build failed: ${msg}`;
+      return; // Don't spam builds on unexpected errors
+    }
   }
 
+  // Store accumulated material needs for crafters and sales filtering
+  ctx.cache.setFacilityMaterialNeeds(allMaterialNeeds);
+  if (allMaterialNeeds.size > 0) {
+    const needsList = [...allMaterialNeeds.entries()]
+      .map(([id, qty]) => `${qty}x ${ctx.crafting.getItemName(id)}`)
+      .join(", ");
+    yield `facility material needs: ${needsList}`;
+  }
+
+  // ── Upgrade existing facilities ──
   if (facilities.length === 0) {
-    yield "no faction facilities at this station";
-    return;
+    // Re-fetch after possible builds
+    try {
+      facilities = await ctx.api.factionListFacilities();
+    } catch { return; }
   }
 
-  // Check each facility for available upgrades
   for (const fac of facilities) {
     if (ctx.shouldStop) return;
 
@@ -1072,30 +1442,26 @@ async function* manageFactionFacilities(
 
     if (!facId) continue;
 
-    // Check available upgrades
     let upgradeInfo: Record<string, unknown>;
     try {
       upgradeInfo = await ctx.api.facilityUpgrades(facId);
     } catch {
-      continue; // No upgrades available or no permission
+      continue;
     }
 
     const upgrades = (upgradeInfo.upgrades ?? upgradeInfo.available ?? []) as Array<Record<string, unknown>>;
     if (upgrades.length === 0) continue;
 
-    // Find the next tier upgrade
     const nextUpgrade = upgrades[0];
     const upgradeCost = Number(nextUpgrade.cost ?? nextUpgrade.credits ?? nextUpgrade.price ?? 0);
     const upgradeType = String(nextUpgrade.type ?? nextUpgrade.facility_type ?? "");
     const upgradeLevel = Number(nextUpgrade.level ?? nextUpgrade.tier ?? facLevel + 1);
 
-    // Check if faction treasury can afford it
-    let factionCredits = 0;
-    try {
-      factionCredits = await ctx.api.viewFactionStorageCredits();
-    } catch { /* ok */ }
+    // Refresh credits if we haven't checked yet
+    if (factionCredits === 0) {
+      try { factionCredits = await ctx.api.viewFactionStorageCredits(); } catch { /* ok */ }
+    }
 
-    // Only upgrade if faction has 2x the cost (keep reserves)
     if (upgradeCost > 0 && factionCredits >= upgradeCost * 2) {
       yield `upgrading ${facName} (Lv${facLevel} → Lv${upgradeLevel}) for ${upgradeCost}cr`;
       try {
@@ -1105,7 +1471,7 @@ async function* manageFactionFacilities(
       } catch (err) {
         yield `facility upgrade failed: ${err instanceof Error ? err.message : String(err)}`;
       }
-      return; // Max one upgrade per cycle (expensive + rate limited)
+      return; // Max one upgrade per cycle
     } else if (upgradeCost > 0) {
       yield `${facName} upgrade available (Lv${upgradeLevel}, ${upgradeCost}cr) — faction funds: ${factionCredits}cr`;
     }
@@ -1124,31 +1490,16 @@ export function calculateSellPrice(
   ctx: BotContext,
   itemId: string,
   costBasis: number,
-  cachedStationIds: string[],
+  _cachedStationIds: string[],
   homeBase: string,
   undercutPct: number,
+  priceIdx?: Map<string, PriceEntry>,
 ): { listPrice: number; cheapestElsewhere: number } | null {
-  // Find cheapest buy price at OTHER stations
-  let cheapestElsewhere = Infinity;
-  for (const stationId of cachedStationIds) {
-    const prices = ctx.cache.getMarketPrices(stationId);
-    if (!prices) continue;
-    const p = prices.find((pd) => pd.itemId === itemId);
-    if (p?.buyPrice && p.buyPrice > 0 && p.buyPrice < cheapestElsewhere) {
-      cheapestElsewhere = p.buyPrice;
-    }
-  }
-
-  // Also check demand prices (what buyers will pay when selling to buy orders)
-  let bestDemandPrice = 0;
-  for (const stationId of cachedStationIds) {
-    const prices = ctx.cache.getMarketPrices(stationId);
-    if (!prices) continue;
-    const p = prices.find((pd) => pd.itemId === itemId);
-    if (p?.sellPrice && p.sellPrice > bestDemandPrice) {
-      bestDemandPrice = p.sellPrice;
-    }
-  }
+  // Use pre-built index if available, otherwise build on the fly
+  const idx = priceIdx ?? buildPriceIndex(ctx, homeBase);
+  const entry = idx.get(itemId);
+  const cheapestElsewhere = entry?.cheapestBuy ?? Infinity;
+  const bestDemandPrice = entry?.bestSell ?? 0;
 
   // Skip items where market value is far below crafting cost AND no demand exists
   // If demand exists (bestDemandPrice > 0), let market price drive the listing

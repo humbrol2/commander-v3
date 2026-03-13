@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { commanderLog, activityLog, bots, send, goals } from "$stores/websocket";
+	import { commanderLog, activityLog, bots, send, goals, workOrders } from "$stores/websocket";
 	import type { CommanderDecision, LogEntry } from "../../../../src/types/protocol";
 	import BrainPanel from "$lib/components/BrainPanel.svelte";
 	import BrainHealth from "$lib/components/BrainHealth.svelte";
@@ -197,6 +197,39 @@
 			</button>
 		{/each}
 	</div>
+
+	<!-- Work Orders -->
+	{#if $workOrders.length > 0}
+	<div class="card p-4">
+		<div class="flex items-center justify-between mb-3">
+			<h3 class="text-sm font-semibold text-star-white uppercase tracking-wider">Work Orders</h3>
+			<span class="text-xs text-hull-grey">{$workOrders.length} queued</span>
+		</div>
+		<div class="space-y-2">
+			{#each $workOrders.sort((a, b) => b.priority - a.priority) as order}
+				{@const typeColors = { mine: "text-shell-orange", craft: "text-purple-400", trade: "text-bio-green", explore: "text-laser-blue" }}
+				{@const typeBg = { mine: "bg-shell-orange/15 border-shell-orange/30", craft: "bg-purple-400/15 border-purple-400/30", trade: "bg-bio-green/15 border-bio-green/30", explore: "bg-laser-blue/15 border-laser-blue/30" }}
+				<div class="flex items-center gap-3 rounded-lg border px-3 py-2 {typeBg[order.type] ?? 'bg-hull-grey/10 border-hull-grey/20'}">
+					<span class="px-1.5 py-0.5 text-xs font-bold rounded uppercase {typeColors[order.type] ?? 'text-chrome-silver'}">
+						{order.type}
+					</span>
+					<div class="flex-1 min-w-0">
+						<p class="text-sm text-chrome-silver truncate">{order.description}</p>
+						<p class="text-xs text-hull-grey truncate">{order.reason}</p>
+					</div>
+					<div class="text-right shrink-0">
+						<div class="text-xs font-mono text-star-white">p{order.priority}</div>
+						{#if order.assignedBot}
+							<a href="/bots/{order.assignedBot}" class="text-xs {botColor(order.assignedBot)} hover:underline">{order.assignedBot}</a>
+						{:else}
+							<span class="text-xs text-hull-grey/60 italic">unassigned</span>
+						{/if}
+					</div>
+				</div>
+			{/each}
+		</div>
+	</div>
+	{/if}
 
 	<!-- Conversational log -->
 	<div

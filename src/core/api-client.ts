@@ -27,6 +27,8 @@ import type {
   Mission,
   SessionInfo,
   LoginResult,
+  InsuranceQuote,
+  InsuranceClaim,
   RegisterResult,
   CargoItem,
   EstimatePurchaseResult,
@@ -285,10 +287,13 @@ export class ApiClient {
     return { version: data.version, releaseDate: data.release_date };
   }
 
-  async viewMarket(itemId?: string): Promise<MarketOrder[]> {
+  async viewMarket(itemId?: string, category?: string): Promise<MarketOrder[]> {
+    const params: Record<string, string> = {};
+    if (itemId) params.item_id = itemId;
+    if (category) params.category = category;
     const data = await this.query<Record<string, unknown>>(
       "view_market",
-      itemId ? { item_id: itemId } : {}
+      params
     );
     // API returns "items" array with aggregated buy_price/sell_price per item
     // plus buy_orders/sell_orders sub-arrays. We expand into individual MarketOrder[]
@@ -771,12 +776,8 @@ export class ApiClient {
   }
 
   async viewFactionStorageCredits(): Promise<number> {
-    const info = await this.factionInfo();
-    return num(
-      (info as any).credits ??
-      (info as any).treasury ??
-      (info as any).faction_credits ?? 0
-    );
+    const data = await this.viewFactionStorageFull();
+    return data.credits;
   }
 
   async factionSubmitIntel(systems: unknown[]): Promise<Record<string, unknown>> {
@@ -788,8 +789,15 @@ export class ApiClient {
   }
 
   async factionListFacilities(): Promise<Array<Record<string, unknown>>> {
-    const data = await this.query<Record<string, unknown>>("facility", { action: "faction_list" });
-    return (data.facilities ?? data.items ?? (Array.isArray(data) ? data : [])) as Array<Record<string, unknown>>;
+    // facility is a game action (rate-limited), use mutation for proper throttling
+    const data = await this.mutation<unknown>("facility", { action: "faction_list" });
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === "object") {
+      const obj = data as Record<string, unknown>;
+      // API returns { faction_facilities: [...], faction_storage: {...}, ... }
+      return (obj.faction_facilities ?? obj.facilities ?? obj.items ?? obj.result ?? []) as Array<Record<string, unknown>>;
+    }
+    return [];
   }
 
   async factionInvite(playerIdOrUsername: string): Promise<Record<string, unknown>> {
@@ -899,12 +907,12 @@ export class ApiClient {
 
   // ── Insurance ──
 
-  async getInsuranceQuote(): Promise<Record<string, unknown>> {
-    return this.query("get_insurance_quote");
+  async getInsuranceQuote(): Promise<InsuranceQuote> {
+    return this.query("get_insurance_quote") as Promise<InsuranceQuote>;
   }
 
-  async claimInsurance(): Promise<Record<string, unknown>> {
-    return this.query("claim_insurance");
+  async claimInsurance(): Promise<InsuranceClaim> {
+    return this.query("claim_insurance") as Promise<InsuranceClaim>;
   }
 
   async selfDestruct(): Promise<Record<string, unknown>> {
@@ -1069,16 +1077,56 @@ export class ApiClient {
     return this.mutation("facility", { action, ...opts });
   }
 
-  /** List all facility types available to build */
-  async facilityTypes(opts?: { category?: string; level?: number; name?: string; page?: number }): Promise<Array<Record<string, unknown>>> {
-    const data = await this.query<any>("facility", { action: "types", ...opts });
-    return data.types ?? data.facilities ?? data.items ?? (Array.isArray(data) ? data : []);
+  /** List facility types. Pass category to get actual type list (paginated). Without category, returns category summary. */
+  async facilityTypes(opts?: { category?: string; level?: number; name?: string; page?: number; facility_type?: string }): Promise<Array<Record<string, unknown>>> {
+    const data = await this.mutation<unknown>("facility", { action: "types", ...opts });
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === "object") {
+      const obj = data as Record<string, unknown>;
+      // Paginated response: { types: [...], page, total_pages, ... }
+      const arr = obj.types ?? obj.facilities ?? obj.items;
+      if (Array.isArray(arr)) return arr;
+      // Single detail response: { type_id, name, build_cost, ... } — wrap in array
+      if (obj.type_id || obj.name) return [obj];
+      // Category summary: { categories: { faction: {count}, ... } } — return empty (caller should pass category)
+    }
+    return [];
+  }
+
+  /** Fetch ALL facility types across all categories with pagination */
+  async facilityTypesAll(): Promise<Array<Record<string, unknown>>> {
+    const categories = ["faction", "personal", "infrastructure", "production", "service"];
+    const allTypes: Array<Record<string, unknown>> = [];
+    const seenIds = new Set<string>();
+
+    for (const category of categories) {
+      let page = 1;
+      while (true) {
+        const batch = await this.facilityTypes({ category, page });
+        if (batch.length === 0) break;
+        for (const t of batch) {
+          const id = String(t.id ?? t.type_id ?? "");
+          if (id && !seenIds.has(id)) {
+            seenIds.add(id);
+            allTypes.push(t);
+          }
+        }
+        if (batch.length < 20) break; // Less than page size = last page
+        page++;
+      }
+    }
+    return allTypes;
   }
 
   /** List facilities at the currently docked station */
   async facilityList(): Promise<Array<Record<string, unknown>>> {
-    const data = await this.query<any>("facility", { action: "list" });
-    return data.facilities ?? data.items ?? (Array.isArray(data) ? data : []);
+    const data = await this.mutation<unknown>("facility", { action: "list" });
+    if (Array.isArray(data)) return data;
+    if (data && typeof data === "object") {
+      const obj = data as Record<string, unknown>;
+      return (obj.facilities ?? obj.items ?? obj.result ?? []) as Array<Record<string, unknown>>;
+    }
+    return [];
   }
 
   /** Get available upgrades for a facility */

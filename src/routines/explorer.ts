@@ -39,6 +39,18 @@ const UNSCANNED_PRIORITY = 50;
 const STALE_PRIORITY = 30;
 const UNEXPLORED_PRIORITY = 20;
 
+/** Valuable ore types that get extra priority when found in POIs */
+const RARE_ORES = new Set([
+  "ore_exotic", "ore_platinum", "ore_palladium", "ore_iridium", "ore_gold",
+  "ore_titanium", "ore_crystal", "nebula_gas", "plasma_gas", "krypton_gas",
+]);
+/** Bonus for systems with resource POIs (belt/ice/gas) */
+const RESOURCE_POI_BONUS = 10;
+/** Extra bonus for rare ore presence */
+const RARE_ORE_BONUS = 15;
+/** Penalty per jump distance from home (makes closer systems score higher) */
+const DISTANCE_FROM_HOME_PENALTY = 3;
+
 interface ExplorationTarget {
   systemId: string;
   score: number;
@@ -53,6 +65,7 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
   const initialTargets = getParam<string[]>(ctx, "targetSystems", []);
   const equipModules = getParam<string[]>(ctx, "equipModules", []);
   const maxRouteJumps = getParam(ctx, "maxRouteJumps", 12);
+  const homeSystem = getParam<string>(ctx, "homeSystem", "");
 
   // ── Equip modules (survey scanner) if commanded by scoring brain ──
   yield* equipModulesForRoutine(ctx, equipModules);
@@ -73,7 +86,7 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
 
     if (targetSystems.length === 0) {
       yield "planning exploration route...";
-      targetSystems = yield* planRoute(ctx, explorerIndex, maxRouteJumps);
+      targetSystems = yield* planRoute(ctx, explorerIndex, maxRouteJumps, homeSystem);
 
       if (targetSystems.length === 0) {
         yield "all systems freshly scanned — waiting for data to go stale";
@@ -92,6 +105,11 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
         yield `emergency: ${issue}`;
         const handled = await handleEmergency(ctx);
         if (!handled) return;
+      }
+
+      // Refuel before jumping if fuel is getting low
+      if (ctx.player.dockedAtBase) {
+        await refuelIfNeeded(ctx);
       }
 
       // Navigate to system
@@ -125,7 +143,7 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
 
   // Disable cloaking
   if (useCloaking) {
-    try { await ctx.api.cloak(false); } catch { /* ok */ }
+    try { await ctx.api.cloak(false); } catch (err) { console.warn(`[${ctx.botId}] uncloak failed: ${err instanceof Error ? err.message : err}`); }
   }
 
   yield "exploration complete";
@@ -138,8 +156,10 @@ async function* planRoute(
   ctx: BotContext,
   explorerIndex: number,
   maxRouteJumps: number,
+  homeSystem: string,
 ): AsyncGenerator<RoutineYield, string[], void> {
   const currentSystem = ctx.player.currentSystem;
+  const effectiveHome = homeSystem || currentSystem;
 
   // ── Score ALL known systems, not just neighbors ──
   const allSystems = ctx.galaxy.getAllSystems();
@@ -170,11 +190,45 @@ async function* planRoute(
       reason = reason || "unexplored";
     }
 
+    // Resource POI bonus: systems with belts/ice/gas are more valuable
+    // (miners/harvesters need this data to decide where to work)
+    let hasResourcePois = false;
+    for (const poi of sys.pois) {
+      const t = poi.type;
+      if (t === "asteroid_belt" || t === "asteroid" || t === "ice_field" || t === "gas_cloud" || t === "nebula") {
+        hasResourcePois = true;
+        score += RESOURCE_POI_BONUS;
+        // Check for rare/valuable ores in known resources
+        if (poi.resources) {
+          for (const res of poi.resources) {
+            if (RARE_ORES.has(res.resourceId) && res.remaining > 0) {
+              score += RARE_ORE_BONUS;
+              reason = reason || `rare: ${res.resourceId}`;
+              break;
+            }
+          }
+        }
+      }
+    }
+
     if (score === 0) continue; // Fresh data, skip
 
     // Calculate distance from current position
     const distance = sys.id === currentSystem ? 0 : ctx.galaxy.getDistance(currentSystem, sys.id);
     if (distance < 0) continue; // Unreachable
+
+    // Distance-to-home penalty: prefer systems closer to home base
+    // This ensures miners won't need to travel far to reach discovered belts
+    const distFromHome = sys.id === effectiveHome ? 0 : ctx.galaxy.getDistance(effectiveHome, sys.id);
+    if (distFromHome > 0) {
+      score -= distFromHome * DISTANCE_FROM_HOME_PENALTY;
+    }
+
+    // Bonus for nearby resource systems: if system has resource POIs AND is close to home
+    // this is the most valuable data for the fleet (less fuel for miners)
+    if (hasResourcePois && distFromHome >= 0 && distFromHome <= 3) {
+      score += 15; // Strong bonus for close resource systems
+    }
 
     targets.push({ systemId: sys.id, score, reason, distanceFromBot: distance });
   }
@@ -194,7 +248,7 @@ async function* planRoute(
         });
       }
     }
-  } catch { /* ok */ }
+  } catch (err) { console.warn(`[${ctx.botId}] neighbor discovery failed: ${err instanceof Error ? err.message : err}`); }
 
   if (targets.length === 0) return [];
 
@@ -305,18 +359,29 @@ async function* exploreSystem(
     return;
   }
 
-  // Visit POIs — prioritize stations with stale/no market data
-  const pois = [...systemInfo.pois].sort((a, b) => {
-    // Bases with stale/no market data come first
-    if (a.hasBase && !b.hasBase) return -1;
-    if (!a.hasBase && b.hasBase) return 1;
-    if (a.hasBase && b.hasBase && a.baseId && b.baseId) {
-      const freshA = ctx.cache.getMarketFreshness(a.baseId);
-      const freshB = ctx.cache.getMarketFreshness(b.baseId);
-      return freshA.fetchedAt - freshB.fetchedAt; // Oldest first
-    }
-    return 0;
-  });
+  // Visit POIs — only resource POIs (belts, ice, gas) and stations. Skip planets/other.
+  const VALUABLE_POI_TYPES = new Set([
+    "asteroid_belt", "asteroid", "ice_field", "gas_cloud", "nebula",
+  ]);
+  const pois = [...systemInfo.pois]
+    .filter(p => p.hasBase || VALUABLE_POI_TYPES.has(p.type))
+    .sort((a, b) => {
+      // Bases with stale/no market data come first
+      if (a.hasBase && !b.hasBase) return -1;
+      if (!a.hasBase && b.hasBase) return 1;
+      if (a.hasBase && b.hasBase && a.baseId && b.baseId) {
+        const freshA = ctx.cache.getMarketFreshness(a.baseId);
+        const freshB = ctx.cache.getMarketFreshness(b.baseId);
+        return freshA.fetchedAt - freshB.fetchedAt; // Oldest first
+      }
+      // Resource POIs before other types
+      const aRes = VALUABLE_POI_TYPES.has(a.type) ? 1 : 0;
+      const bRes = VALUABLE_POI_TYPES.has(b.type) ? 1 : 0;
+      return bRes - aRes;
+    });
+
+  const skipped = systemInfo.pois.length - pois.length;
+  if (skipped > 0) yield `skipping ${skipped} non-resource POI(s) (planets, etc.)`;
 
   let poiDataUpdated = false;
   for (const poi of pois) {

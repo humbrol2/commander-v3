@@ -4,6 +4,7 @@
  */
 
 import type { Goal } from "../config/schema";
+import { STRATEGIC_RESOURCES } from "../config/constants";
 import type { RoutineName } from "../types/protocol";
 import type { FleetBotInfo, FleetStatus } from "../bot/types";
 import type {
@@ -23,6 +24,8 @@ import type { PendingUpgrade } from "./types";
 import type { ShipClass } from "../types/game";
 import { scoreShipForRole, LEGACY_SHIPS } from "../core/ship-fitness";
 import { getStrategyWeights } from "./strategies";
+import { getAllowedRoutines, parseBotRole, getModulesForRole } from "./roles";
+import type { BotRole } from "./roles";
 
 const ALL_ROUTINES: RoutineName[] = [
   "miner", "crafter", "trader", "quartermaster", "explorer",
@@ -39,19 +42,20 @@ const ROUTINE_MAX_COUNT: Partial<Record<RoutineName, number>> = {
   scout: 1,
   explorer: 1, // Default; overridden by getMaxCount() for larger fleets
   quartermaster: 1, // Only one faction home manager
-  crafter: 3,      // Allow more crafters — high-end product focus with saturation guards
+  crafter: 5,      // Allow more crafters — high-end product focus with saturation guards
   scavenger: 1,    // One scavenger roaming at a time
   hunter: 1,       // Cap combat bots — burns fuel with unreliable returns
   salvager: 1,     // One salvager at a time
   ship_upgrade: 1, // One upgrade at a time fleet-wide
   refit: 2,        // Max 2 refitting at once — one-shot, quick
+  ship_dealer: 1,  // One dealer at a time — capital-intensive
 };
 
 /** Dynamic max count: scales explorer cap with fleet size */
 function getMaxCount(routine: RoutineName, fleetSize: number): number | undefined {
   if (routine === "explorer") {
-    // 1 explorer for 1-5 bots, 2 for 6+ bots
-    return fleetSize >= 6 ? 2 : 1;
+    // 1 explorer for 1-5 bots, 2 for 6-11, 3 for 12+
+    return fleetSize >= 12 ? 3 : fleetSize >= 6 ? 2 : 1;
   }
   return ROUTINE_MAX_COUNT[routine];
 }
@@ -76,6 +80,22 @@ export interface ScoringConfig {
   reassignmentCooldownMs: number;
 }
 
+/** Per-routine cooldowns — fast-cycling routines get shorter cooldowns */
+const ROUTINE_COOLDOWNS: Partial<Record<RoutineName, number>> = {
+  miner: 60_000,           // 1 min — rapid mine/sell cycles
+  crafter: 90_000,         // 1.5 min — batch craft cycles
+  harvester: 60_000,       // 1 min — same as miner
+  trader: 240_000,         // 4 min — multi-jump routes need time
+  explorer: 180_000,       // 3 min — travel-heavy
+  mission_runner: 180_000, // 3 min — multi-step missions
+  hunter: 120_000,         // 2 min — combat varies
+  return_home: 60_000,     // 1 min — travel only
+  scout: 120_000,          // 2 min — scan loop
+  refit: 60_000,           // 1 min — quick equipment swap
+  ship_upgrade: 120_000,   // 2 min — buy/switch
+  ship_dealer: 300_000,    // 5 min — capital-intensive, wait between cycles
+};
+
 const DEFAULT_CONFIG: ScoringConfig = {
   baseScores: {
     miner: 70,        // TOP PRIORITY: feeds supply chain with ore → faction storage
@@ -83,8 +103,8 @@ const DEFAULT_CONFIG: ScoringConfig = {
     trader: 55,       // Arbitrage trading — buys low, sells high using market data
     explorer: 40,     // Charts systems, data gathering — useful but no direct revenue
     crafter: 75,      // TOP PRIORITY: converts ore → high-end goods → faction storage
-    hunter: 10,       // SUPPRESSED: burns fuel, unreliable returns
-    salvager: 10,     // SUPPRESSED: burns fuel
+    hunter: 15,       // Low priority but not dead — occasional loot value
+    salvager: 15,     // Low priority — wrecks can be profitable
     mission_runner: 50, // Reliable income: smart mission selection, skips combat, refreshes market data
     return_home: 5,     // Utility routine — only for idle bots away from home
     scout: 10,          // One-shot data gathering — scored high only when data is needed
@@ -92,6 +112,7 @@ const DEFAULT_CONFIG: ScoringConfig = {
     scavenger: 10,      // SUPPRESSED: burns fuel, unreliable
     ship_upgrade: 0,    // Only scores > 0 when Commander queues an upgrade
     refit: 0,           // Only scores > 0 when bot has suboptimal modules for role
+    ship_dealer: 30,    // Market maker — commissions ships/modules for resale
   },
   supplyMultiplier: 15,
   skillBonus: 10,
@@ -99,7 +120,7 @@ const DEFAULT_CONFIG: ScoringConfig = {
   diversityThreshold: 4,     // Allow up to 4 bots on same routine before penalty
   diversityPenaltyPerBot: 15, // Gentler penalty — we want miner/crafter heavy
   reassignmentThreshold: 0.3,
-  reassignmentCooldownMs: 300_000, // 5 minutes — enough for 1-2 full routine cycles
+  reassignmentCooldownMs: 180_000, // 3 minutes default — overridden per-routine
 };
 
 export class ScoringBrain implements CommanderBrain {
@@ -175,15 +196,20 @@ export class ScoringBrain implements CommanderBrain {
       if (r === "refit" && !this.anyBotNeedsRefit(candidates, economy)) return false;
       // quartermaster: needs homeBase and 3+ bots
       if (r === "quartermaster" && (!this.homeBase || fleetSize < 3)) return false;
-      // scout: only useful when homeSystem is known but data is missing
-      if (r === "scout" && this.homeBase && world?.hasAnyMarketData) return false;
+      // scout: always allow 1 — it runs continuous market patrols
+      // (equipment penalty + hard cap handle the rest)
       return true;
     });
 
     // Score all bot × routine combinations
     const allScores: BotScore[] = [];
     for (const bot of candidates) {
-      for (const routine of activeRoutines) {
+      // Specialist bots: only score allowed routines for their role
+      const botRole = parseBotRole(bot.role);
+      const botRoutines = botRole
+        ? activeRoutines.filter((r) => getAllowedRoutines(botRole).includes(r))
+        : activeRoutines; // Generalist (no role) scores all routines
+      for (const routine of botRoutines) {
         const score = this.scoreAssignment(bot, routine, weights, economy, fleet, world);
         allScores.push(score);
       }
@@ -218,7 +244,7 @@ export class ScoringBrain implements CommanderBrain {
       // Idle bots need an actual assignment to restart their routine
       if (!bot.routine) {
         // One-shot routines shouldn't be restarted — let them fall through to Pass 2
-        const oneShot: RoutineName[] = ["ship_upgrade", "scout", "return_home", "refit"];
+        const oneShot: RoutineName[] = ["ship_upgrade", "return_home", "refit"];
         if (oneShot.includes(routine)) {
           // Undo the lock — let Pass 2 pick a new routine
           assignedBots.delete(bot.botId);
@@ -350,7 +376,7 @@ export class ScoringBrain implements CommanderBrain {
           this.reassignmentState.set(bot.botId, {
             lastAssignment: now,
             lastRoutine: "miner",
-            cooldownUntil: now + this.config.reassignmentCooldownMs,
+            cooldownUntil: now + this.getCooldownMs("miner"),
           });
           continue;
         }
@@ -415,7 +441,7 @@ export class ScoringBrain implements CommanderBrain {
         this.reassignmentState.set(bestScore.botId, {
           lastAssignment: now,
           lastRoutine: bestScore.routine,
-          cooldownUntil: now + this.config.reassignmentCooldownMs,
+          cooldownUntil: now + this.getCooldownMs(bestScore.routine),
         });
       }
     }
@@ -429,6 +455,82 @@ export class ScoringBrain implements CommanderBrain {
           .slice(0, 3);
         const scoreStr = botScores.map((s) => `${s.routine}=${s.finalScore.toFixed(0)}`).join(", ");
         console.log(`[Commander] ${bot.botId} (fuel=${bot.fuelPct.toFixed(0)}% mods=[${bot.moduleIds.join(",")}]): ${scoreStr}`);
+      }
+    }
+
+    // Guarantee pass: ensure minimum 1 quartermaster when homeBase is set and fleet >= 3
+    if (this.homeBase && fleetSize >= 3) {
+      const qmCount = cycleRoutineCounts.get("quartermaster") ?? 0;
+      if (qmCount === 0) {
+        // Find best unassigned bot for QM (prefer docked bots at home)
+        const qmCandidates = candidates
+          .filter(b => !assignedBots.has(b.botId))
+          .sort((a, b) => {
+            // Prefer bots at home system, then docked, then by lowest switch cost
+            const aHome = a.systemId === this.homeSystem ? 1 : 0;
+            const bHome = b.systemId === this.homeSystem ? 1 : 0;
+            if (aHome !== bHome) return bHome - aHome;
+            if (a.docked !== b.docked) return a.docked ? -1 : 1;
+            return 0;
+          });
+
+        const qmBot = qmCandidates[0];
+        if (qmBot) {
+          console.log(`[Commander] Guarantee: forcing ${qmBot.botId} → quartermaster (no QM assigned)`);
+          assignments.push({
+            botId: qmBot.botId,
+            routine: "quartermaster",
+            params: this.buildParams("quartermaster", qmBot, economy, goals, assignments, world),
+            score: 100,
+            reasoning: "Guaranteed: fleet needs 1 quartermaster",
+            previousRoutine: qmBot.routine ?? qmBot.lastRoutine,
+          });
+          assignedBots.add(qmBot.botId);
+          cycleRoutineCounts.set("quartermaster", 1);
+          this.reassignmentState.set(qmBot.botId, {
+            lastAssignment: now,
+            lastRoutine: "quartermaster",
+            cooldownUntil: now + this.getCooldownMs("quartermaster"),
+          });
+        }
+      }
+    }
+
+    // Guarantee pass: ensure minimum 1 scout for market data patrols
+    if (this.homeSystem && fleetSize >= 3) {
+      const scoutCount = cycleRoutineCounts.get("scout") ?? 0;
+      const runningScout = candidates.some(b => b.routine === "scout" && !assignedBots.has(b.botId));
+      if (scoutCount === 0 && !runningScout) {
+        const scoutCandidates = candidates
+          .filter(b => !assignedBots.has(b.botId) && b.routine !== "scout")
+          .sort((a, b) => {
+            // Prefer bots at home, then docked, then fastest (for travel)
+            const aHome = a.systemId === this.homeSystem ? 1 : 0;
+            const bHome = b.systemId === this.homeSystem ? 1 : 0;
+            if (aHome !== bHome) return bHome - aHome;
+            if (a.docked !== b.docked) return a.docked ? -1 : 1;
+            return (b.speed ?? 1) - (a.speed ?? 1);
+          });
+
+        const scoutBot = scoutCandidates[0];
+        if (scoutBot) {
+          console.log(`[Commander] Guarantee: forcing ${scoutBot.botId} → scout (no scout assigned)`);
+          assignments.push({
+            botId: scoutBot.botId,
+            routine: "scout",
+            params: this.buildParams("scout", scoutBot, economy, goals, assignments, world),
+            score: 100,
+            reasoning: "Guaranteed: fleet needs 1 scout for market data",
+            previousRoutine: scoutBot.routine ?? scoutBot.lastRoutine,
+          });
+          assignedBots.add(scoutBot.botId);
+          cycleRoutineCounts.set("scout", 1);
+          this.reassignmentState.set(scoutBot.botId, {
+            lastAssignment: now,
+            lastRoutine: "scout",
+            cooldownUntil: now + this.getCooldownMs("scout"),
+          });
+        }
       }
     }
 
@@ -485,11 +587,13 @@ export class ScoringBrain implements CommanderBrain {
     const riskPenalty = this.calcRiskPenalty(bot, routine);
 
     // 5. Switch cost: penalize if bot needs to change roles (0 for idle bots)
+    //    Undocked bots pay 3x (was 6x) — allows faster reassignment of mobile bots
     const switchCost = !bot.routine ? 0 :
       bot.routine === routine ? 0 :
-      (bot.docked ? 2 : 6) * this.config.switchCostPerTick;
+      (bot.docked ? 2 : 3) * this.config.switchCostPerTick;
 
-    // 6. Diversity penalty: too many bots on same routine (capped to never exceed base score)
+    // 6. Diversity penalty: smooth linear ramp instead of cliff at threshold
+    //    Bot #1-3: no penalty. Bot #4+: ramps up. Capped at 80% of base score.
     const currentCount = fleet.bots.filter((b) => b.routine === routine && b.botId !== bot.botId).length;
     const rawDiversityPenalty = currentCount >= this.config.diversityThreshold
       ? (currentCount - this.config.diversityThreshold + 1) * this.config.diversityPenaltyPerBot
@@ -498,10 +602,11 @@ export class ScoringBrain implements CommanderBrain {
 
     // 7. Rapid completion penalty: routine recently failed to find work (completed in < 60s)
     //    Tracks ALL recently-failed routines (not just the last one) to prevent alternating failures
-    const RAPID_EXPIRY_MS = 120_000; // 2 minutes (entries also auto-cleaned in bot getter)
+    //    Penalty scales with repeat count: 50 for 1st, 80 for 2nd, 110 for 3rd
+    const RAPID_EXPIRY_MS = 180_000; // 3 minutes (longer decay prevents re-selecting failing routines)
     const rapidAt = bot.rapidRoutines.get(routine);
     const rapidPenalty = (rapidAt && (Date.now() - rapidAt) < RAPID_EXPIRY_MS)
-      ? 80 // Moderate penalty — suppresses but doesn't kill all options
+      ? 50 // Moderate penalty — suppresses but doesn't kill all options
       : 0;
 
     // 8. Information scarcity bonus: uses world context for data-aware scoring
@@ -527,13 +632,17 @@ export class ScoringBrain implements CommanderBrain {
     // 14. Market insight bonus: reward trader/QM when demand intelligence exists
     const insightBonus = this.calcMarketInsightBonus(routine, world);
 
-    const finalScore = baseScore + supplyBonus + skillBonus + infoBonus + factionBonus + insightBonus - riskPenalty - switchCost - diversityPenalty - rapidPenalty - equipmentPenalty - worldPenalty - idlePenalty - stalenessPenalty;
+    // 15. Work order bonus: align routine scoring with QM-generated fleet priorities
+    const workOrderBonus = this.calcWorkOrderBonus(routine, economy);
+
+    const finalScore = baseScore + supplyBonus + skillBonus + infoBonus + factionBonus + insightBonus + workOrderBonus - riskPenalty - switchCost - diversityPenalty - rapidPenalty - equipmentPenalty - worldPenalty - idlePenalty - stalenessPenalty;
 
     const parts = [`${routine}: base=${baseScore.toFixed(0)}`];
     if (supplyBonus > 0) parts.push(`supply=+${supplyBonus.toFixed(0)}`);
     if (skillBonus > 0) parts.push(`skill=+${skillBonus.toFixed(0)}`);
     if (infoBonus !== 0) parts.push(`info=${infoBonus > 0 ? "+" : ""}${infoBonus.toFixed(0)}`);
     if (factionBonus !== 0) parts.push(`faction=${factionBonus > 0 ? "+" : ""}${factionBonus.toFixed(0)}`);
+    if (workOrderBonus > 0) parts.push(`orders=+${workOrderBonus.toFixed(0)}`);
     if (riskPenalty > 0) parts.push(`risk=-${riskPenalty.toFixed(0)}`);
     if (switchCost > 0) parts.push(`switch=-${switchCost.toFixed(0)}`);
     if (diversityPenalty > 0) parts.push(`diversity=-${diversityPenalty.toFixed(0)}`);
@@ -573,6 +682,11 @@ export class ScoringBrain implements CommanderBrain {
     const state = this.reassignmentState.get(botId);
     if (!state) return true;
     return now >= state.cooldownUntil;
+  }
+
+  /** Get cooldown duration for a routine (per-routine or default) */
+  private getCooldownMs(routine: RoutineName): number {
+    return ROUTINE_COOLDOWNS[routine] ?? this.config.reassignmentCooldownMs;
   }
 
   /** Force-clear cooldown for a bot (urgency override) */
@@ -815,6 +929,7 @@ export class ScoringBrain implements CommanderBrain {
   private calcRiskPenalty(bot: FleetBotInfo, routine: RoutineName): number {
     // Critical fuel (<15%): all routines penalized heavily (bot needs emergency refuel)
     if (bot.fuelPct < 15) {
+      if (routine === "return_home") return 0; // Return home is the correct action at critical fuel
       if (routine === "miner") return 50; // Miner will auto-dock but still penalize at critical
       return 150; // Hard block — bot needs to refuel, not work
     }
@@ -932,20 +1047,13 @@ export class ScoringBrain implements CommanderBrain {
       }
       case "scout": {
         if (!bot) return 200;
-        // Scout is one-shot data gathering. Score high when we need data, block otherwise.
         // Hard cap: only 1 scout at a time
         const scoutCount = fleet?.bots.filter((b) => b.routine === "scout").length ?? 0;
         if (scoutCount >= 1) return 200;
-        // If faction storage is already known, no need to scout
-        if (this.homeBase && this.homeSystem) {
-          // Check if home system has station data (i.e., we've visited it)
-          // If homeBase is set, discovery already happened
-          return 200;
-        }
-        // homeSystem set but no homeBase — we need station data!
-        if (this.homeSystem && !this.homeBase) return -200; // Massive bonus → highest priority
-        // No home configured at all — block
-        return 200;
+        // No home configured — can't patrol yet
+        if (!this.homeSystem) return 200;
+        // Always want 1 dedicated scout for market data freshness
+        return -80;
       }
       case "quartermaster": {
         if (!bot) return 200;
@@ -1034,6 +1142,37 @@ export class ScoringBrain implements CommanderBrain {
     return Math.min(world.demandInsightCount * 3, 15); // Max +15
   }
 
+  /**
+   * Work order bonus: boost routines that have pending work orders.
+   * Maps work order types to routines and adds priority-scaled bonus.
+   */
+  private calcWorkOrderBonus(routine: RoutineName, economy: EconomySnapshot): number {
+    if (!economy.workOrders || economy.workOrders.length === 0) return 0;
+
+    let bonus = 0;
+    for (const order of economy.workOrders) {
+      switch (order.type) {
+        case "mine":
+          if (routine === "miner") bonus += order.priority * 0.3;
+          if (routine === "harvester" && (order.targetId.includes("ice") || order.targetId.includes("gas")))
+            bonus += order.priority * 0.3;
+          break;
+        case "craft":
+          if (routine === "crafter") bonus += order.priority * 0.25;
+          break;
+        case "trade":
+          if (routine === "trader") bonus += order.priority * 0.2;
+          if (routine === "quartermaster") bonus += order.priority * 0.15;
+          break;
+        case "explore":
+          if (routine === "explorer") bonus += order.priority * 0.2;
+          break;
+      }
+    }
+
+    return Math.min(bonus, 40); // Cap to prevent overwhelming other signals
+  }
+
   /** Build routine params based on fleet state and economy */
   private buildParams(
     routine: RoutineName,
@@ -1073,7 +1212,7 @@ export class ScoringBrain implements CommanderBrain {
       case "return_home":
         return { homeBase: this.homeBase, homeSystem: this.homeSystem };
       case "scout":
-        return { targetSystem: this.homeSystem, scanMarket: true, checkFaction: true };
+        return this.buildScoutParams(bot, world);
       case "quartermaster":
         return {
           homeBase: this.homeBase,
@@ -1092,6 +1231,41 @@ export class ScoringBrain implements CommanderBrain {
   }
 
   /** Build ship_upgrade params from the pending upgrades queue */
+  // Known trade hub systems — hardcoded so scouts work before galaxy loads.
+  // Nearby Solarian space hubs first, then further empires.
+  private static TRADE_HUB_SYSTEMS = [
+    "sol", "nova_terra", "sirius", "procyon", "alpha_centauri", "nexus_prime",
+  ];
+
+  /**
+   * Build scout params — when market cache is thin, send the scout on a tour
+   * of trade hub systems to seed market data for the whole fleet.
+   */
+  private buildScoutParams(bot: FleetBotInfo, world?: WorldContext): Record<string, unknown> {
+    const cachedStations = world?.cachedStationIds?.length ?? 0;
+
+    // Cache is thin — build a trade hub tour
+    if (cachedStations < 3) {
+      const targetSystems: string[] = [];
+      // Start with home system
+      if (this.homeSystem && !targetSystems.includes(this.homeSystem)) {
+        targetSystems.push(this.homeSystem);
+      }
+      // Add known trade hubs (skip home if already added)
+      for (const hub of ScoringBrain.TRADE_HUB_SYSTEMS) {
+        if (!targetSystems.includes(hub)) targetSystems.push(hub);
+      }
+
+      if (targetSystems.length > 1) {
+        console.log(`[Scout] Market cache thin (${cachedStations} stations) — tour: ${targetSystems.join(" → ")}`);
+        return { targetSystems, scanMarket: true, checkFaction: true };
+      }
+    }
+
+    // Default: single-system scout (cache is healthy)
+    return { targetSystem: this.homeSystem, scanMarket: true, checkFaction: true };
+  }
+
   private buildShipUpgradeParams(bot: FleetBotInfo): Record<string, unknown> {
     const pending = this.pendingUpgrades.get(bot.botId);
     if (!pending) return { targetShipClass: "", maxSpend: 0, sellOldShip: true };
@@ -1190,15 +1364,10 @@ export class ScoringBrain implements CommanderBrain {
 
   // ── Refit Detection ──
 
-  /** Module patterns desired per role (matches refit.ts ROLE_MODULES) */
-  private static REFIT_ROLE_MODULES: Record<string, string[]> = {
-    miner:     ["mining_laser", "mining_laser", "mining_laser"],
-    harvester: ["ice_harvester", "gas_harvester", "mining_laser"],
-    explorer:  ["survey_scanner"],
-    hunter:    ["weapon_laser", "weapon_laser", "weapon_laser"],
-    crafter:   ["mining_laser"],
-    default:   ["mining_laser"],
-  };
+  /** Module patterns desired per role — delegates to centralized roles.ts */
+  private static getRefitModules(role: string): string[] {
+    return getModulesForRole(role);
+  }
 
   /** Check if ANY bot in the fleet needs a refit (pre-filter for performance) */
   private anyBotNeedsRefit(bots: FleetBotInfo[], economy: EconomySnapshot): boolean {
@@ -1214,8 +1383,8 @@ export class ScoringBrain implements CommanderBrain {
    */
   private calcRefitNeed(bot: FleetBotInfo, economy: EconomySnapshot): number {
     const role = this.inferPrimaryRole(bot);
-    const desired = ScoringBrain.REFIT_ROLE_MODULES[role];
-    if (!desired || desired.length === 0) return 0;
+    const desired = ScoringBrain.getRefitModules(role);
+    if (desired.length === 0) return 0;
 
     let score = 0;
     const mods = bot.moduleIds;
@@ -1278,10 +1447,12 @@ export class ScoringBrain implements CommanderBrain {
   }
 
   /** One-shot routines that don't represent a bot's primary role */
-  private static ONE_SHOT_ROUTINES = new Set(["refit", "ship_upgrade", "scout", "return_home"]);
+  private static ONE_SHOT_ROUTINES = new Set(["refit", "ship_upgrade", "return_home"]);
 
   /** Infer the bot's primary work role (skipping one-shot routines like refit/scout) */
   private inferPrimaryRole(bot: FleetBotInfo): string {
+    // Explicit specialist role takes priority
+    if (bot.role) return bot.role;
     // Check current routine first
     if (bot.routine && !ScoringBrain.ONE_SHOT_ROUTINES.has(bot.routine)) {
       return bot.routine;
@@ -1587,7 +1758,7 @@ export class ScoringBrain implements CommanderBrain {
       }
     }
 
-    return { targetSystems: [], submitIntel: true, explorerIndex, equipModules };
+    return { targetSystems: [], submitIntel: true, explorerIndex, equipModules, homeSystem: this.homeSystem };
   }
 
   /**
@@ -1621,8 +1792,8 @@ export class ScoringBrain implements CommanderBrain {
       asteroid_belt: ["ore_iron", "ore_copper", "ore_titanium", "ore_gold", "ore_nickel", "ore_sol"],
       asteroid: ["ore_iron", "ore_copper", "ore_titanium", "ore_gold", "ore_nickel", "ore_sol"],
       ice_field: ["ore_ice"],
-      gas_cloud: ["ore_crystal", "ore_gas"],
-      nebula: ["ore_crystal", "ore_gas"],
+      gas_cloud: ["ore_crystal", "ore_gas", "energy_crystal", "phase_crystal", "quantum_fragments"],
+      nebula: ["ore_crystal", "ore_gas", "energy_crystal", "phase_crystal", "quantum_fragments"],
     };
 
     // Reverse map: ore prefix → which POI types produce it
@@ -1636,10 +1807,12 @@ export class ScoringBrain implements CommanderBrain {
     }
 
     // Equipment needed per POI type
+    // Note: nebulae can have mineable crystals (mining laser) OR harvestable gas (gas harvester)
+    // so we don't require gas_harvester for nebulae — any miner with a mining laser can mine crystals
     const POI_EQUIP: Record<string, string> = {
       ice_field: "ice_harvester",
       gas_cloud: "gas_harvester",
-      nebula: "gas_harvester",
+      // nebula deliberately omitted — miners can mine crystals there with standard mining lasers
     };
 
     // Compute crafter demand: what raw materials do active/best recipes consume?
@@ -1714,6 +1887,20 @@ export class ScoringBrain implements CommanderBrain {
       }
 
       poiScores.push({ poiType: norm, score: demandScore + storageScore });
+    }
+
+    // ── Strategic resource boost: energy crystals etc. get priority when low in stock ──
+    for (const sr of STRATEGIC_RESOURCES) {
+      const stock = economy.factionStorage.get(sr.itemId) ?? 0;
+      if (stock < sr.minStock) {
+        for (const entry of poiScores) {
+          if (sr.poiTypes.includes(entry.poiType) || sr.poiTypes.some(t =>
+            (t === "nebula" && entry.poiType === "gas_cloud") ||
+            (t === "gas_cloud" && entry.poiType === "gas_cloud"))) {
+            entry.score += sr.boostScore;
+          }
+        }
+      }
     }
 
     poiScores.sort((a, b) => b.score - a.score); // Highest demand first
@@ -1827,8 +2014,8 @@ export class ScoringBrain implements CommanderBrain {
 
     const POI_ORE_MAP: Record<string, string[]> = {
       ice_field: ["ore_ice"],
-      gas_cloud: ["ore_crystal", "ore_gas"],
-      nebula: ["ore_crystal", "ore_gas"],
+      gas_cloud: ["ore_crystal", "ore_gas", "energy_crystal", "phase_crystal", "quantum_fragments"],
+      nebula: ["ore_crystal", "ore_gas", "energy_crystal", "phase_crystal", "quantum_fragments"],
       asteroid_belt: ["ore_iron", "ore_copper", "ore_titanium", "ore_gold", "ore_nickel", "ore_sol"],
       asteroid: ["ore_iron", "ore_copper", "ore_titanium", "ore_gold", "ore_nickel", "ore_sol"],
     };

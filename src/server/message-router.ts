@@ -173,17 +173,31 @@ export function handleClientMessage(
 
       case "update_settings": {
         const settings = msg.settings;
+
+        /** Safely parse a number, returning null if NaN or out of range */
+        const safeNum = (v: unknown, min: number, max: number): number | null => {
+          const n = Number(v);
+          return Number.isFinite(n) && n >= min && n <= max ? n : null;
+        };
+
+        // ── Fleet settings ──
         if (settings.factionTaxPercent !== undefined) {
-          botManager.fleetConfig.factionTaxPercent = Number(settings.factionTaxPercent);
+          const v = safeNum(settings.factionTaxPercent, 0, 100);
+          if (v !== null) botManager.fleetConfig.factionTaxPercent = v;
         }
         if (settings.minBotCredits !== undefined) {
-          botManager.fleetConfig.minBotCredits = Number(settings.minBotCredits);
+          const v = safeNum(settings.minBotCredits, 0, 1_000_000_000);
+          if (v !== null) botManager.fleetConfig.minBotCredits = v;
+        }
+        if (settings.maxBotCredits !== undefined) {
+          const v = safeNum(settings.maxBotCredits, 0, 1_000_000_000);
+          if (v !== null) botManager.fleetConfig.maxBotCredits = v;
         }
         if (settings.homeSystem !== undefined) {
-          botManager.fleetConfig.homeSystem = String(settings.homeSystem);
+          botManager.fleetConfig.homeSystem = String(settings.homeSystem).slice(0, 200);
         }
         if (settings.homeBase !== undefined) {
-          botManager.fleetConfig.homeBase = String(settings.homeBase);
+          botManager.fleetConfig.homeBase = String(settings.homeBase).slice(0, 200);
         }
         if (settings.defaultStorageMode !== undefined) {
           const mode = String(settings.defaultStorageMode);
@@ -191,18 +205,45 @@ export function handleClientMessage(
             botManager.fleetConfig.defaultStorageMode = mode;
           }
         }
+
+        // ── Commander settings ──
+        const commanderUpdates: Record<string, unknown> = {};
+        if (settings.evaluationInterval !== undefined) {
+          const v = safeNum(settings.evaluationInterval, 10, 3600);
+          if (v !== null) commanderUpdates.evaluationIntervalSec = v;
+        }
+        if (settings.reassignmentCooldown !== undefined) {
+          const v = safeNum(settings.reassignmentCooldown, 0, 86400);
+          if (v !== null) commanderUpdates.reassignmentCooldown = v;
+        }
+        if (settings.reassignmentThreshold !== undefined) {
+          const v = safeNum(settings.reassignmentThreshold, 0, 1);
+          if (v !== null) commanderUpdates.reassignmentThreshold = v;
+        }
+        if (Object.keys(commanderUpdates).length > 0) {
+          commander.updateConfig(commanderUpdates as any);
+        }
+
+        // Persist all settings
         saveFleetSettings(db, {
           factionTaxPercent: botManager.fleetConfig.factionTaxPercent,
           minBotCredits: botManager.fleetConfig.minBotCredits,
+          maxBotCredits: botManager.fleetConfig.maxBotCredits,
+          homeSystem: botManager.fleetConfig.homeSystem,
+          homeBase: botManager.fleetConfig.homeBase,
+          defaultStorageMode: botManager.fleetConfig.defaultStorageMode,
+          evaluationInterval: commander.getConfig().evaluationIntervalSec,
         });
         broadcast({
           type: "fleet_settings_update",
           settings: {
             factionTaxPercent: botManager.fleetConfig.factionTaxPercent,
             minBotCredits: botManager.fleetConfig.minBotCredits,
+            maxBotCredits: botManager.fleetConfig.maxBotCredits,
             homeSystem: botManager.fleetConfig.homeSystem,
             homeBase: botManager.fleetConfig.homeBase,
             defaultStorageMode: botManager.fleetConfig.defaultStorageMode,
+            evaluationInterval: commander.getConfig().evaluationIntervalSec,
           },
         });
         break;
@@ -226,6 +267,25 @@ export function handleClientMessage(
 
       case "cancel_order": {
         // Not yet implemented
+        break;
+      }
+
+      case "queue_facility_build": {
+        const queue = botManager.fleetConfig.facilityBuildQueue;
+        if (!queue.includes(msg.facilityType)) {
+          queue.push(msg.facilityType);
+          broadcast({ type: "notification", level: "info", title: "Facility queued", message: `${msg.facilityType.replace(/_/g, " ")} — QM will build next cycle` });
+        }
+        break;
+      }
+
+      case "cancel_facility_build": {
+        const q = botManager.fleetConfig.facilityBuildQueue;
+        const idx = q.indexOf(msg.facilityType);
+        if (idx >= 0) {
+          q.splice(idx, 1);
+          broadcast({ type: "notification", level: "info", title: "Build cancelled", message: msg.facilityType.replace(/_/g, " ") });
+        }
         break;
       }
 
@@ -329,7 +389,12 @@ export function handleClientMessage(
           try {
             const api = botManager.getAllBots().find(b => b.api)?.api;
             if (!api) {
-              sendTo(ws, { type: "catalog_data", ships: [], items: [], skills: [], recipes: [] });
+              // No bot connected — serve from persisted cache
+              const ships = deps.cache.getCachedShipCatalog() ?? [];
+              const items = deps.cache.getCachedItemCatalog() ?? [];
+              const skills = deps.cache.getCachedSkillTree() ?? [];
+              const recipes = deps.cache.getCachedRecipes() ?? [];
+              sendTo(ws, { type: "catalog_data", ships, items, skills, recipes });
               return;
             }
             const [ships, items, skills, recipes] = await Promise.all([
@@ -340,7 +405,12 @@ export function handleClientMessage(
             ]);
             sendTo(ws, { type: "catalog_data", ships, items, skills, recipes });
           } catch (err) {
-            sendTo(ws, { type: "catalog_data", ships: [], items: [], skills: [], recipes: [] });
+            // Fetch failed — try serving from cache before returning empty
+            const ships = deps.cache.getCachedShipCatalog() ?? [];
+            const items = deps.cache.getCachedItemCatalog() ?? [];
+            const skills = deps.cache.getCachedSkillTree() ?? [];
+            const recipes = deps.cache.getCachedRecipes() ?? [];
+            sendTo(ws, { type: "catalog_data", ships, items, skills, recipes });
           }
         })();
         break;
@@ -388,6 +458,65 @@ export function handleClientMessage(
             broadcast({ type: "notification", level: "warning", title: "Refresh failed", message: err instanceof Error ? err.message : String(err) });
           }
         })();
+        break;
+      }
+
+      case "buy_ship_upgrade": {
+        (async () => {
+          try {
+            const bot = botManager.getBot(msg.botId);
+            if (!bot?.api) {
+              broadcast({ type: "notification", level: "warning", title: "Buy ship failed", message: "Bot not found or not connected" });
+              return;
+            }
+            // Assign ship_upgrade routine which handles travel to shipyard, purchase, and switch
+            await botManager.assignRoutine(msg.botId, "ship_upgrade", {
+              targetShipClass: msg.shipClass,
+              alreadyOwned: false,
+              sellOldShip: true,
+              role: bot.lastRoutine ?? "default",
+            });
+            broadcast({ type: "notification", level: "info", title: "Ship upgrade", message: `${bot.username} upgrading to ${msg.shipClass}` });
+          } catch (err) {
+            broadcast({ type: "notification", level: "warning", title: "Buy ship failed", message: err instanceof Error ? err.message : String(err) });
+          }
+        })();
+        break;
+      }
+
+      case "buy_module": {
+        (async () => {
+          try {
+            const bot = botManager.getBot(msg.botId);
+            if (!bot?.api) {
+              broadcast({ type: "notification", level: "warning", title: "Buy module failed", message: "Bot not found or not connected" });
+              return;
+            }
+            const result = await bot.api.buy(msg.moduleId, 1);
+            broadcast({ type: "notification", level: "info", title: "Module purchased", message: `${bot.username} bought ${msg.moduleId}` });
+            // Try to install it immediately
+            try {
+              await bot.api.installMod(msg.moduleId);
+              broadcast({ type: "notification", level: "info", title: "Module installed", message: `${bot.username} installed ${msg.moduleId}` });
+            } catch (installErr) {
+              broadcast({ type: "notification", level: "warning", title: "Install failed", message: `Bought but couldn't install: ${installErr instanceof Error ? installErr.message : String(installErr)}` });
+            }
+          } catch (err) {
+            broadcast({ type: "notification", level: "warning", title: "Buy module failed", message: err instanceof Error ? err.message : String(err) });
+          }
+        })();
+        break;
+      }
+
+      case "set_bot_role": {
+        const bot = botManager.getBot(msg.botId);
+        if (bot) {
+          bot.role = msg.role;
+          bot.settings.role = msg.role;
+          saveBotSettings(db, bot.username, bot.settings);
+          console.log(`[WS] Set bot ${msg.botId} role → ${msg.role ?? "generalist"}`);
+          broadcast({ type: "notification", level: "info", title: "Role updated", message: `${bot.username} is now ${msg.role ?? "generalist"}` });
+        }
         break;
       }
 

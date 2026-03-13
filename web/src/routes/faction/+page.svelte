@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { factionState, economy } from "$stores/websocket";
+	import { factionState, economy, send } from "$stores/websocket";
 
 	type FactionTab = "overview" | "storage_tx" | "credits_tx";
 	type TxRange = "1h" | "1d" | "1w";
@@ -283,29 +283,119 @@
 				<div class="card p-4">
 					<h2 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-3">
 						Facilities
+						{#if $factionState.facilities.length > 0}
+							<span class="text-hull-grey font-normal ml-1">({$factionState.facilities.length})</span>
+						{/if}
 					</h2>
 					{#if $factionState.facilities.length === 0}
-						<p class="text-sm text-hull-grey py-4 text-center">No facilities</p>
+						<p class="text-sm text-hull-grey py-2 text-center">No facilities discovered</p>
+						<p class="text-xs text-hull-grey/60 text-center">Facilities are station-scoped — bots must be docked to detect them</p>
 					{:else}
 						<div class="space-y-2">
 							{#each $factionState.facilities as facility}
 								<div class="py-2 px-2 rounded bg-deep-void/50">
 									<div class="flex items-center justify-between">
 										<span class="text-sm text-star-white font-medium">{facility.name}</span>
-										<span class="text-xs capitalize px-1.5 py-0.5 rounded
-											{facility.status === 'active' ? 'bg-bio-green/20 text-bio-green' : 'bg-hull-grey/10 text-hull-grey'}">
-											{facility.status}
-										</span>
+										<div class="flex items-center gap-2">
+											{#if facility.level}
+												<span class="text-xs px-1.5 py-0.5 rounded bg-plasma-cyan/20 text-plasma-cyan">Lv {facility.level}</span>
+											{/if}
+											<span class="text-xs capitalize px-1.5 py-0.5 rounded
+												{facility.status === 'active' ? 'bg-bio-green/20 text-bio-green' : 'bg-hull-grey/10 text-hull-grey'}">
+												{facility.status}
+											</span>
+										</div>
 									</div>
 									<div class="flex items-center gap-2 mt-1 text-xs text-hull-grey">
 										<span>{facility.type.replace(/_/g, " ")}</span>
+										{#if facility.output}
+											<span>→ {facility.output.replace(/_/g, " ")}</span>
+										{/if}
 										{#if facility.systemName}
 											<span>- {facility.systemName}</span>
 										{/if}
 									</div>
+									{#if facility.upgradeAvailable}
+										<div class="mt-1 text-xs text-amber-400">
+											⬆ Upgrade available{facility.upgradeCost ? ` (${facility.upgradeCost.toLocaleString()}cr)` : ''}
+										</div>
+									{/if}
 								</div>
 							{/each}
 						</div>
+					{/if}
+				</div>
+
+				<!-- Facility Catalog with Build Queue -->
+				<div class="card p-4">
+					<h2 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-3">
+						Build Queue
+					</h2>
+					{#if ($factionState.facilityTypes ?? []).length > 0}
+						{@const ownedTypes = new Set($factionState.facilities.map(f => f.type))}
+						{@const buildQueue = new Set($factionState.buildQueue ?? [])}
+						<div class="space-y-1.5 max-h-[400px] overflow-y-auto">
+							{#each $factionState.facilityTypes ?? [] as ft}
+								{@const isOwned = ownedTypes.has(ft.id)}
+								{@const isQueued = buildQueue.has(ft.id)}
+								<div class="py-2 px-2 rounded border transition-colors
+									{isOwned ? 'bg-bio-green/5 border-bio-green/20' : isQueued ? 'bg-warning-yellow/5 border-warning-yellow/20' : 'bg-deep-void/50 border-hull-grey/10'}">
+									<div class="flex items-center gap-2">
+										{#if isOwned}
+											<span class="text-bio-green text-xs shrink-0" title="Built">✓</span>
+										{:else}
+											<button
+												class="w-4 h-4 rounded border shrink-0 flex items-center justify-center text-[10px] transition-colors
+													{isQueued ? 'bg-warning-yellow/20 border-warning-yellow text-warning-yellow' : 'border-hull-grey/40 hover:border-plasma-cyan text-transparent hover:text-hull-grey'}"
+												title={isQueued ? "Cancel build" : "Queue for building"}
+												onclick={() => {
+													if (isQueued) {
+														send({ type: "cancel_facility_build", facilityType: ft.id });
+													} else {
+														send({ type: "queue_facility_build", facilityType: ft.id });
+													}
+												}}
+											>
+												{isQueued ? "−" : "+"}
+											</button>
+										{/if}
+										<div class="flex-1 min-w-0">
+											<div class="flex items-center justify-between">
+												<span class="text-sm font-medium truncate {isOwned ? 'text-bio-green' : 'text-star-white'}">{ft.name}</span>
+												<div class="flex items-center gap-1.5 shrink-0 ml-2">
+													{#if ft.level > 1}
+														<span class="text-[10px] px-1 py-0.5 rounded bg-void-purple/20 text-void-purple">T{ft.level}</span>
+													{/if}
+													{#if ft.cost > 0}
+														<span class="text-[10px] mono text-warning-yellow">{ft.cost.toLocaleString()}cr</span>
+													{/if}
+													{#if isOwned}
+														<span class="text-[10px] px-1 py-0.5 rounded bg-bio-green/20 text-bio-green">BUILT</span>
+													{:else if isQueued}
+														<span class="text-[10px] px-1 py-0.5 rounded bg-warning-yellow/20 text-warning-yellow">QUEUED</span>
+													{/if}
+												</div>
+											</div>
+											{#if ft.description}
+												<p class="text-[11px] text-hull-grey mt-0.5 leading-tight">{ft.description}</p>
+											{/if}
+											<div class="flex items-center gap-2 mt-0.5 text-[10px] text-hull-grey/60">
+												<span class="capitalize">{ft.category}</span>
+												{#if ft.effect}
+													<span class="text-plasma-cyan/80">{ft.effect}</span>
+												{/if}
+												{#if ft.prerequisite}
+													<span>Req: {ft.prerequisite.replace(/_/g, " ")}</span>
+												{/if}
+											</div>
+										</div>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<p class="text-sm text-hull-grey py-2 text-center">Facility catalog loading...</p>
+						<p class="text-xs text-hull-grey/60 text-center">Requires a docked bot to fetch available types</p>
 					{/if}
 				</div>
 

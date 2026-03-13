@@ -127,6 +127,20 @@ export interface ShipModule {
   id: string;
   moduleId: string;
   name: string;
+  durability?: number;
+  health?: number;
+}
+
+export interface InsuranceQuote {
+  covered?: boolean;
+  insured?: boolean;
+  premium?: number;
+  cost?: number;
+}
+
+export interface InsuranceClaim {
+  payout?: number;
+  credits?: number;
 }
 
 export interface CargoItem {

@@ -33,6 +33,7 @@ import {
   safetyCheck,
   ensureSystemDetail,
   getParam,
+  payFactionTax,
 } from "./helpers";
 
 // ── Objective Classification ──
@@ -55,6 +56,11 @@ const ACTION_KEYWORDS: Record<ObjectiveAction, string[]> = {
 // Mission types we should avoid (combat is too unreliable for bots)
 const UNSAFE_MISSION_TYPES = new Set(["combat", "bounty", "assassination", "pirate", "pvp", "warfare"]);
 const UNSAFE_KEYWORDS = ["kill", "destroy", "defeat", "eliminate", "attack", "hunt", "bounty", "assassination"];
+
+// Objective types we can reliably complete (whitelist approach)
+const COMPLETABLE_ACTIONS: Set<ObjectiveAction> = new Set(["travel", "survey", "mine", "sell"]);
+// These CAN work but need profitability checks (item cost vs reward)
+const RISKY_ACTIONS: Set<ObjectiveAction> = new Set(["deliver", "buy", "collect", "craft"]);
 
 function classifyObjective(obj: MissionObjective): ObjectiveAction {
   // Use structured type if available
@@ -98,12 +104,12 @@ function estimateJumps(ctx: BotContext, targetSystemId: string | undefined): num
   return path ? path.length - 1 : Infinity;
 }
 
-/** Check if bot has enough fuel for a round trip (rough estimate: 1 fuel unit per jump) */
+/** Check if bot has enough fuel for a round trip (physics-based since v0.188.0) */
 function hasFuelForJumps(ctx: BotContext, jumps: number): boolean {
   if (jumps <= 0) return true;
-  // Need fuel for the trip there AND back, plus a safety margin
-  const roundTripJumps = jumps * 2;
-  const fuelNeeded = roundTripJumps + 2; // +2 safety buffer
+  const fuelPerJump = ctx.nav.estimateJumpFuel(ctx.ship);
+  const roundTripFuel = jumps * 2 * fuelPerJump;
+  const fuelNeeded = roundTripFuel + 2; // +2 safety buffer
   return ctx.ship.fuel >= fuelNeeded;
 }
 
@@ -136,23 +142,26 @@ function findMissionRequiredItem(mission: Mission): { itemId: string; quantity: 
   return undefined;
 }
 
-/** Estimate fuel cost in credits for a round trip */
+/** Estimate fuel cost in credits for a round trip (physics-based since v0.188.0) */
 function estimateTripCost(ctx: BotContext, jumps: number): number {
   if (jumps <= 0) return 0;
-  // Fuel cost: ~15cr per fuel cell, ~1 cell per jump, round trip
-  const fuelCost = jumps * 2 * 15;
+  const fuelPerJump = ctx.nav.estimateJumpFuel(ctx.ship);
+  const fuelCost = jumps * 2 * fuelPerJump * 15;
   return fuelCost;
 }
 
-/** Check if a mission is completable by this bot */
+/** Check if a mission is completable AND profitable by this bot */
 function canCompleteMission(ctx: BotContext, mission: Mission, maxJumps: number, skipCombat: boolean): { ok: boolean; reason?: string } {
   // Skip combat missions
   if (skipCombat && isCombatMission(mission)) {
     return { ok: false, reason: "combat mission" };
   }
 
+  const creditReward = mission.rewards.find(r => r.type === "credits")?.amount ?? 0;
+
   // Check travel distance
   const targetSystem = findMissionTargetSystem(mission);
+  let totalJumps = 0;
   if (targetSystem) {
     const jumps = estimateJumps(ctx, targetSystem);
     if (jumps > maxJumps) {
@@ -162,16 +171,20 @@ function canCompleteMission(ctx: BotContext, mission: Mission, maxJumps: number,
       return { ok: false, reason: "unreachable system" };
     }
     if (!hasFuelForJumps(ctx, jumps)) {
-      return { ok: false, reason: `not enough fuel (need ${jumps * 2 + 2}, have ${ctx.ship.fuel})` };
+      const fuelNeeded = jumps * 2 * ctx.nav.estimateJumpFuel(ctx.ship) + 2;
+      return { ok: false, reason: `not enough fuel (need ${fuelNeeded}, have ${ctx.ship.fuel})` };
     }
+    totalJumps = jumps;
 
     // Check reward vs travel cost — don't accept missions that cost more to complete than they pay
-    const creditReward = mission.rewards.find(r => r.type === "credits")?.amount ?? 0;
     const tripCost = estimateTripCost(ctx, jumps);
     if (creditReward > 0 && tripCost >= creditReward) {
       return { ok: false, reason: `unprofitable (reward ${creditReward}cr < trip cost ~${tripCost}cr)` };
     }
   }
+
+  // Estimate total item acquisition cost for profitability check
+  let estimatedItemCost = 0;
 
   // Check all objectives for feasibility
   for (const obj of mission.objectives) {
@@ -183,6 +196,17 @@ function canCompleteMission(ctx: BotContext, mission: Mission, maxJumps: number,
       const objJumps = estimateJumps(ctx, obj.systemId);
       if (objJumps > maxJumps) return { ok: false, reason: `objective too far (${objJumps} jumps)` };
       if (objJumps === Infinity) return { ok: false, reason: "objective in unreachable system" };
+      if (objJumps > totalJumps) totalJumps = objJumps;
+    }
+
+    // Kill objectives: always skip
+    if (action === "kill") {
+      return { ok: false, reason: "combat objective" };
+    }
+
+    // Unknown objectives: skip — generic approach almost never works
+    if (action === "unknown") {
+      return { ok: false, reason: "unrecognized objective type" };
     }
 
     // Survey objectives: check if bot has a survey scanner module
@@ -197,32 +221,70 @@ function canCompleteMission(ctx: BotContext, mission: Mission, maxJumps: number,
       if (!hasMiningLaser) return { ok: false, reason: "no mining laser equipped" };
     }
 
-    // Kill objectives: skip even if not globally blocked (bots rarely win combat)
-    if (action === "kill") {
-      return { ok: false, reason: "combat objective" };
-    }
-
-    // Deliver objectives: check if bot can source the required item
-    if (action === "deliver" && obj.itemId) {
-      const need = obj.target - obj.progress;
-      const have = ctx.ship.cargo.find(c => c.itemId === obj.itemId)?.quantity ?? 0;
-      if (have < need) {
-        // Check if item is an ore — bots can mine it, but only if they have a mining laser
-        const isOreItem = obj.itemId.startsWith("ore_") || obj.itemId.endsWith("_ore") || obj.itemId.includes("_ore");
-        if (isOreItem) {
-          const hasMiningLaser = ctx.ship.modules.some((m) => m.moduleId.includes("mining"));
-          if (!hasMiningLaser) return { ok: false, reason: `need ${obj.itemId} but no mining laser` };
-          // Has laser — can mine, but it's a complex multi-step mission. Skip for now.
-          return { ok: false, reason: `acquire-and-deliver missions too complex (need ${need} ${obj.itemId})` };
+    // Deliver objectives: check item sourcing feasibility + cost
+    if (action === "deliver") {
+      if (obj.itemId) {
+        const need = obj.target - obj.progress;
+        const have = ctx.ship.cargo.find(c => c.itemId === obj.itemId)?.quantity ?? 0;
+        if (have < need) {
+          const shortfall = need - have;
+          // Ores: too complex (mine + deliver multi-step)
+          const isOreItem = obj.itemId.startsWith("ore_") || obj.itemId.endsWith("_ore");
+          if (isOreItem) {
+            return { ok: false, reason: `acquire-and-deliver ore too complex (need ${shortfall} ${obj.itemId})` };
+          }
+          // Estimate buy cost for profitability check
+          const unitPrice = ctx.crafting.getItemBasePrice(obj.itemId);
+          if (unitPrice > 0) {
+            estimatedItemCost += unitPrice * shortfall;
+          } else {
+            // Unknown item price — risky
+            return { ok: false, reason: `unknown item price for ${obj.itemId}` };
+          }
         }
+      } else {
+        // Deliver objective with no item ID — can't determine what to deliver
+        return { ok: false, reason: "deliver objective with no item specified" };
       }
     }
 
-    // Craft objectives: check if bot has crafting ability
-    if (action === "craft") {
-      const hasRecipes = ctx.crafting.getAllRecipes().length > 0;
-      if (!hasRecipes) return { ok: false, reason: "no crafting recipes available" };
+    // Buy/collect objectives: estimate cost
+    if (action === "buy" || action === "collect") {
+      if (obj.itemId) {
+        const need = obj.target - obj.progress;
+        const unitPrice = ctx.crafting.getItemBasePrice(obj.itemId);
+        if (unitPrice > 0) {
+          estimatedItemCost += unitPrice * need;
+        }
+        // If no price known, still risky but allow (might be cheap/free)
+      }
     }
+
+    // Craft objectives: check recipe exists and ingredients are obtainable
+    if (action === "craft") {
+      if (!obj.itemId) return { ok: false, reason: "craft objective with no target item" };
+      const recipes = ctx.crafting.getAllRecipes();
+      const recipe = recipes.find(r => r.outputItem === obj.itemId);
+      if (!recipe) return { ok: false, reason: `no recipe for ${obj.itemId}` };
+      // Estimate ingredient costs
+      for (const ing of recipe.ingredients) {
+        const need = ing.quantity * (obj.target - obj.progress);
+        const unitPrice = ctx.crafting.getItemBasePrice(ing.itemId);
+        estimatedItemCost += unitPrice * need;
+      }
+    }
+  }
+
+  // ── Profitability check: total cost vs reward ──
+  const totalTripCost = estimateTripCost(ctx, totalJumps);
+  const totalCost = totalTripCost + estimatedItemCost;
+  if (creditReward > 0 && totalCost >= creditReward * 0.8) {
+    // Mission costs ≥80% of reward — not worth the risk
+    return { ok: false, reason: `low profit (reward ${creditReward}cr, est. cost ~${Math.round(totalCost)}cr)` };
+  }
+  // Zero-reward missions: only accept if they're zero-cost (travel/survey only)
+  if (creditReward === 0 && estimatedItemCost > 0) {
+    return { ok: false, reason: "no credit reward but requires spending" };
   }
 
   return { ok: true };
@@ -286,6 +348,10 @@ export async function* mission_runner(ctx: BotContext): AsyncGenerator<RoutineYi
     let activeMissions: Mission[] = [];
     try {
       activeMissions = await ctx.api.getActiveMissions();
+      ctx.setActiveMissions(activeMissions.map(m => ({
+        id: m.id, title: m.title, type: m.type,
+        objectives: m.objectives.map(o => ({ description: o.description, progress: o.progress, target: o.target, complete: o.complete })),
+      })));
     } catch { /* ok, will browse new ones */ }
 
     // Resume an active mission if we have one (check feasibility first)
@@ -575,7 +641,9 @@ async function* handleObjective(
       yield "skipping combat objective";
       return false;
     case "unknown":
-      return yield* handleUnknownObjective(ctx, mission, obj, hubStation);
+      // Unknown objectives are filtered out in canCompleteMission, but handle gracefully
+      yield `unrecognized objective: "${obj.description}" — skipping`;
+      return false;
   }
 }
 
@@ -649,7 +717,10 @@ async function* handleMineObjective(
   }
 
   // Mine multiple times per cycle to make progress
-  const mineCycles = Math.min(3, obj.target - obj.progress);
+  // Some missions report target=1 (completion count) while needing many units — use cargo space as guide
+  const remaining = obj.target - obj.progress;
+  const cargoSpace = Math.max(1, ctx.ship.cargoCapacity - ctx.ship.cargoUsed);
+  const mineCycles = remaining <= 1 ? Math.min(10, cargoSpace) : Math.min(10, remaining);
   for (let i = 0; i < mineCycles; i++) {
     if (ctx.shouldStop) return true;
     yield `mining (${i + 1}/${mineCycles})`;
@@ -657,31 +728,99 @@ async function* handleMineObjective(
       await ctx.api.mine();
       await ctx.refreshState();
     } catch (err) {
-      yield `mine failed: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = err instanceof Error ? err.message : String(err);
+      yield `mine failed: ${msg}`;
+      // Cargo full — offload before retrying
+      if (msg.includes("cargo_full")) {
+        yield* offloadMissionCargo(ctx, obj, belt);
+        continue; // Retry mining after offload
+      }
       break;
     }
     // Check if cargo is getting full — dock and sell/deposit
     if (ctx.ship.cargoUsed / ctx.ship.cargoCapacity > 0.85) {
-      yield "cargo nearly full, docking to offload";
-      try {
-        await findAndDock(ctx);
-        // Sell or deposit cargo
-        for (const item of ctx.ship.cargo) {
-          if (item.quantity <= 0) continue;
-          try { await ctx.api.sell(item.itemId, item.quantity); } catch { /* ok */ }
-        }
-        await ctx.refreshState();
-        // Undock to continue mining
-        try { await ctx.api.undock(); await ctx.refreshState(); } catch { /* ok */ }
-        // Re-travel to belt
-        if (ctx.player.currentPoi !== belt.id) {
-          try { await ctx.api.travel(belt.id); await ctx.refreshState(); } catch { /* ok */ }
-        }
-      } catch { /* ok */ }
+      yield* offloadMissionCargo(ctx, obj, belt);
     }
   }
 
   return true;
+}
+
+/** Offload non-mission cargo to make room for mining */
+async function* offloadMissionCargo(
+  ctx: BotContext,
+  obj: MissionObjective,
+  belt: { id: string; name?: string },
+): AsyncGenerator<RoutineYield, void, void> {
+  yield "cargo full, docking to offload";
+  try {
+    await findAndDock(ctx);
+    await ctx.refreshState();
+
+    const missionItemId = obj.itemId;
+    const cargoSnapshot = [...ctx.ship.cargo];
+
+    // Phase 1: Sell/deposit/jettison non-mission items
+    let offloaded = 0;
+    for (const item of cargoSnapshot) {
+      if (item.quantity <= 0) continue;
+      if (missionItemId && item.itemId === missionItemId) continue; // Keep mission items
+      try {
+        await ctx.api.sell(item.itemId, item.quantity);
+        offloaded += item.quantity;
+      } catch {
+        try {
+          await ctx.api.factionDepositItems(item.itemId, item.quantity);
+          offloaded += item.quantity;
+        } catch {
+          try {
+            await ctx.api.jettison(item.itemId, item.quantity);
+            offloaded += item.quantity;
+          } catch (err) {
+            yield `could not offload ${item.quantity} ${item.itemId}: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        }
+      }
+    }
+
+    await ctx.refreshState();
+
+    // Phase 2: If cargo still full (all mission items), deposit excess mission items
+    // Keep only what we need for the objective, deposit/sell the rest
+    if (!ctx.cargo.hasSpace(ctx.ship, 1) && missionItemId) {
+      const missionCargo = ctx.ship.cargo.find(c => c.itemId === missionItemId);
+      if (missionCargo && missionCargo.quantity > 0) {
+        const needed = Math.max(0, obj.target - obj.progress);
+        const excess = missionCargo.quantity - needed;
+        if (excess > 0) {
+          yield `depositing ${excess} excess ${missionItemId} (have ${missionCargo.quantity}, need ${needed})`;
+          try {
+            await ctx.api.factionDepositItems(missionItemId, excess);
+            offloaded += excess;
+          } catch {
+            try {
+              await ctx.api.sell(missionItemId, excess);
+              offloaded += excess;
+            } catch { /* keep trying */ }
+          }
+          await ctx.refreshState();
+        } else if (needed <= 0) {
+          // Already have enough — no need to mine more, just return
+          yield `already have ${missionCargo.quantity} ${missionItemId} (need ${obj.target})`;
+        }
+      }
+    }
+
+    yield `offloaded ${offloaded} items`;
+
+    // Undock and return to belt
+    try { await ctx.api.undock(); await ctx.refreshState(); } catch { /* ok */ }
+    if (ctx.player.currentPoi !== belt.id) {
+      try { await ctx.api.travel(belt.id); await ctx.refreshState(); } catch { /* ok */ }
+    }
+  } catch (err) {
+    yield `offload failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 /** Deliver objective: bring items to a station */
@@ -1031,51 +1170,6 @@ async function* handleCraftObjective(
   }
 }
 
-/** Unknown objective: try docking at hub and completing */
-async function* handleUnknownObjective(
-  ctx: BotContext,
-  mission: Mission,
-  obj: MissionObjective,
-  hubStation: string,
-): AsyncGenerator<RoutineYield, boolean, void> {
-  yield `unknown objective: "${obj.description}" — trying generic approach`;
-
-  // Navigate to any target specified
-  const targetSystem = obj.systemId ?? findMissionTargetSystem(mission);
-  if (targetSystem && targetSystem !== ctx.player.currentSystem) {
-    try { await navigateTo(ctx, targetSystem); } catch { /* ok */ }
-  }
-
-  const targetBase = obj.baseId ?? findMissionTargetBase(mission);
-  if (targetBase) {
-    try { await navigateAndDock(ctx, targetBase); } catch { /* ok */ }
-  } else if (hubStation && ctx.player.dockedAtBase !== hubStation) {
-    try { await navigateAndDock(ctx, hubStation); } catch { /* ok */ }
-  } else if (!ctx.player.dockedAtBase) {
-    try { await findAndDock(ctx); } catch { /* ok */ }
-  }
-
-  // Try completing
-  try {
-    await ctx.api.completeMission(mission.id);
-    await ctx.refreshState();
-    return true;
-  } catch { /* not ready */ }
-
-  // Visit a POI if undocked
-  if (!ctx.player.dockedAtBase) {
-    await ensureSystemDetail(ctx);
-    const system = ctx.galaxy.getSystem(ctx.player.currentSystem);
-    if (system) {
-      const unvisited = system.pois.find(p => p.id !== ctx.player.currentPoi);
-      if (unvisited) {
-        try { await ctx.api.travel(unvisited.id); await ctx.refreshState(); } catch { /* ok */ }
-      }
-    }
-  }
-
-  return false;
-}
 
 /** Complete a finished mission — dock and submit */
 async function* completeMission(
@@ -1101,10 +1195,17 @@ async function* completeMission(
 
   yield "completing mission";
   try {
+    const creditsBefore = ctx.player.credits;
     await ctx.api.completeMission(mission.id);
     await ctx.refreshState();
     const reward = mission.rewards.find((r) => r.type === "credits");
+    const earned = ctx.player.credits - creditsBefore;
     yield `mission complete! ${reward ? `+${reward.amount}cr` : ""}`;
+    // Pay faction tax on mission rewards
+    if (earned > 0 && ctx.player.dockedAtBase) {
+      const tax = await payFactionTax(ctx, earned);
+      if (tax.message) yield tax.message;
+    }
   } catch (err) {
     yield `completion failed: ${err instanceof Error ? err.message : String(err)}`;
     // Try completing undocked

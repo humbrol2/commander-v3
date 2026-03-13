@@ -21,6 +21,7 @@ import {
   handleEmergency,
   safetyCheck,
   getParam,
+  payFactionTax,
 } from "./helpers";
 
 export async function* salvager(ctx: BotContext): AsyncGenerator<RoutineYield, void, void> {
@@ -127,9 +128,14 @@ export async function* salvager(ctx: BotContext): AsyncGenerator<RoutineYield, v
           // Fall back to selling
           yield `scrap failed, selling instead: ${err instanceof Error ? err.message : String(err)}`;
           try {
-            await ctx.api.sellWreck();
+            const sellResult = await ctx.api.sellWreck();
             await ctx.refreshState();
+            const earned = Number(sellResult.credits_earned ?? sellResult.total ?? 0);
             yield "wreck sold";
+            if (earned > 0 && ctx.player.dockedAtBase) {
+              const tax = await payFactionTax(ctx, earned);
+              if (tax.message) yield tax.message;
+            }
           } catch {
             yield "sell also failed";
           }
@@ -137,9 +143,14 @@ export async function* salvager(ctx: BotContext): AsyncGenerator<RoutineYield, v
       } else {
         yield "selling wreck";
         try {
-          await ctx.api.sellWreck();
+          const sellResult = await ctx.api.sellWreck();
           await ctx.refreshState();
+          const earned = Number(sellResult.credits_earned ?? sellResult.total ?? 0);
           yield "wreck sold";
+          if (earned > 0 && ctx.player.dockedAtBase) {
+            const tax = await payFactionTax(ctx, earned);
+            if (tax.message) yield tax.message;
+          }
         } catch (err) {
           yield `sell failed: ${err instanceof Error ? err.message : String(err)}`;
         }

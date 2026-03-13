@@ -20,6 +20,7 @@ import type { TrainingLogger } from "../data/training-logger";
 import type { EventBus } from "../events/bus";
 import type { BotSummary, RoutineName } from "../types/protocol";
 import type { FleetConfig } from "./types";
+import { KNOWN_RESOURCE_LOCATIONS } from "../config/constants";
 
 export interface SharedServices {
   galaxy: Galaxy;
@@ -50,7 +51,7 @@ export class BotManager {
   private routines: RoutineRegistry = {};
 
   /** Fleet-wide config applied to all bots */
-  fleetConfig: FleetConfig = { homeSystem: "", homeBase: "", defaultStorageMode: "sell", factionStorageStation: "", factionTaxPercent: 0, minBotCredits: 0 };
+  fleetConfig: FleetConfig = { homeSystem: "", homeBase: "", defaultStorageMode: "sell", factionStorageStation: "", factionTaxPercent: 0, minBotCredits: 0, maxBotCredits: 0, facilityBuildQueue: [] };
 
   /** Optional callback for broadcasting bot state changes to the dashboard */
   onBotStateChange: ((botId: string, routine: string, state: string) => void) | null = null;
@@ -108,11 +109,13 @@ export class BotManager {
         moduleIds: ship?.modules.map((m) => m.moduleId) ?? [],
         shipClass: ship?.classId ?? null,
         cargoCapacity: ship?.cargoCapacity ?? 0,
+        speed: ship?.speed ?? 1,
+        role: bot.role,
         ownedShips: bot.ownedShips,
         skills: bot.skillLevels,
         rapidRoutines: bot.rapidRoutines,
         moduleWear: ship?.modules.length
-          ? ship.modules.reduce((sum, m) => sum + ((m as any).durability ?? (m as any).health ?? 100), 0) / ship.modules.length
+          ? ship.modules.reduce((sum, m) => sum + (m.durability ?? m.health ?? 100), 0) / ship.modules.length
           : 100,
       });
 
@@ -357,6 +360,36 @@ export class BotManager {
             this.services.galaxy.load(valid);
             console.log(`[Galaxy] Map loaded: ${this.services.galaxy.systemCount} systems`);
 
+            // Hydrate galaxy with persisted POI discoveries
+            const persistedPois = this.services.cache.loadPersistedPois();
+            if (persistedPois.length > 0) {
+              const enriched = this.services.galaxy.hydrateFromPersistedPois(persistedPois);
+              console.log(`[Galaxy] Hydrated ${enriched} POIs from ${persistedPois.length} persisted discoveries`);
+            }
+
+            // Inject known strategic resource locations (e.g. energy crystals at Frontier Veil Nebula)
+            for (const loc of KNOWN_RESOURCE_LOCATIONS) {
+              const existing = this.services.galaxy.getPoi(loc.poiId);
+              if (!existing || existing.resources.length === 0) {
+                const poi: import("../types/game").PoiSummary = {
+                  id: loc.poiId,
+                  name: loc.poiName,
+                  type: loc.poiType as import("../types/game").PoiType,
+                  hasBase: false,
+                  baseId: null,
+                  baseName: null,
+                  resources: loc.resources.map(r => ({ resourceId: r.resourceId, richness: r.richness, remaining: 9999 })),
+                };
+                const injected = this.services.galaxy.hydrateFromPersistedPois([{ poiId: loc.poiId, systemId: loc.systemId, poi }]);
+                if (injected > 0) console.log(`[Galaxy] Injected strategic resource location: ${loc.poiName} in ${loc.systemId}`);
+              }
+            }
+
+            // Wire POI persistence callback
+            this.services.galaxy.onPoisDiscovered = (systemId, pois) => {
+              this.services.cache.persistSystemPois(systemId, pois);
+            };
+
             // If API doesn't provide coordinates, generate a force-directed layout
             if (this.services.galaxy.allCoordsZero) {
               console.warn(`[Galaxy] All systems at (0,0) — generating force-directed layout`);
@@ -377,7 +410,12 @@ export class BotManager {
               ]);
               this.services.crafting.load(recipes);
               this.services.crafting.loadItems(items);
-              console.log(`[Catalog] ${recipes.length} recipes, ${items.length} items`);
+              // Seed facility-only recipe filter so crafting engine never selects them
+              const facilityOnly = this.services.cache.getFacilityOnlyRecipes();
+              if (facilityOnly.length > 0) {
+                this.services.crafting.setFacilityOnlyRecipes(facilityOnly);
+              }
+              console.log(`[Catalog] ${recipes.length} recipes, ${items.length} items${facilityOnly.length > 0 ? `, ${facilityOnly.length} facility-only excluded` : ""}`);
             } catch (err) {
               console.warn("[Catalog] Failed to load:", err instanceof Error ? err.message : err);
             }

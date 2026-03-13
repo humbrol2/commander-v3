@@ -22,6 +22,10 @@ export interface LlmBrainConfig {
   timeoutMs?: number;
   /** Prefix prepended to user prompt (e.g. "/no_think\n" for Ollama qwen3) */
   promptPrefix?: string;
+  /** Cooldown before a bot can be reassigned (default: 300s, matches scoring brain) */
+  reassignmentCooldownMs?: number;
+  /** Path to a custom system prompt file (loaded fresh on construction) */
+  promptFile?: string;
 }
 
 /** Rolling window for latency/success tracking */
@@ -43,15 +47,16 @@ export class LlmBrain implements CommanderBrain {
 
   // Reassignment cooldowns
   private reassignments = new Map<string, ReassignmentState>();
-  private reassignmentCooldownMs = 120_000; // 2 min default
+  private reassignmentCooldownMs: number;
 
   constructor(config: LlmBrainConfig) {
     this.name = config.name;
     this.model = config.model;
     this.maxTokens = config.maxTokens ?? 1024;
     this.timeoutMs = config.timeoutMs ?? 15_000;
-    this.systemPrompt = buildSystemPrompt();
+    this.systemPrompt = buildSystemPrompt(config.promptFile);
     this.promptPrefix = config.promptPrefix ?? "";
+    this.reassignmentCooldownMs = config.reassignmentCooldownMs ?? 300_000; // 5 min, matches scoring brain
   }
 
   async evaluate(input: EvaluationInput): Promise<EvaluationOutput> {
@@ -61,23 +66,56 @@ export class LlmBrain implements CommanderBrain {
     const now = Date.now();
 
     try {
-      const result = await generateText({
-        model: this.model,
-        system: this.systemPrompt,
-        prompt: this.promptPrefix + userPrompt,
-        maxOutputTokens: this.maxTokens,
-        abortSignal: AbortSignal.timeout(this.timeoutMs),
-      });
+      // Self-correction loop: retry with error feedback (Prayer pattern)
+      const MAX_RETRIES = 2;
+      let lastParseError: string | undefined;
+      let responseText = "";
+      let result: Awaited<ReturnType<typeof generateText>> | undefined;
 
-      // Use text if available, fall back to reasoning content (qwen3 thinking mode)
-      let responseText = result.text;
-      if (!responseText && result.reasoning) {
-        const parts = Array.isArray(result.reasoning) ? result.reasoning : [result.reasoning];
-        responseText = parts.map((p: { text?: string }) => p.text ?? String(p)).join("\n");
-      }
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        let prompt = this.promptPrefix + userPrompt;
+        // On retry, inject the parse error so the model can self-correct
+        if (attempt > 0 && lastParseError) {
+          prompt += `\n\n[RETRY ${attempt}/${MAX_RETRIES}] Your previous response could not be parsed:\n${lastParseError}\nPlease fix the format and try again.`;
+          console.warn(`[${this.name}] retry ${attempt}: feeding parse error back to model`);
+        }
 
-      if (!responseText) {
-        throw new Error("Empty response from model (no text or reasoning)");
+        result = await generateText({
+          model: this.model,
+          system: this.systemPrompt,
+          prompt,
+          maxOutputTokens: this.maxTokens,
+          abortSignal: AbortSignal.timeout(this.timeoutMs),
+        });
+
+        // Use text if available, fall back to reasoning content (qwen3 thinking mode)
+        responseText = result.text;
+        if (!responseText && result.reasoning) {
+          const parts = Array.isArray(result.reasoning) ? result.reasoning : [result.reasoning];
+          responseText = parts.map((p: { text?: string }) => p.text ?? String(p)).join("\n");
+        }
+
+        if (!responseText) {
+          lastParseError = "Empty response from model (no text or reasoning)";
+          if (attempt < MAX_RETRIES) continue;
+          throw new Error(lastParseError);
+        }
+
+        // Try parsing — retry only on actual parse failures, not valid empty results
+        try {
+          const testParse = parseLlmResponse(responseText, validBotIds);
+          // Empty assignments with confidence > 0.5 = LLM intentionally returned no changes
+          if (testParse.assignments.length === 0 && input.fleet.bots.length > 0 && testParse.confidence < 0.5) {
+            lastParseError = `Parsed 0 assignments with low confidence (${testParse.confidence}) from ${responseText.length} chars.`;
+            if (attempt < MAX_RETRIES) continue;
+          }
+          break; // Successful parse
+        } catch (parseErr) {
+          lastParseError = parseErr instanceof Error ? parseErr.message : String(parseErr);
+          if (attempt < MAX_RETRIES) continue;
+          // Final attempt failed — use whatever we got
+          break;
+        }
       }
 
       const parsed = parseLlmResponse(responseText, validBotIds);
@@ -120,7 +158,7 @@ export class LlmBrain implements CommanderBrain {
         brainName: this.name,
         latencyMs,
         confidence: parsed.confidence,
-        tokenUsage: result.usage ? {
+        tokenUsage: result?.usage ? {
           input: result.usage.inputTokens ?? 0,
           output: result.usage.outputTokens ?? 0,
         } : undefined,
@@ -157,7 +195,7 @@ export class LlmBrain implements CommanderBrain {
 
     return {
       name: this.name,
-      available: total === 0 || (successCount / total) > 0.3,
+      available: total === 0 || (successCount / total) > 0.5,
       avgLatencyMs: Math.round(avgLatency),
       successRate: total === 0 ? 1 : successCount / total,
       lastError: this.lastError,

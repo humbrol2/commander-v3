@@ -6,7 +6,7 @@
 
 import type { DB } from "./db";
 import { commanderMemory } from "./schema";
-import { eq } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 
 export interface MemoryFact {
   key: string;
@@ -54,9 +54,8 @@ export class MemoryStore {
     return this.db
       .select()
       .from(commanderMemory)
-      .orderBy(commanderMemory.importance)
+      .orderBy(desc(commanderMemory.importance))
       .all()
-      .reverse()
       .map((r) => ({ ...r, updatedAt: r.updatedAt ?? new Date().toISOString() }));
   }
 
@@ -72,7 +71,8 @@ export class MemoryStore {
 
   /** Get memory count */
   count(): number {
-    return this.getAll().length;
+    const result = this.db.select({ count: sql<number>`count(*)` }).from(commanderMemory).get();
+    return result?.count ?? 0;
   }
 
   /** Build a text block for LLM context injection */

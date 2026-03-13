@@ -6,12 +6,6 @@
 import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
-// ── Schema Version ──
-
-export const schemaVersion = sqliteTable("schema_version", {
-  version: integer("version").notNull(),
-});
-
 // ── Static Data Cache (version-gated) ──
 
 export const cache = sqliteTable("cache", {
@@ -174,6 +168,7 @@ export const botSettings = sqliteTable("bot_settings", {
   maxCargoFillPct: real("max_cargo_fill_pct").notNull().default(90),
   storageMode: text("storage_mode").notNull().default("sell"),
   factionStorage: integer("faction_storage").notNull().default(0),
+  role: text("role"),
   updatedAt: text("updated_at").default(sql`(datetime('now'))`),
 });
 
@@ -234,14 +229,6 @@ export const llmDecisions = sqliteTable("llm_decisions", {
   index("idx_llm_tick").on(table.tick),
   index("idx_llm_brain").on(table.brainName),
 ]);
-
-// ── System Cache (persistent system details) ──
-
-export const systemCache = sqliteTable("system_cache", {
-  systemId: text("system_id").primaryKey(),
-  data: text("data").notNull(),
-  updatedAt: text("updated_at").default(sql`(datetime('now'))`),
-});
 
 // ── POI Cache (persistent POI resources) ──
 

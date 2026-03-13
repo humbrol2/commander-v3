@@ -15,8 +15,18 @@ const VALID_ROUTINES: RoutineName[] = [
   "harvester", "hunter", "salvager", "scavenger", "mission_runner",
 ];
 
-/** Build system prompt (stable, cacheable) */
-export function buildSystemPrompt(): string {
+/** Build system prompt (stable, cacheable). If promptFile is set, loads from disk (fresh each eval). */
+export function buildSystemPrompt(promptFile?: string): string {
+  if (promptFile) {
+    try {
+      const { readFileSync } = require("fs");
+      const text = readFileSync(promptFile, "utf-8") as string;
+      if (text.trim().length > 0) return text;
+    } catch {
+      // File missing or unreadable — fall through to default
+    }
+  }
+
   return `You are a fleet commander AI for SpaceMolt, a space MMO. You manage bot assignments.
 
 AVAILABLE ROUTINES:
@@ -52,6 +62,9 @@ CONSTRAINTS:
 - Supply chain: miners→ore→faction→crafters→goods→faction→traders→sell
 - PRIORITY: miners, crafters, traders are core income. Prefer traders over scavengers for idle bots
 - Diversity: avoid assigning all bots to the same routine
+- FUEL PHYSICS: fuel scales with ship mass, speed, distance, and cargo load. Slow heavy ships burn more. Prefer short trade routes for slow ships
+- JUMP TIME: jump ticks = ceil(10/speed). Speed-2 ships take 5 ticks/jump; speed-6 take 2. Assign fast ships to multi-jump routes
+- SPECIALIST ROLES: bots with role= are specialists — only assign them routines compatible with their role. Do NOT reassign specialists to other roles
 - Assign refit when bots have worn modules (modWear dropping) or missing module slots
 - mission_runner is great for XP gain and refreshes market data as a side effect
 
@@ -126,10 +139,12 @@ function formatFleet(bots: FleetBotInfo[]): string {
     const parts = [
       `${b.botId} [${b.status}]`,
       b.routine ? `routine=${b.routine}` : "unassigned",
+      b.role ? `role=${b.role}` : null,
       `fuel=${b.fuelPct}%`,
       `cargo=${b.cargoPct}%`,
       `hull=${b.hullPct}%`,
       `ship=${b.shipClass}`,
+      `spd=${b.speed}`,
       `system=${b.systemId}`,
       b.docked ? "docked" : "undocked",
     ];
@@ -146,7 +161,7 @@ function formatFleet(bots: FleetBotInfo[]): string {
         .join(",");
       parts.push(`skills={${skills}}`);
     }
-    return `  ${parts.join(" | ")}`;
+    return `  ${parts.filter(Boolean).join(" | ")}`;
   });
 
   return `FLEET (${bots.length} bots):\n${lines.join("\n")}`;

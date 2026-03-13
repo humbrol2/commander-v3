@@ -7,19 +7,20 @@ import type { BotContext } from "../bot/types";
 import type { RoutineYield } from "../events/types";
 import { typedYield } from "../events/types";
 import type { TravelResult, MiningYield, TradeResult, MarketOrder, MarketPrice } from "../types/game";
+import {
+  FUEL_REFUEL_THRESHOLD, FUEL_PREDEPARTURE_THRESHOLD, FUEL_CELL_RESERVE,
+  FUEL_CELL_MAX_PRICE, FUEL_SAFETY_MARGIN, FUEL_LOW_BURN_THRESHOLD,
+  REPAIR_THRESHOLD, REPAIR_SERVICE_THRESHOLD, MODULE_REPAIR_THRESHOLD,
+  EMERGENCY_HULL_THRESHOLD, INSURANCE_MAX_WALLET_PCT, INSURANCE_DURATION_TICKS,
+  MAX_MATERIAL_BUY_PRICE, INSIGHT_GATE_PRICE, STORAGE_COLLECT_INTERVAL_MS,
+  MINE_REFRESH_INTERVAL,
+} from "../config/constants";
+
+// Re-export for routines that import from helpers
+export { MAX_MATERIAL_BUY_PRICE, INSIGHT_GATE_PRICE };
 
 /** Items that should never be sold or deposited — kept as emergency reserves */
 const PROTECTED_ITEMS = new Set(["fuel_cell"]);
-
-/**
- * Maximum unit price for material/trade buys (not fuel, not modules).
- * Buys above INSIGHT_GATE_PRICE require a demand insight at the sell station.
- * Buys above this cap are always blocked.
- */
-export const MAX_MATERIAL_BUY_PRICE = 20_000;
-
-/** Price threshold above which a demand insight is required at the sell destination */
-export const INSIGHT_GATE_PRICE = 500;
 
 /** Check if an item is protected from selling/depositing */
 export function isProtectedItem(itemId: string): boolean {
@@ -121,8 +122,7 @@ export async function navigateTo(
 
     // Pre-flight fuel check: ensure we have enough fuel for the full route
     // Each jump costs ~1 fuel. Require fuel for the route + safety margin for return.
-    const fuelSafetyMargin = 3; // Reserve 3 fuel units to reach nearest station if needed
-    if (ctx.ship.fuel < jumpsNeeded + fuelSafetyMargin) {
+    if (ctx.ship.fuel < jumpsNeeded + FUEL_SAFETY_MARGIN) {
       // Try to dock and refuel first
       if (!ctx.player.dockedAtBase) {
         const canDock = ctx.station.canDock(ctx.player);
@@ -133,12 +133,12 @@ export async function navigateTo(
             await refuelIfNeeded(ctx);
             await ctx.api.undock();
             await ctx.refreshState();
-          } catch { /* best effort */ }
+          } catch (err) { logWarn(ctx, `pre-flight refuel dock failed: ${err instanceof Error ? err.message : err}`); }
         }
       }
       // Re-check after refuel attempt
-      if (ctx.ship.fuel < jumpsNeeded + fuelSafetyMargin) {
-        throw new Error(`Insufficient fuel: need ${jumpsNeeded + fuelSafetyMargin}, have ${ctx.ship.fuel}. Route: ${jumpsNeeded} jumps to ${targetSystemId}`);
+      if (ctx.ship.fuel < jumpsNeeded + FUEL_SAFETY_MARGIN) {
+        throw new Error(`Insufficient fuel: need ${jumpsNeeded + FUEL_SAFETY_MARGIN}, have ${ctx.ship.fuel}. Route: ${jumpsNeeded} jumps to ${targetSystemId}`);
       }
     }
 
@@ -147,14 +147,14 @@ export async function navigateTo(
       if (ctx.shouldStop) return;
 
       // Mid-route fuel check: if critically low, abort and dock at nearest station
-      if (ctx.ship.fuel <= fuelSafetyMargin) {
+      if (ctx.ship.fuel <= FUEL_SAFETY_MARGIN) {
         logWarn(ctx, `fuel critically low (${ctx.ship.fuel} remaining), aborting route`);
         await burnFuelCells(ctx);
         // If still low, try to dock at nearest station
         if (ctx.ship.fuel <= 1) {
           const dockTarget = ctx.station.chooseDockTarget(ctx.player, ctx.ship);
           if (dockTarget) {
-            try { await navigateTo(ctx, dockTarget.systemId, dockTarget.poiId); } catch { /* stranded */ }
+            try { await navigateTo(ctx, dockTarget.systemId, dockTarget.poiId); } catch (err) { logWarn(ctx, `emergency dock attempt failed: ${err instanceof Error ? err.message : err}`); }
           }
           throw new Error(`Fuel emergency: aborted route to ${targetSystemId} at jump ${i}/${jumpsNeeded}`);
         }
@@ -229,7 +229,7 @@ export async function dockAtCurrent(ctx: BotContext): Promise<void> {
       try {
         const orders = await ctx.api.viewMarket();
         if (orders.length > 0) cacheMarketData(ctx, ctx.player.dockedAtBase, orders);
-      } catch { /* non-critical */ }
+      } catch (err) { logWarn(ctx, `market scan failed (cached dock): ${err instanceof Error ? err.message : err}`); }
     }
     if (!ctx.cache.getShipyardData(ctx.player.dockedAtBase)) {
       try {
@@ -243,7 +243,12 @@ export async function dockAtCurrent(ctx: BotContext): Promise<void> {
           }));
           ctx.cache.setShipyardData(ctx.player.dockedAtBase, ships);
         }
-      } catch { /* non-critical */ }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("unknown_command") && !msg.includes("Unknown command")) {
+          logWarn(ctx, `shipyard scan failed: ${msg}`);
+        }
+      }
     }
     return;
   }
@@ -286,16 +291,23 @@ export async function dockAtCurrent(ctx: BotContext): Promise<void> {
         }));
         ctx.cache.setShipyardData(ctx.player.dockedAtBase, ships);
       }
-    } catch { /* non-critical — some stations may lack shipyards */ }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Suppress "unknown_command" — station has no shipyard (not an error)
+      if (!msg.includes("unknown_command") && !msg.includes("Unknown command")) {
+        logWarn(ctx, `shipyard scan failed: ${msg}`);
+      }
+    }
 
     // Analyze market for insights (rate-limited — at most once per 30min per station)
     await analyzeMarketIfStale(ctx);
 
     // Collect credits from station storage periodically (not every dock — saves API calls)
     const now = Date.now();
-    const lastCollect = (ctx as unknown as Record<string, number>).__lastStorageCollect ?? 0;
-    if (now - lastCollect > 300_000) { // At most once per 5 minutes
-      (ctx as unknown as Record<string, number>).__lastStorageCollect = now;
+    const ctxExt = ctx as unknown as Record<string, unknown>;
+    const lastCollect = (ctxExt.__lastStorageCollect as number) ?? 0;
+    if (now - lastCollect > STORAGE_COLLECT_INTERVAL_MS) {
+      ctxExt.__lastStorageCollect = now;
       try {
         const storage = await ctx.api.viewStorageTyped();
         if (storage.credits > 0) {
@@ -303,7 +315,7 @@ export async function dockAtCurrent(ctx: BotContext): Promise<void> {
           await ctx.refreshState();
           log(ctx, `collected ${storage.credits}cr from station storage`);
         }
-      } catch { /* non-critical */ }
+      } catch (err) { logWarn(ctx, `storage credit collect failed: ${err instanceof Error ? err.message : err}`); }
     }
   }
 }
@@ -322,8 +334,27 @@ export async function navigateAndDock(ctx: BotContext, baseId: string): Promise<
   const poi = system?.pois.find((p) => p.baseId === baseId);
   if (!poi) throw new Error(`No POI for base: ${baseId}`);
 
-  await navigateTo(ctx, systemId, poi.id);
-  await dockAtCurrent(ctx);
+  try {
+    await navigateTo(ctx, systemId, poi.id);
+    await dockAtCurrent(ctx);
+  } catch (err) {
+    // Fallback: if POI travel fails (e.g. invalid_poi), navigate to system and findAndDock
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("invalid_poi") || msg.includes("Unknown destination")) {
+      logWarn(ctx, `POI travel failed for ${baseId} (poi=${poi.id}), using findAndDock fallback`);
+      // Ensure we're in the right system
+      if (ctx.player.currentSystem !== systemId) {
+        await navigateTo(ctx, systemId);
+      }
+      await findAndDock(ctx);
+      // Verify we docked at the right base (or at least somewhere)
+      if (!ctx.player.dockedAtBase) {
+        throw new Error(`failed to dock at ${baseId} (fallback)`);
+      }
+    } else {
+      throw err;
+    }
+  }
 }
 
 /**
@@ -345,7 +376,7 @@ export async function findAndDock(ctx: BotContext): Promise<void> {
       try {
         const orders = await ctx.api.viewMarket();
         if (orders.length > 0) cacheMarketData(ctx, ctx.player.dockedAtBase, orders);
-      } catch {}
+      } catch (err) { logWarn(ctx, `market scan failed: ${err instanceof Error ? err.message : err}`); }
       return;
     }
   }
@@ -370,7 +401,7 @@ export async function findAndDock(ctx: BotContext): Promise<void> {
  *   - Docked: uses station refuel (credits) then burns cargo cells if still low
  *   - Undocked: burns fuel cells from cargo
  */
-export async function refuelIfNeeded(ctx: BotContext, threshold = 60): Promise<boolean> {
+export async function refuelIfNeeded(ctx: BotContext, threshold = FUEL_REFUEL_THRESHOLD): Promise<boolean> {
   const fuelPct = ctx.fuel.getPercentage(ctx.ship);
   if (fuelPct >= threshold) return false;
 
@@ -379,8 +410,8 @@ export async function refuelIfNeeded(ctx: BotContext, threshold = 60): Promise<b
     try {
       await ctx.api.refuel();
       await ctx.refreshState();
-    } catch {
-      // tank_full or other refuel errors — continue to try fuel cells
+    } catch (err) {
+      logWarn(ctx, `refuel failed: ${err instanceof Error ? err.message : err}`);
     }
     if (ctx.fuel.getPercentage(ctx.ship) >= threshold) return true;
 
@@ -390,8 +421,8 @@ export async function refuelIfNeeded(ctx: BotContext, threshold = 60): Promise<b
         try {
           await withdrawFromFaction(ctx, "fuel_cell", 5);
           await ctx.refreshState();
-        } catch {
-          // No fuel in faction storage
+        } catch (err) {
+          logWarn(ctx, `faction fuel withdrawal failed: ${err instanceof Error ? err.message : err}`);
         }
       }
     }
@@ -416,7 +447,8 @@ export async function burnFuelCells(ctx: BotContext): Promise<boolean> {
     await ctx.api.refuel(undefined, totalCells);
     await ctx.refreshState();
     return true;
-  } catch {
+  } catch (err) {
+    logWarn(ctx, `burn fuel cells failed: ${err instanceof Error ? err.message : err}`);
     return false;
   }
 }
@@ -425,7 +457,7 @@ export async function burnFuelCells(ctx: BotContext): Promise<boolean> {
  * Repair at the current station if hull is damaged. Must be docked.
  * Also repairs any worn modules (durability < 100%).
  */
-export async function repairIfNeeded(ctx: BotContext, threshold = 80): Promise<boolean> {
+export async function repairIfNeeded(ctx: BotContext, threshold = REPAIR_THRESHOLD): Promise<boolean> {
   let repaired = false;
   const hullPct = (ctx.ship.hull / ctx.ship.maxHull) * 100;
   if (hullPct < threshold) {
@@ -439,12 +471,12 @@ export async function repairIfNeeded(ctx: BotContext, threshold = 80): Promise<b
     // Refresh state to get accurate module durability before checking
     if (repaired) await ctx.refreshState();
     for (const mod of ctx.ship.modules) {
-      const durability = (mod as any).durability ?? (mod as any).health ?? 100;
-      if (durability < 90) {
+      const durability = mod.durability ?? mod.health ?? 100;
+      if (durability < MODULE_REPAIR_THRESHOLD) {
         try {
           await ctx.api.repairModule(mod.moduleId);
           repaired = true;
-        } catch { /* module may not be repairable or insufficient credits */ }
+        } catch (err) { logWarn(ctx, `module repair failed (${mod.moduleId}): ${err instanceof Error ? err.message : err}`); }
       }
     }
     if (repaired) await ctx.refreshState();
@@ -457,8 +489,8 @@ export async function repairIfNeeded(ctx: BotContext, threshold = 80): Promise<b
  * Full station service: refuel + repair + buy insurance + ensure fuel safety.
  */
 export async function serviceShip(ctx: BotContext): Promise<void> {
-  await repairIfNeeded(ctx, 90);
-  await refuelIfNeeded(ctx, 80);
+  await repairIfNeeded(ctx, REPAIR_SERVICE_THRESHOLD);
+  await refuelIfNeeded(ctx, REPAIR_THRESHOLD);
   await ensureInsurance(ctx);
 }
 
@@ -473,24 +505,22 @@ export async function ensureInsurance(ctx: BotContext): Promise<void> {
   try {
     const quote = await ctx.api.getInsuranceQuote();
     // Check if already insured
-    const covered = (quote as any).covered ?? (quote as any).insured ?? false;
+    const covered = quote.covered ?? quote.insured ?? false;
     if (covered) return;
 
-    const premium = Number((quote as any).premium ?? (quote as any).cost ?? 0);
+    const premium = Number(quote.premium ?? quote.cost ?? 0);
     if (premium <= 0) return;
 
     // Only spend up to 10% of credits on insurance
-    if (premium > ctx.player.credits * 0.10) {
+    if (premium > ctx.player.credits * INSURANCE_MAX_WALLET_PCT) {
       return; // Too expensive relative to wallet
     }
 
-    // Buy insurance for 360 ticks (~1 hour at 10s/tick)
-    const ticks = 360;
-    await ctx.api.buyInsurance(ticks);
+    await ctx.api.buyInsurance(INSURANCE_DURATION_TICKS);
     await ctx.refreshState();
-    log(ctx, `bought insurance: ${premium}cr for ${ticks} ticks`);
-  } catch {
-    // Insurance not available or already covered — non-critical
+    log(ctx, `bought insurance: ${premium}cr for ${INSURANCE_DURATION_TICKS} ticks`);
+  } catch (err) {
+    logWarn(ctx, `insurance purchase failed: ${err instanceof Error ? err.message : err}`);
   }
 }
 
@@ -500,13 +530,15 @@ export async function ensureInsurance(ctx: BotContext): Promise<void> {
  * self-destruct as last resort (respawns at home base).
  * Returns true if recovery succeeded (bot is now docked or respawned).
  */
-export async function recoverStranded(ctx: BotContext): Promise<{ recovered: boolean; method: string }> {
+export async function recoverStranded(ctx: BotContext, opts?: { force?: boolean }): Promise<{ recovered: boolean; method: string }> {
   // Not stranded if docked
   if (ctx.player.dockedAtBase) return { recovered: true, method: "already_docked" };
-  // Has fuel AND can actually reach a station → not stranded
-  const canReachStation = (() => { try { return !ctx.fuel.isStranded(ctx.player.currentSystem, ctx.ship); } catch { return ctx.ship.fuel > 2; } })();
-  if (ctx.ship.fuel > 0 && canReachStation) {
-    return { recovered: false, method: "has_fuel" };
+  // Has fuel AND can actually reach a station → not stranded (unless forced by caller who already tried navigation)
+  if (!opts?.force) {
+    const canReachStation = (() => { try { return !ctx.fuel.isStranded(ctx.player.currentSystem, ctx.ship); } catch { return ctx.ship.fuel > 2; } })();
+    if (ctx.ship.fuel > 0 && canReachStation) {
+      return { recovered: false, method: "has_fuel" };
+    }
   }
 
   log(ctx, `STRANDED: ${ctx.ship.fuel} fuel, attempting recovery`);
@@ -523,10 +555,10 @@ export async function recoverStranded(ctx: BotContext): Promise<{ recovered: boo
         try {
           await findAndDock(ctx);
           return { recovered: true, method: "fuel_cells" };
-        } catch { /* continue */ }
+        } catch (err) { logWarn(ctx, `fuel cell recovery dock failed: ${err instanceof Error ? err.message : err}`); }
         return { recovered: true, method: "fuel_cells_undocked" };
       }
-    } catch { /* no burnable cells */ }
+    } catch (err) { logWarn(ctx, `fuel cell burn failed: ${err instanceof Error ? err.message : err}`); }
   }
 
   // Step 2: Try docking at current POI (maybe we're at a station)
@@ -538,14 +570,14 @@ export async function recoverStranded(ctx: BotContext): Promise<{ recovered: boo
         await refuelIfNeeded(ctx);
         return { recovered: true, method: "dock_in_place" };
       }
-    } catch { /* can't dock here */ }
+    } catch (err) { logWarn(ctx, `stranded dock attempt failed: ${err instanceof Error ? err.message : err}`); }
   }
 
   // Step 3: Try claiming insurance (may provide ship replacement at home)
   try {
     const claimResult = await ctx.api.claimInsurance();
     await ctx.refreshState();
-    const payout = (claimResult as any).payout ?? (claimResult as any).credits ?? 0;
+    const payout = claimResult.payout ?? claimResult.credits ?? 0;
     if (payout > 0) {
       log(ctx, `insurance claimed: ${payout}cr payout`);
     }
@@ -580,26 +612,23 @@ export async function recoverStranded(ctx: BotContext): Promise<{ recovered: boo
  * Refuels first, then checks if fuel is still low (station out of fuel)
  * and attempts to buy fuel cells from the local market as a backup.
  */
-/** Minimum fuel cells to carry as emergency reserve */
-const FUEL_CELL_RESERVE = 3;
-
 export async function ensureFuelSafety(ctx: BotContext): Promise<void> {
   if (!ctx.player.dockedAtBase) return;
 
   // Refuel before undocking to ensure safety for travel
   const currentFuel = ctx.fuel.getPercentage(ctx.ship);
-  if (currentFuel < 95) {
+  if (currentFuel < FUEL_PREDEPARTURE_THRESHOLD) {
     try {
       await ctx.api.refuel();
       await ctx.refreshState();
-    } catch {
-      // tank_full or other refuel errors are non-critical
+    } catch (err) {
+      logWarn(ctx, `pre-departure refuel failed: ${err instanceof Error ? err.message : err}`);
     }
   }
 
   // If fuel is still low after refuel, burn cargo fuel cells
   const fuelPct = ctx.fuel.getPercentage(ctx.ship);
-  if (fuelPct < 50) {
+  if (fuelPct < FUEL_LOW_BURN_THRESHOLD) {
     await burnFuelCells(ctx);
   }
 
@@ -621,8 +650,8 @@ export async function ensureFuelSafety(ctx: BotContext): Promise<void> {
             log(ctx, `withdrew ${afterWithdraw - currentCells}x fuel_cell from faction storage`);
             gotFromFaction = true;
           }
-        } catch {
-          // No fuel cells in faction storage — fall through to market
+        } catch (err) {
+          logWarn(ctx, `faction fuel cell withdrawal failed: ${err instanceof Error ? err.message : err}`);
         }
       }
 
@@ -630,7 +659,7 @@ export async function ensureFuelSafety(ctx: BotContext): Promise<void> {
       const stillNeed = FUEL_CELL_RESERVE - ctx.cargo.getItemQuantity(ctx.ship, "fuel_cell");
       if (!gotFromFaction || stillNeed > 0) {
         const orders = await ctx.api.viewMarket();
-        const MAX_FUEL_CELL_PRICE = 300; // Fuel cells are craftable cheaply — don't overpay
+        const MAX_FUEL_CELL_PRICE = FUEL_CELL_MAX_PRICE;
         const fuelOrders = orders.filter(
           (o) =>
             o.type === "sell" &&
@@ -722,7 +751,8 @@ export interface SellResult {
 export async function sellAllCargo(ctx: BotContext): Promise<SellResult> {
   let totalEarned = 0;
   const items: SellResult["items"] = [];
-  for (const item of ctx.ship.cargo) {
+  const cargoSnapshot = [...ctx.ship.cargo]; // Snapshot — cargo changes as we sell
+  for (const item of cargoSnapshot) {
     if (ctx.shouldStop) break;
     if (isProtectedItem(item.itemId)) continue;
     try {
@@ -746,11 +776,12 @@ export async function sellAllCargo(ctx: BotContext): Promise<SellResult> {
       if (ctx.player.dockedAtBase && result.priceEach > 0) {
         recordSellResult(ctx, ctx.player.dockedAtBase, item.itemId, item.itemId, result.priceEach, result.quantity);
       }
-      await ctx.refreshState();
     } catch (err) {
       logWarn(ctx, `sell failed for ${item.itemId}: ${err instanceof Error ? err.message : err}`);
     }
   }
+  // Single refresh after all sales
+  if (items.length > 0) await ctx.refreshState();
   if (totalEarned > 0) log(ctx, `total sold: ${totalEarned}cr`);
   return { totalEarned, items };
 }
@@ -811,7 +842,8 @@ export async function disposeCargo(ctx: BotContext): Promise<SellResult> {
   if (mode === "deposit" || mode === "faction_deposit") {
     const items: SellResult["items"] = [];
     let depositFailed = false;
-    for (const item of ctx.ship.cargo) {
+    const cargoSnapshot = [...ctx.ship.cargo]; // Snapshot before depositing
+    for (const item of cargoSnapshot) {
       if (ctx.shouldStop) break;
       if (isProtectedItem(item.itemId)) continue;
       const qty = item.quantity;
@@ -827,16 +859,16 @@ export async function disposeCargo(ctx: BotContext): Promise<SellResult> {
         }
         log(ctx, `deposited ${qty}x ${item.itemId} to ${mode === "faction_deposit" ? "faction" : "personal"} storage`);
         items.push({ itemId: item.itemId, quantity: qty, priceEach: 0, total: 0 });
-        await ctx.refreshState();
       } catch (err) {
         logWarn(ctx, `deposit failed for ${item.itemId}: ${err instanceof Error ? err.message : err}`);
         depositFailed = true;
         break;
       }
     }
+    // Single refresh after all deposits (or on failure for accurate remaining cargo)
+    await ctx.refreshState();
     // If deposit failed, sell only the REMAINING cargo (not already-deposited items)
     if (depositFailed) {
-      await ctx.refreshState(); // Get accurate cargo after partial deposits
       if (ctx.ship.cargo.length > 0) {
         logWarn(ctx, "falling back to selling remaining cargo");
         const sellResult = await sellAllCargo(ctx);
@@ -894,7 +926,7 @@ export async function handleFuelEmergency(ctx: BotContext): Promise<boolean> {
       await ctx.api.dock();
       await ctx.refreshState();
       if (ctx.player.dockedAtBase) {
-        try { await ctx.api.refuel(); } catch { /* tank_full */ }
+        try { await ctx.api.refuel(); } catch (err) { logWarn(ctx, `emergency refuel failed: ${err instanceof Error ? err.message : err}`); }
         await ctx.refreshState();
         return true;
       }
@@ -921,16 +953,13 @@ export async function handleFuelEmergency(ctx: BotContext): Promise<boolean> {
     }
   }
 
-  // Stranded — attempt insurance/self-destruct recovery
-  const isStrandedCheck = (() => { try { return ctx.fuel.isStranded(ctx.player.currentSystem, ctx.ship); } catch { return ctx.ship.fuel <= 2; } })();
-  if (isStrandedCheck) {
-    log(ctx, `stranded at ${ctx.player.currentSystem} with ${fuelPct.toFixed(0)}% fuel — attempting recovery`);
-    const recovery = await recoverStranded(ctx);
-    if (recovery.recovered) {
-      log(ctx, `fuel emergency recovery: ${recovery.method}`);
-      if (ctx.player.dockedAtBase) await serviceShip(ctx);
-      return true;
-    }
+  // Stranded — all navigation attempts above failed, force recovery (insurance/self-destruct)
+  log(ctx, `stranded at ${ctx.player.currentSystem} with ${fuelPct.toFixed(0)}% fuel — attempting recovery`);
+  const recovery = await recoverStranded(ctx, { force: true });
+  if (recovery.recovered) {
+    log(ctx, `fuel emergency recovery: ${recovery.method}`);
+    if (ctx.player.dockedAtBase) await serviceShip(ctx);
+    return true;
   }
 
   logError(ctx, `STRANDED at ${ctx.player.currentSystem} with ${fuelPct.toFixed(0)}% fuel — waiting for rescue`);
@@ -941,7 +970,7 @@ export async function handleFuelEmergency(ctx: BotContext): Promise<boolean> {
  * Check if ship needs emergency repair.
  */
 export function needsEmergencyRepair(ctx: BotContext): boolean {
-  return (ctx.ship.hull / ctx.ship.maxHull) * 100 < 25;
+  return (ctx.ship.hull / ctx.ship.maxHull) * 100 < EMERGENCY_HULL_THRESHOLD;
 }
 
 /**
@@ -1006,11 +1035,12 @@ export async function handleEmergency(ctx: BotContext): Promise<boolean> {
     }
   }
 
-  // Last resort: if fuel is the issue and we're stranded (can't reach any station), attempt recovery
-  const stranded = (() => { try { return ctx.fuel.isStranded(ctx.player.currentSystem, ctx.ship); } catch { return ctx.ship.fuel <= 2; } })();
-  if (issue === "fuel_critical" && stranded) {
-    log(ctx, "attempting stranded recovery (insurance/self-destruct)");
-    const recovery = await recoverStranded(ctx);
+  // Last resort: if fuel is critically low and we failed to reach a station, attempt recovery.
+  // Force=true because we already tried navigation above and it failed — isStranded() may
+  // report "not stranded" if station is in same system (only checks inter-system jumps).
+  if (issue === "fuel_critical" || issue === "fuel_low") {
+    log(ctx, "attempting stranded recovery (fuel cells/insurance/self-destruct)");
+    const recovery = await recoverStranded(ctx, { force: true });
     if (recovery.recovered) {
       log(ctx, `stranded recovery succeeded via ${recovery.method}`);
       if (ctx.player.dockedAtBase) await serviceShip(ctx);
@@ -1109,7 +1139,13 @@ export function cacheMarketData(ctx: BotContext, stationId: string, orders: Mark
         buy_volume: p.buyVolume,
         sell_volume: p.sellVolume,
       })),
-    }]).catch(() => { /* non-critical — faction intel submission failed */ });
+    }]).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Suppress no_trade_ledger spam — faction needs a trade intel facility first
+      if (!msg.includes("no_trade_ledger")) {
+        logWarn(ctx, `faction trade intel submit failed: ${msg}`);
+      }
+    });
   }
 }
 
@@ -1458,6 +1494,30 @@ export async function ensureMinCredits(ctx: BotContext): Promise<{ withdrawn: nu
   } catch (err) {
     log(ctx, `faction withdraw failed: ${err instanceof Error ? err.message : String(err)}`);
     return { withdrawn: 0, message: "" };
+  }
+}
+
+/**
+ * Deposit excess credits to faction treasury if bot is above maximum.
+ * Call at the end of a cycle when docked. Returns amount deposited.
+ */
+export async function depositExcessCredits(ctx: BotContext): Promise<{ deposited: number; message: string }> {
+  const maxCredits = ctx.fleetConfig.maxBotCredits;
+  if (maxCredits <= 0 || !ctx.player.dockedAtBase) {
+    return { deposited: 0, message: "" };
+  }
+
+  const excess = ctx.player.credits - maxCredits;
+  if (excess <= 0) return { deposited: 0, message: "" };
+
+  try {
+    await ctx.api.factionDepositCredits(excess);
+    await ctx.refreshState();
+    ctx.logger.logFactionCreditTx?.("credit_deposit", ctx.botId, excess, `max credits cap`);
+    return { deposited: excess, message: `deposited ${excess}cr to faction treasury (credits exceeded ${maxCredits}cr cap)` };
+  } catch (err) {
+    log(ctx, `faction deposit failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { deposited: 0, message: "" };
   }
 }
 

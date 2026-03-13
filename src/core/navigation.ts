@@ -22,8 +22,40 @@ export interface Route {
   refuelNeeded: boolean; // do we need to refuel mid-route?
 }
 
-/** Fuel cost per jump (constant estimate, real cost may vary by ship speed/weight) */
-const BASE_FUEL_PER_JUMP = 5;
+/**
+ * Estimate fuel per jump based on ship mass and cargo load.
+ * v0.188.0: fuel is physics-based — scales with mass, speed, distance, and cargo.
+ * We use a lightweight heuristic since exact server formula isn't exposed.
+ * The API's find_route gives exact numbers; this is for offline planning.
+ *
+ * Observed: Archimedes (speed 2, empty) = 2 fuel/jump. Old flat value was 5.
+ * Heavier/loaded ships cost more. We estimate: base 1 + ceil(cargoLoad * 2)
+ * where cargoLoad is cargo fraction (0-1). Clamped to [1, 6].
+ */
+function estimateJumpFuelForShip(ship: ShipState): number {
+  const cargoFraction = ship.cargoCapacity > 0 ? ship.cargoUsed / ship.cargoCapacity : 0;
+  // Base cost scales with ship size (proxy: max fuel as mass indicator)
+  const massFactor = Math.max(1, Math.ceil(ship.maxFuel / 80)); // ~1 for small ships, 2+ for large
+  const cargoBonus = Math.ceil(cargoFraction * 2);
+  return Math.max(1, Math.min(6, massFactor + cargoBonus));
+}
+
+/**
+ * Estimate jump time in ticks based on ship speed.
+ * v0.188.0: jump time = ceil(10 / speed). Speed 2 = 5 ticks, speed 6 = 2 ticks.
+ */
+function estimateJumpTicks(ship: ShipState): number {
+  return Math.ceil(10 / Math.max(1, ship.speed));
+}
+
+/**
+ * Estimate intra-system travel time in ticks.
+ * v0.188.0: travel time scales with distance and ship speed.
+ * Without exact distance data, we estimate 2-4 ticks for slow ships.
+ */
+function estimateTravelTicks(ship: ShipState): number {
+  return Math.max(1, Math.ceil(4 / Math.max(1, ship.speed)));
+}
 
 export class Navigation {
   constructor(private galaxy: Galaxy) {}
@@ -129,15 +161,37 @@ export class Navigation {
     return route.reachable;
   }
 
-  /** Estimate fuel for a single jump */
+  /** Estimate fuel for a single jump (physics-based since v0.188.0) */
   estimateJumpFuel(ship: ShipState): number {
-    // Base cost, adjusted by ship speed (faster ships use more fuel)
-    return Math.max(1, BASE_FUEL_PER_JUMP);
+    return estimateJumpFuelForShip(ship);
   }
 
-  /** Estimate fuel for intra-system travel */
-  estimateTravelFuel(_ship: ShipState): number {
-    return 1; // Intra-system travel is cheap
+  /** Estimate fuel for intra-system travel (now multi-tick since v0.188.0) */
+  estimateTravelFuel(ship: ShipState): number {
+    // In-system travel now costs fuel based on distance/mass; estimate 1 for most cases
+    const cargoFraction = ship.cargoCapacity > 0 ? ship.cargoUsed / ship.cargoCapacity : 0;
+    return Math.max(1, Math.ceil(1 + cargoFraction));
+  }
+
+  /** Estimate jump time in ticks (speed-based since v0.188.0) */
+  estimateJumpTicks(ship: ShipState): number {
+    return estimateJumpTicks(ship);
+  }
+
+  /** Estimate intra-system travel time in ticks */
+  estimateTravelTicks(ship: ShipState): number {
+    return estimateTravelTicks(ship);
+  }
+
+  /** Estimate total ticks for a route (jumps + travel) */
+  estimateRouteTicks(route: Route, ship: ShipState): number {
+    let ticks = 0;
+    for (const step of route.steps) {
+      ticks += step.action === "jump"
+        ? estimateJumpTicks(ship)
+        : estimateTravelTicks(ship);
+    }
+    return ticks;
   }
 
   /** Find nearest refueling station from current system */

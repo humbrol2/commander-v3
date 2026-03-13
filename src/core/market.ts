@@ -213,6 +213,7 @@ export class Market {
     cargoSpace: number,
     fromSystemId: string,
     fuelCostPerJump: number = 50,
+    ticksPerJump: number = 5,
   ): number {
     const buySystemId = this.galaxy.getSystemForBase(route.buyStationId);
     if (!buySystemId) return 0;
@@ -220,7 +221,8 @@ export class Market {
     const distToStart = this.galaxy.getDistance(fromSystemId, buySystemId);
     if (distToStart < 0) return 0;
 
-    const totalTicks = distToStart + route.jumps * 2 + 4;
+    // v0.188.0: jump time is speed-dependent, use ticksPerJump from caller
+    const totalTicks = (distToStart + route.jumps * 2) * ticksPerJump + 4;
     const totalJumps = distToStart + route.jumps * 2;
     const totalProfit = Math.max(0, route.profitPerUnit * cargoSpace - totalJumps * fuelCostPerJump);
     return totalProfit / Math.max(1, totalTicks);

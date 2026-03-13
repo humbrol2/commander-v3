@@ -8,8 +8,8 @@ import type { DB } from "./db";
 import type { TrainingLogger } from "./training-logger";
 import type { ApiClient, MarketInsight } from "../core/api-client";
 import { normalizeRecipe, normalizeCatalogItem, normalizeShipClass } from "../core/api-client";
-import { cache, timedCache, marketHistory } from "./schema";
-import type { StarSystem, CatalogItem, ShipClass, Skill, Recipe, MarketPrice } from "../types/game";
+import { cache, timedCache, marketHistory, poiCache } from "./schema";
+import type { StarSystem, CatalogItem, ShipClass, Skill, Recipe, MarketPrice, PoiSummary } from "../types/game";
 
 export interface MarketFreshness {
   stationId: string;
@@ -24,6 +24,38 @@ export class GameCache {
   private insightFetchedAt = new Map<string, number>();
   private shipyardCache = new Map<string, { ships: Array<{ id: string; name: string; classId: string; price: number }>; fetchedAt: number }>();
   marketDirty = false;
+
+  /** Active arbitrage route claims — prevents multiple traders racing the same route */
+  private arbitrageClaims = new Map<string, { botId: string; claimedAt: number }>();
+
+  /** Material requirements for queued facility builds (itemId → quantity needed) */
+  private _facilityMaterialNeeds = new Map<string, number>();
+
+  /** Claim an arbitrage route (item@buyStation→sellStation). Returns false if already claimed. */
+  claimArbitrageRoute(itemId: string, buyStationId: string, sellStationId: string, botId: string): boolean {
+    const key = `${itemId}:${buyStationId}:${sellStationId}`;
+    const existing = this.arbitrageClaims.get(key);
+    // Allow re-claim by same bot, or if claim is stale (>10 min)
+    if (existing && existing.botId !== botId && (Date.now() - existing.claimedAt) < 600_000) {
+      return false; // Already claimed by another bot
+    }
+    this.arbitrageClaims.set(key, { botId, claimedAt: Date.now() });
+    return true;
+  }
+
+  /** Release an arbitrage route claim (call after trade completes or fails) */
+  releaseArbitrageRoute(itemId: string, buyStationId: string, sellStationId: string): void {
+    this.arbitrageClaims.delete(`${itemId}:${buyStationId}:${sellStationId}`);
+  }
+
+  /** Check if a route is already claimed by another bot */
+  isArbitrageRouteClaimed(itemId: string, buyStationId: string, sellStationId: string, botId: string): boolean {
+    const key = `${itemId}:${buyStationId}:${sellStationId}`;
+    const existing = this.arbitrageClaims.get(key);
+    if (!existing) return false;
+    if (existing.botId === botId) return false; // Own claim
+    return (Date.now() - existing.claimedAt) < 600_000; // Stale after 10 min
+  }
 
   constructor(
     private db: DB,
@@ -151,6 +183,37 @@ export class GameCache {
     this.setStatic("item_catalog", JSON.stringify(normalized), this.gameVersion);
     console.log(`[Cache] Cached ${normalized.length} items`);
     return normalized;
+  }
+
+  /** Read ship catalog from cache without fetching (no API needed) */
+  getCachedShipCatalog(): ShipClass[] | null {
+    const cached = this.getStatic("ship_catalog");
+    if (!cached) return null;
+    const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
+    return raw.length > 0 ? raw.map(normalizeShipClass) : null;
+  }
+
+  /** Read item catalog from cache without fetching (no API needed) */
+  getCachedItemCatalog(): CatalogItem[] | null {
+    const cached = this.getStatic("item_catalog");
+    if (!cached) return null;
+    const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
+    return raw.length > 0 ? raw.map(normalizeCatalogItem) : null;
+  }
+
+  /** Read skill tree from cache without fetching (no API needed) */
+  getCachedSkillTree(): Skill[] | null {
+    const cached = this.getStatic("skill_tree");
+    if (!cached) return null;
+    return JSON.parse(cached) as Skill[];
+  }
+
+  /** Read recipe catalog from cache without fetching (no API needed) */
+  getCachedRecipes(): Recipe[] | null {
+    const cached = this.getStatic("recipe_catalog");
+    if (!cached) return null;
+    const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
+    return raw.length > 0 ? raw.map(normalizeRecipe) : null;
   }
 
   async getShipCatalog(api: ApiClient): Promise<ShipClass[]> {
@@ -318,28 +381,53 @@ export class GameCache {
     return this.marketFetchedAt.size > 0;
   }
 
-  // ── Shipyard Cache ──
+  // ── Shipyard Cache (in-memory + persisted to timed_cache) ──
+
+  private static SHIPYARD_TTL = 24 * 3_600_000; // 24h persistence
+  private static SHIPYARD_FRESH = 1_800_000;     // 30min "fresh" window
 
   setShipyardData(stationId: string, ships: Array<{ id: string; name: string; classId: string; price: number }>): void {
-    this.shipyardCache.set(stationId, { ships, fetchedAt: Date.now() });
+    const fetchedAt = Date.now();
+    this.shipyardCache.set(stationId, { ships, fetchedAt });
+    // Persist to SQLite
+    this.setTimed(`shipyard:${stationId}`, JSON.stringify(ships), GameCache.SHIPYARD_TTL);
   }
 
   getShipyardData(stationId: string): Array<{ id: string; name: string; classId: string; price: number }> | null {
     const entry = this.shipyardCache.get(stationId);
     if (!entry) return null;
-    // Expire after 30 minutes
-    if (Date.now() - entry.fetchedAt > 1_800_000) return null;
+    // Expire after 24h for persisted data
+    if (Date.now() - entry.fetchedAt > GameCache.SHIPYARD_TTL) return null;
     return entry.ships;
   }
 
   getAllShipyardData(): Record<string, { ships: Array<{ id: string; name: string; classId: string; price: number }>; fetchedAt: number }> {
     const result: Record<string, { ships: Array<{ id: string; name: string; classId: string; price: number }>; fetchedAt: number }> = {};
+    const now = Date.now();
     for (const [stationId, entry] of this.shipyardCache) {
-      if (Date.now() - entry.fetchedAt < 1_800_000) {
+      if (now - entry.fetchedAt < GameCache.SHIPYARD_TTL) {
         result[stationId] = entry;
       }
     }
     return result;
+  }
+
+  /** Load persisted shipyard data from SQLite into memory (call on startup) */
+  loadShipyardData(): number {
+    const rows = this.db.select().from(timedCache)
+      .where(like(timedCache.key, "shipyard:%")).all();
+    let count = 0;
+    const now = Date.now();
+    for (const row of rows) {
+      if (now - row.fetchedAt > row.ttlMs) continue; // expired
+      const stationId = row.key.replace("shipyard:", "");
+      try {
+        const ships = JSON.parse(row.data) as Array<{ id: string; name: string; classId: string; price: number }>;
+        this.shipyardCache.set(stationId, { ships, fetchedAt: row.fetchedAt });
+        count++;
+      } catch { /* skip corrupted entries */ }
+    }
+    return count;
   }
 
   /** Get a catalog item by ID (from cached item catalog) */
@@ -373,7 +461,7 @@ export class GameCache {
   findShipyardForClass(classId: string): { stationId: string; price: number } | null {
     const now = Date.now();
     for (const [stationId, entry] of this.shipyardCache) {
-      if (now - entry.fetchedAt > 1_800_000) continue;
+      if (now - entry.fetchedAt > GameCache.SHIPYARD_TTL) continue;
       const ship = entry.ships.find(s => s.classId === classId);
       if (ship) return { stationId, price: ship.price };
     }
@@ -483,12 +571,98 @@ export class GameCache {
     return this.getAllByPrefix("facility_only:").map((r) => r.key.replace("facility_only:", ""));
   }
 
+  // ── Facility Material Needs (shared across QM, crafters, traders) ──
+
+  /** Set material requirements for queued facility builds. Replaces previous needs. */
+  setFacilityMaterialNeeds(needs: Map<string, number>): void {
+    this._facilityMaterialNeeds = new Map(needs);
+  }
+
+  /** Get material requirements for queued facility builds (itemId → quantity needed). */
+  getFacilityMaterialNeeds(): Map<string, number> {
+    return this._facilityMaterialNeeds;
+  }
+
+  /** Check if an item is needed for a facility build. */
+  isFacilityMaterial(itemId: string): boolean {
+    return (this._facilityMaterialNeeds.get(itemId) ?? 0) > 0;
+  }
+
   clearGalaxyCache(): void { this.deleteStatic("galaxy_map"); }
   clearMarketCache(): void { this.clearTimedByPattern("market:%"); }
 
   clearAllCache(): void {
     this.db.delete(cache).run();
     this.db.delete(timedCache).run();
+  }
+
+  // ── POI Persistence (institutional memory across restarts) ──
+
+  /** Persist a POI discovery (survives restarts, no TTL) */
+  persistPoi(poiId: string, systemId: string, poi: PoiSummary): void {
+    this.db.insert(poiCache).values({
+      poiId,
+      systemId,
+      data: JSON.stringify(poi),
+      updatedAt: new Date().toISOString(),
+    }).onConflictDoUpdate({
+      target: poiCache.poiId,
+      set: { systemId, data: JSON.stringify(poi), updatedAt: new Date().toISOString() },
+    }).run();
+  }
+
+  /** Persist multiple POIs from a system scan */
+  persistSystemPois(systemId: string, pois: PoiSummary[]): void {
+    for (const poi of pois) {
+      this.persistPoi(poi.id, systemId, poi);
+    }
+  }
+
+  /** Load all persisted POIs (for galaxy hydration on startup) */
+  loadPersistedPois(): Array<{ poiId: string; systemId: string; poi: PoiSummary }> {
+    const rows = this.db.select().from(poiCache).all();
+    const results: Array<{ poiId: string; systemId: string; poi: PoiSummary }> = [];
+    for (const row of rows) {
+      try {
+        results.push({ poiId: row.poiId, systemId: row.systemId, poi: JSON.parse(row.data) });
+      } catch { /* skip corrupt entries */ }
+    }
+    return results;
+  }
+
+  /** Load persisted POIs for a specific system */
+  loadPersistedSystemPois(systemId: string): PoiSummary[] {
+    const rows = this.db.select().from(poiCache).where(eq(poiCache.systemId, systemId)).all();
+    const results: PoiSummary[] = [];
+    for (const row of rows) {
+      try { results.push(JSON.parse(row.data)); } catch { /* skip */ }
+    }
+    return results;
+  }
+
+  /** Count persisted POIs */
+  getPersistedPoiCount(): number {
+    const result = this.db.select({ count: sql<number>`count(*)` }).from(poiCache).get();
+    return result?.count ?? 0;
+  }
+
+  // ── Routine Checkpoints (Phase 6: crash recovery) ──
+
+  /** Save a routine checkpoint so it can resume after crash/restart */
+  saveCheckpoint(botId: string, routine: string, data: Record<string, unknown>): void {
+    this.setTimed(`checkpoint:${botId}`, JSON.stringify({ routine, data, savedAt: Date.now() }), 3_600_000); // 1h TTL
+  }
+
+  /** Load a routine checkpoint for a bot (returns null if expired/missing) */
+  loadCheckpoint(botId: string): { routine: string; data: Record<string, unknown>; savedAt: number } | null {
+    const raw = this.getTimed(`checkpoint:${botId}`);
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  }
+
+  /** Clear a bot's checkpoint (call on clean routine completion) */
+  clearCheckpoint(botId: string): void {
+    this.db.delete(timedCache).where(eq(timedCache.key, `checkpoint:${botId}`)).run();
   }
 
   getCacheStatus(): Record<string, { cached: boolean; version: string | null }> {

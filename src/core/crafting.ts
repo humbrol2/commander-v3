@@ -50,10 +50,23 @@ export class Crafting {
   private outputIndex = new Map<string, Recipe[]>(); // outputItem → recipes that make it
   private itemCatalog = new Map<string, CatalogItem>();
 
+  /** Known facility-only recipe IDs — excluded from all recipe selection methods */
+  private facilityOnlyIds = new Set<string>();
+
   /** Optional market price provider — set by Commander for market-aware profit estimation */
   marketPrices: MarketPriceProvider | null = null;
 
   constructor(private cargo: Cargo) {}
+
+  /** Update the set of known facility-only recipes (call after loading from cache) */
+  setFacilityOnlyRecipes(ids: string[]): void {
+    this.facilityOnlyIds = new Set(ids);
+  }
+
+  /** Mark a single recipe as facility-only at runtime */
+  markFacilityOnly(recipeId: string): void {
+    this.facilityOnlyIds.add(recipeId);
+  }
 
   /** Load recipes from cache. Call once at startup. */
   load(recipes: Recipe[]): void {
@@ -140,7 +153,7 @@ export class Crafting {
 
   /** Get all recipes the bot can craft with current skills */
   getAvailableRecipes(skills: Record<string, number>): Recipe[] {
-    return this.recipes.filter((r) => this.hasRequiredSkills(r, skills));
+    return this.recipes.filter((r) => !this.facilityOnlyIds.has(r.id) && this.hasRequiredSkills(r, skills));
   }
 
   /** Check if player has required skills for a recipe */
@@ -159,7 +172,7 @@ export class Crafting {
   findEasiestRecipe(skills: Record<string, number>): { recipe: Recipe; skillGap: number; missingSkills: string[] } | null {
     if (this.recipes.length === 0) return null;
 
-    const scored = this.recipes.map((r) => {
+    const scored = this.recipes.filter((r) => !this.facilityOnlyIds.has(r.id)).map((r) => {
       let totalGap = 0;
       const missing: string[] = [];
       for (const [skillId, required] of Object.entries(r.requiredSkills)) {
@@ -335,8 +348,40 @@ export class Crafting {
   }
 
   /**
+   * Find a recipe that produces an item needed for facility builds.
+   * Prioritizes by quantity needed (most-needed item first).
+   * Returns null if no available recipes produce needed items.
+   */
+  findRecipeForNeeds(skills: Record<string, number>, needs: Map<string, number>): Recipe | null {
+    if (needs.size === 0) return null;
+    const available = this.getAvailableRecipes(skills);
+    if (available.length === 0) return null;
+
+    let best: Recipe | null = null;
+    let bestNeed = 0;
+    for (const recipe of available) {
+      if (!this.isChainViable(recipe.id)) continue;
+      const needed = needs.get(recipe.outputItem) ?? 0;
+      if (needed > 0 && needed > bestNeed) {
+        bestNeed = needed;
+        best = recipe;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Check if a recipe's full chain is manually craftable (no facility-only sub-steps).
+   */
+  isChainViable(recipeId: string): boolean {
+    const chain = this.resolveChain(recipeId);
+    return chain.every(r => !this.facilityOnlyIds.has(r.id));
+  }
+
+  /**
    * Find the best recipe for a bot based on available skills and estimated profit.
    * Uses market prices when available for more accurate profit estimation.
+   * Skips recipes whose chains include facility-only sub-steps.
    * Returns null if no recipes are available.
    */
   findBestRecipe(skills: Record<string, number>): Recipe | null {
@@ -346,6 +391,7 @@ export class Crafting {
     let best: Recipe | null = null;
     let bestProfit = -Infinity;
     for (const recipe of available) {
+      if (!this.isChainViable(recipe.id)) continue;
       const { profit } = this.estimateMarketProfit(recipe.id);
       if (profit > bestProfit) {
         bestProfit = profit;
@@ -367,6 +413,7 @@ export class Crafting {
     let best: Recipe | null = null;
     let bestProfit = -Infinity;
     for (const recipe of available) {
+      if (!this.isChainViable(recipe.id)) continue;
       const plan = this.planCraft(recipe.id, 1, ship, skills);
       if (plan && plan.canCraft) {
         const { profit } = this.estimateMarketProfit(recipe.id);

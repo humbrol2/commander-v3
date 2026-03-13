@@ -12,6 +12,7 @@ import type {
   SupplySurplus,
   InventoryAlert,
   EconomySnapshot,
+  FleetWorkOrder,
 } from "./types";
 
 /** Fallback production rates per routine (used when no observed data yet) */
@@ -39,6 +40,20 @@ export class EconomyEngine {
   // Profit tracking (running totals — reset daily)
   private totalRevenue = 0;
   private totalCosts = 0;
+
+  /** Crafting service for recipe-aware work orders (set by Commander) */
+  crafting: import("../core/crafting").Crafting | null = null;
+
+  /** Latest computed work orders (cached for dashboard access) */
+  private _workOrders: FleetWorkOrder[] = [];
+
+  /** Facility material needs from GameCache (injected by Commander) */
+  private facilityMaterialNeeds = new Map<string, number>();
+
+  /** Update facility material needs (called by Commander after QM sets cache) */
+  setFacilityMaterialNeeds(needs: Map<string, number>): void {
+    this.facilityMaterialNeeds = new Map(needs);
+  }
 
   /**
    * Observed production/consumption per bot: botId → itemId → timestamped events.
@@ -173,6 +188,10 @@ export class EconomyEngine {
     const totalCosts = this.totalCosts;
     const netProfit = totalRevenue - totalCosts;
 
+    // Compute prioritized work orders from deficits + market analysis
+    const workOrders = this.computeWorkOrders(deficits, surpluses);
+    this._workOrders = workOrders;
+
     return {
       deficits,
       surpluses,
@@ -181,7 +200,13 @@ export class EconomyEngine {
       totalCosts,
       netProfit,
       factionStorage: new Map(this.factionInventory),
+      workOrders,
     };
+  }
+
+  /** Get the latest computed work orders */
+  getWorkOrders(): FleetWorkOrder[] {
+    return this._workOrders;
   }
 
   /** Reset profit tracking (call at beginning of each evaluation period) */
@@ -338,6 +363,134 @@ export class EconomyEngine {
     }
 
     return alerts;
+  }
+
+  /**
+   * Compute prioritized work orders from supply/demand analysis.
+   * These tell the fleet WHAT to do — the scoring brain decides WHO does it.
+   */
+  private computeWorkOrders(deficits: SupplyDeficit[], surpluses: SupplySurplus[]): FleetWorkOrder[] {
+    const orders: FleetWorkOrder[] = [];
+
+    // ── Mining orders: from deficits + low faction storage ──
+    const oreStock = new Map<string, number>();
+    for (const [itemId, qty] of this.factionInventory) {
+      if (itemId.includes("ore")) oreStock.set(itemId, qty);
+    }
+
+    // Ore types crafters need (from deficit analysis)
+    for (const deficit of deficits) {
+      if (deficit.itemId.startsWith("ore_") || deficit.itemId.includes("ice") || deficit.itemId.includes("gas")) {
+        const stock = this.factionInventory.get(deficit.itemId) ?? 0;
+        const priority = deficit.priority === "critical" ? 90
+          : deficit.priority === "normal" ? 60 : 30;
+        orders.push({
+          type: "mine",
+          targetId: deficit.itemId,
+          description: `Mine ${deficit.itemId.replace(/_/g, " ")}`,
+          priority: Math.min(100, priority + Math.min(30, deficit.shortfall)),
+          reason: `deficit: ${deficit.shortfall.toFixed(0)}/hr, stock: ${stock}`,
+          quantity: Math.max(10, Math.round(deficit.shortfall * 2)),
+        });
+      }
+    }
+
+    // Low-stock ores not covered by deficits
+    const LOW_ORE_THRESHOLD = 10;
+    const coveredOres = new Set(orders.filter(o => o.type === "mine").map(o => o.targetId));
+    for (const [itemId, qty] of oreStock) {
+      if (coveredOres.has(itemId)) continue;
+      if (qty < LOW_ORE_THRESHOLD) {
+        orders.push({
+          type: "mine",
+          targetId: itemId,
+          description: `Mine ${itemId.replace(/_/g, " ")} (low stock)`,
+          priority: 40 + Math.round((LOW_ORE_THRESHOLD - qty) * 3),
+          reason: `faction stock: ${qty} (below ${LOW_ORE_THRESHOLD})`,
+          quantity: LOW_ORE_THRESHOLD * 2,
+        });
+      }
+    }
+
+    // ── Crafting orders: profitable recipes with available materials ──
+    if (this.crafting && this.crafting.recipeCount > 0) {
+      const recipes = this.crafting.getAllRecipes();
+      for (const recipe of recipes) {
+        const { profit, hasMarketData } = this.crafting.estimateMarketProfit(recipe.id);
+        if (profit <= 0) continue;
+
+        // Check if raw materials are available in faction storage
+        const raws = this.crafting.getRawMaterials(recipe.id, 1);
+        let canCraft = true;
+        let minBatches = Infinity;
+        for (const [rawId, needed] of raws) {
+          const available = this.factionInventory.get(rawId) ?? 0;
+          if (available < needed) { canCraft = false; break; }
+          minBatches = Math.min(minBatches, Math.floor(available / needed));
+        }
+        if (!canCraft || minBatches === 0) continue;
+
+        orders.push({
+          type: "craft",
+          targetId: recipe.id,
+          description: `Craft ${recipe.name ?? recipe.id.replace(/_/g, " ")}`,
+          priority: Math.min(85, 40 + Math.round(profit / 100)),
+          reason: `profit: ${profit.toFixed(0)}cr${hasMarketData ? "" : " (est)"}, can make ${minBatches}`,
+          quantity: Math.min(minBatches, 10),
+        });
+      }
+    }
+
+    // ── Trade orders: sell surplus crafted goods in faction storage ──
+    const craftedGoods = [...this.factionInventory.entries()]
+      .filter(([id]) => id.startsWith("refined_") || id.startsWith("component_") || id.startsWith("alloy_"))
+      .filter(([, qty]) => qty >= 5);
+
+    for (const [itemId, qty] of craftedGoods) {
+      orders.push({
+        type: "trade",
+        targetId: itemId,
+        description: `Sell ${itemId.replace(/_/g, " ")} (${qty} in stock)`,
+        priority: Math.min(70, 30 + Math.round(qty / 5)),
+        reason: `${qty} units in faction storage`,
+        quantity: qty,
+      });
+    }
+
+    // ── Facility material orders: highest priority mining/crafting for facility builds ──
+    for (const [itemId, needed] of this.facilityMaterialNeeds) {
+      const inStorage = this.factionInventory.get(itemId) ?? 0;
+      if (inStorage >= needed) continue;
+      const deficit = needed - inStorage;
+      // Check if this is a raw material (mine it) or crafted (craft it)
+      const isRaw = itemId.startsWith("ore_") || itemId.includes("ice") || itemId.includes("gas");
+      orders.push({
+        type: isRaw ? "mine" : "craft",
+        targetId: itemId,
+        description: `Facility build: ${itemId.replace(/_/g, " ")} (${inStorage}/${needed})`,
+        priority: 95, // Near-max priority — facility builds are strategic
+        reason: `facility blocked: need ${deficit} more ${itemId}`,
+        quantity: deficit,
+      });
+    }
+
+    // ── Sell overstocked raw ores (5000+) ──
+    for (const [itemId, qty] of oreStock) {
+      if (qty >= 5000) {
+        orders.push({
+          type: "trade",
+          targetId: itemId,
+          description: `Sell excess ${itemId.replace(/_/g, " ")}`,
+          priority: 50,
+          reason: `overstocked: ${qty} units`,
+          quantity: qty - 2000, // Keep 2000 reserve
+        });
+      }
+    }
+
+    // Sort by priority descending
+    orders.sort((a, b) => b.priority - a.priority);
+    return orders;
   }
 }
 

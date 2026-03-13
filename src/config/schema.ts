@@ -14,6 +14,8 @@ export const GoalTypeSchema = z.enum([
   "establish_trade_route",
   "resource_stockpile",
   "faction_operations",
+  "upgrade_ships",
+  "upgrade_modules",
   "custom",
 ]);
 
@@ -56,9 +58,21 @@ export const AiConfigSchema = z.object({
   max_latency_ms: z.number().default(10000),
   max_tokens: z.number().default(2048),
   shadow_mode: z.boolean().default(false),
+  prompt_file: z.string().default(""),
 });
 
 export type AiConfig = z.infer<typeof AiConfigSchema>;
+
+// ── Role Pool Config ──
+
+export const RolePoolSchema = z.object({
+  role: z.string(),
+  min: z.number().int().min(0).default(0),
+  max: z.number().int().min(0).default(1),
+  preferred_ship: z.string().default(""),
+});
+
+export type RolePool = z.infer<typeof RolePoolSchema>;
 
 // ── Fleet Config ──
 
@@ -72,6 +86,8 @@ export const FleetConfigSchema = z.object({
   faction_storage_station: z.string().default(""),
   faction_tax_percent: z.number().min(0).max(100).default(0),
   min_bot_credits: z.number().min(0).default(0),
+  max_bot_credits: z.number().min(0).default(0),
+  roles: z.array(RolePoolSchema).default([]),
 });
 
 // ── Cache Config ──

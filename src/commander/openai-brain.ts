@@ -19,6 +19,7 @@ export interface OpenAIBrainConfig {
   apiKey?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  promptFile?: string;
 }
 
 /** Rolling window for latency/success tracking */
@@ -44,7 +45,7 @@ class OpenAINativeBrain implements CommanderBrain {
 
   // Reassignment cooldowns
   private reassignments = new Map<string, ReassignmentState>();
-  private reassignmentCooldownMs = 120_000;
+  private reassignmentCooldownMs = 300_000; // 5 min, matches scoring brain
 
   constructor(config: OpenAIBrainConfig = {}) {
     this.model = config.model ?? "openai/gpt-oss-20b";
@@ -53,7 +54,7 @@ class OpenAINativeBrain implements CommanderBrain {
     this.maxTokens = config.maxTokens ?? 1024;
     this.timeoutMs = config.timeoutMs ?? 60_000;
     this.name = `openai/${this.model}`;
-    this.systemPrompt = buildSystemPrompt();
+    this.systemPrompt = buildSystemPrompt(config.promptFile);
   }
 
   async evaluate(input: EvaluationInput): Promise<EvaluationOutput> {
@@ -166,7 +167,7 @@ class OpenAINativeBrain implements CommanderBrain {
 
     return {
       name: this.name,
-      available: total === 0 || (successCount / total) > 0.3,
+      available: total === 0 || (successCount / total) > 0.5,
       avgLatencyMs: Math.round(avgLatency),
       successRate: total === 0 ? 1 : successCount / total,
       lastError: this.lastError,

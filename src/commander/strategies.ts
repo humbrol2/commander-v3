@@ -22,6 +22,7 @@ const DEFAULT_WEIGHTS: StrategyWeights = {
   scavenger: 0.8,
   ship_upgrade: 1.0,
   refit: 1.0,
+  ship_dealer: 0.8,
 };
 
 /** Goal-specific weight overrides */
@@ -81,6 +82,23 @@ const STRATEGY_PROFILES: Record<GoalType, Partial<StrategyWeights>> = {
     trader: 1.0,
     crafter: 1.0,
     quartermaster: 1.5,
+  },
+  upgrade_ships: {
+    ship_upgrade: 2.5,
+    trader: 1.3,
+    miner: 1.2,
+    crafter: 0.8,
+    explorer: 0.5,
+    hunter: 0.4,
+  },
+  upgrade_modules: {
+    refit: 2.5,
+    quartermaster: 1.5,
+    crafter: 1.3,
+    trader: 1.2,
+    miner: 1.0,
+    explorer: 0.5,
+    hunter: 0.4,
   },
   custom: {},
 };

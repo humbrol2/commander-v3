@@ -25,19 +25,7 @@ import {
   withdrawFromFaction,
   canFitModule,
 } from "./helpers";
-
-/** Role -> desired module patterns (highest priority first, duplicates = multiple slots) */
-const ROLE_MODULES: Record<string, string[]> = {
-  miner:         ["mining_laser", "mining_laser", "mining_laser"],
-  harvester:     ["ice_harvester", "gas_harvester", "mining_laser"],
-  explorer:      ["survey_scanner"],
-  hunter:        ["weapon_laser", "weapon_laser", "weapon_laser"],
-  crafter:       ["mining_laser"],
-  trader:        [],
-  quartermaster: [],
-  scout:         ["survey_scanner"],
-  default:       ["mining_laser"],
-};
+import { getModulesForRole } from "../commander/roles";
 
 /** Extract tier number from a module ID (e.g., mining_laser_2 -> 2) */
 function getModuleTier(moduleId: string): number {
@@ -60,7 +48,7 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
 
   const desiredModules = overrideEquip.length > 0
     ? overrideEquip
-    : (ROLE_MODULES[role] ?? ROLE_MODULES.default);
+    : getModulesForRole(role);
 
   // Step 1: Dock at home station
   if (homeBase && ctx.player.dockedAtBase !== homeBase) {
@@ -90,11 +78,14 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
 
   if (ctx.shouldStop) return;
 
-  // Step 2: Scan local market for available modules
+  // Step 2: Scan local market for available modules (category filter for better results)
   let market: MarketOrder[] = [];
   try {
-    market = await ctx.api.viewMarket();
-  } catch { /* proceed without market data */ }
+    market = await ctx.api.viewMarket(undefined, "module");
+  } catch {
+    // Fallback: try without category filter
+    try { market = await ctx.api.viewMarket(); } catch { /* proceed without market data */ }
+  }
 
   // Budget for buying modules from market
   const reserve = Math.max(2000, ctx.fleetConfig.minBotCredits);
@@ -136,6 +127,33 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
     await repairIfNeeded(ctx);
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "refit" });
     return;
+  }
+
+  // Step 4.5: Uninstall modules not matching any desired pattern (cleanup defaults)
+  if (overrideUnequip.length === 0) {
+    for (const mod of [...ctx.ship.modules]) {
+      if (ctx.shouldStop) return;
+      const base = getModuleBase(mod.moduleId);
+      const matchesDesired = desiredModules.some(p => base.includes(p) || mod.moduleId.includes(p));
+      if (matchesDesired) continue;
+
+      // This module doesn't match any desired pattern — remove it to free the slot
+      try {
+        await ctx.api.uninstallMod(mod.moduleId);
+        await ctx.refreshState();
+        yield `removed unwanted ${mod.moduleId} (not in ${role} loadout)`;
+        // Deposit to faction storage
+        const inCargo = ctx.cargo.getItemQuantity(ctx.ship, mod.moduleId);
+        if (inCargo > 0) {
+          try {
+            await ctx.api.factionDepositItems(mod.moduleId, inCargo);
+            await ctx.refreshState();
+          } catch { /* best effort */ }
+        }
+      } catch {
+        // Module might not be removable — skip
+      }
+    }
   }
 
   // Step 5: For each desired module pattern, check current vs best available
@@ -417,7 +435,7 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
   for (const mod of ctx.ship.modules) {
     if (ctx.shouldStop) return;
     // Modules with wear/damage have durability < 100%
-    const durability = (mod as any).durability ?? (mod as any).health ?? 100;
+    const durability = mod.durability ?? mod.health ?? 100;
     if (durability < 100) {
       try {
         await ctx.api.repairModule(mod.moduleId);

@@ -30,6 +30,7 @@ import {
   recordSellResult,
   payFactionTax,
   ensureMinCredits,
+  depositExcessCredits,
   interruptibleSleep,
   isProtectedItem,
   withdrawFromFaction,
@@ -51,19 +52,32 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
     if (facilityOnlyRecipes.has(recipeId)) recipeId = ""; // Reset blacklisted recipe
     yield "analyzing recipes...";
 
-    // First: try to find something we can craft right now
-    const immediate = ctx.crafting.findCraftableNow(ctx.ship, ctx.player.skills);
-    if (immediate && !facilityOnlyRecipes.has(immediate.id)) {
-      recipeId = immediate.id;
-      const { profit, hasMarketData } = ctx.crafting.estimateMarketProfit(immediate.id);
-      yield `ready to craft: ${immediate.name} (est. profit ${profit}cr${hasMarketData ? " mkt" : ""})`;
-    } else {
-      // Second: find the most profitable recipe we have skills for
-      const best = ctx.crafting.findBestRecipe(ctx.player.skills);
-      if (best && !facilityOnlyRecipes.has(best.id)) {
-        recipeId = best.id;
-        const { profit, hasMarketData } = ctx.crafting.estimateMarketProfit(best.id);
-        yield `target recipe: ${best.name} (est. profit ${profit}cr${hasMarketData ? " mkt" : ""}, need materials)`;
+    // Priority: check if facility builds need materials (e.g., steel plates for faction quarters)
+    const facilityNeeds = ctx.cache.getFacilityMaterialNeeds();
+    if (facilityNeeds.size > 0) {
+      const needsRecipe = ctx.crafting.findRecipeForNeeds(ctx.player.skills, facilityNeeds);
+      if (needsRecipe && !facilityOnlyRecipes.has(needsRecipe.id)) {
+        recipeId = needsRecipe.id;
+        const needed = facilityNeeds.get(needsRecipe.outputItem) ?? 0;
+        yield `facility needs ${needed}x ${ctx.crafting.getItemName(needsRecipe.outputItem)} — crafting ${needsRecipe.name}`;
+      }
+    }
+
+    if (!recipeId) {
+      // First: try to find something we can craft right now
+      const immediate = ctx.crafting.findCraftableNow(ctx.ship, ctx.player.skills);
+      if (immediate && !facilityOnlyRecipes.has(immediate.id)) {
+        recipeId = immediate.id;
+        const { profit, hasMarketData } = ctx.crafting.estimateMarketProfit(immediate.id);
+        yield `ready to craft: ${immediate.name} (est. profit ${profit}cr${hasMarketData ? " mkt" : ""})`;
+      } else {
+        // Second: find the most profitable recipe we have skills for
+        const best = ctx.crafting.findBestRecipe(ctx.player.skills);
+        if (best && !facilityOnlyRecipes.has(best.id)) {
+          recipeId = best.id;
+          const { profit, hasMarketData } = ctx.crafting.estimateMarketProfit(best.id);
+          yield `target recipe: ${best.name} (est. profit ${profit}cr${hasMarketData ? " mkt" : ""}, need materials)`;
+        }
       }
     }
   }
@@ -97,6 +111,14 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
   // Build the crafting chain (ordered steps, deepest deps first)
   const chain = ctx.crafting.buildChain(recipeId, count);
   const rawMaterials = ctx.crafting.getRawMaterials(recipeId, count);
+
+  // Pre-check: abort if any chain step is a known facility-only recipe
+  const brokenStep = chain.find(step => facilityOnlyRecipes.has(step.recipeId));
+  if (brokenStep) {
+    yield `chain broken: ${brokenStep.recipeName} is facility-only — skipping ${recipe.name}`;
+    yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
+    return;
+  }
 
   if (chain.length > 1) {
     const rawList = [...rawMaterials.entries()]
@@ -138,8 +160,8 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
     } else if (!ctx.player.dockedAtBase) {
       try {
         await findAndDock(ctx);
-      } catch {
-        yield "no dockable station found";
+      } catch (err) {
+        yield `no dockable station: ${err instanceof Error ? err.message : String(err)}`;
         yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
         return;
       }
@@ -225,12 +247,12 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
         if (errMsg.includes("facility-only") || errMsg.includes("facility_only")) {
           facilityOnlyRecipes.add(step.recipeId);
           ctx.cache.markFacilityOnly(step.recipeId);
+          ctx.crafting.markFacilityOnly(step.recipeId);
           yield `blacklisted ${step.recipeName} (facility-only recipe, persisted)`;
-          // If this is the top-level recipe, bail out entirely
-          if (step.recipeId === recipeId) {
-            yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
-            return;
-          }
+          // Bail out entirely — the chain is broken (sub-step or top-level)
+          // Returning lets Commander re-assign with fresh recipe discovery
+          yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
+          return;
         }
 
         chainFailed = true;
@@ -249,7 +271,20 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
     }
 
     // ── Sell or deposit output ──
-    if (sellOutput) {
+    // If crafting for facility needs, always deposit to faction storage (don't sell)
+    const isFacilityMaterial = ctx.cache.isFacilityMaterial(recipe.outputItem);
+    if (isFacilityMaterial) {
+      const qty = ctx.cargo.getItemQuantity(ctx.ship, recipe.outputItem);
+      if (qty > 0) {
+        try {
+          await ctx.api.factionDepositItems(recipe.outputItem, qty);
+          await ctx.refreshState();
+          yield `deposited ${qty} ${ctx.crafting.getItemName(recipe.outputItem)} to faction (facility build material)`;
+        } catch (err) {
+          yield `faction deposit failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    } else if (sellOutput) {
       yield `selling ${ctx.crafting.getItemName(recipe.outputItem)}`;
       const result = await sellItem(ctx, recipe.outputItem);
       if (result && result.total > 0) {
@@ -260,6 +295,9 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
           recordSellResult(ctx, ctx.player.dockedAtBase, recipe.outputItem,
             ctx.crafting.getItemName(recipe.outputItem), result.priceEach, result.quantity);
         }
+        // Pay faction tax on crafting profit
+        const tax = await payFactionTax(ctx, result.total);
+        if (tax.message) yield tax.message;
       } else {
         // No direct buyers — deposit to faction storage instead of leaving in cargo
         const unsoldQty = ctx.cargo.getItemQuantity(ctx.ship, recipe.outputItem);
@@ -323,6 +361,8 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
     // ── Ensure minimum credits ──
     const minCr = await ensureMinCredits(ctx);
     if (minCr.message) yield minCr.message;
+    const maxCr = await depositExcessCredits(ctx);
+    if (maxCr.message) yield maxCr.message;
 
     // ── Service ──
     await refuelIfNeeded(ctx);
@@ -392,7 +432,6 @@ async function sourceMaterials(
             } else {
               await ctx.api.withdrawItems(ing.itemId, safeQty);
             }
-            await ctx.refreshState();
             got += safeQty;
             messages.push(`withdrew ${safeQty} ${ctx.crafting.getItemName(ing.itemId)} from ${isFaction ? "faction" : "personal"} storage`);
           } catch (err) {
@@ -406,7 +445,6 @@ async function sourceMaterials(
                 } else {
                   await ctx.api.withdrawItems(ing.itemId, retryQty);
                 }
-                await ctx.refreshState();
                 got += retryQty;
                 messages.push(`withdrew ${retryQty} ${ctx.crafting.getItemName(ing.itemId)} (retry, item heavier than expected)`);
               } catch {
@@ -468,6 +506,8 @@ async function sourceMaterials(
     }
   }
 
+  // Single refresh after all sourcing operations
+  await ctx.refreshState();
   return { ok: true, reason: "", messages };
 }
 
@@ -491,22 +531,22 @@ async function* clearCrafterCargo(
 
     try {
       await ctx.api.factionDepositItems(item.itemId, item.quantity);
-      await ctx.refreshState();
       deposited += item.quantity;
-      yield `cleared cargo: deposited ${item.quantity}x ${ctx.crafting.getItemName(item.itemId) || item.itemId} to faction`;
-    } catch {
+    } catch (err) {
+      console.warn(`[${ctx.botId}] faction deposit failed for ${item.itemId}: ${err instanceof Error ? err.message : err}`);
       // Faction deposit failed — try station storage
       try {
         await ctx.api.depositItems(item.itemId, item.quantity);
-        await ctx.refreshState();
         deposited += item.quantity;
-      } catch {
-        // Can't deposit — leave it
+      } catch (err2) {
+        console.warn(`[${ctx.botId}] station deposit also failed for ${item.itemId}: ${err2 instanceof Error ? err2.message : err2}`);
       }
     }
   }
 
+  // Single refresh after all deposits
   if (deposited > 0) {
+    await ctx.refreshState();
     yield `cleared ${deposited} items from cargo`;
   }
 }

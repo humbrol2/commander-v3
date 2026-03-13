@@ -21,7 +21,8 @@ export type RoutineName =
   | "quartermaster"
   | "scavenger"
   | "ship_upgrade"
-  | "refit";
+  | "refit"
+  | "ship_dealer";
 
 export const ROUTINE_COLORS: Record<RoutineName, string> = {
   miner: "#ff6b35",
@@ -38,6 +39,7 @@ export const ROUTINE_COLORS: Record<RoutineName, string> = {
   scavenger: "#c0a060",
   ship_upgrade: "#4ecdc4",
   refit: "#7b68ee",
+  ship_dealer: "#e6a817",
 };
 
 export type BotStatus = "idle" | "logging_in" | "ready" | "running" | "stopping" | "error";
@@ -50,6 +52,8 @@ export interface BotSummary {
   empire: string;
   status: BotStatus;
   routine: RoutineName | null;
+  /** Specialist role (null = generalist) */
+  role: string | null;
   routineState: string; // yielded state label
   systemId: string | null;
   systemName: string | null;
@@ -90,6 +94,8 @@ export interface BotSummary {
     storageMode: "sell" | "deposit" | "faction_deposit";
     factionStorage: boolean;
   };
+  description: string | null;
+  activeMissions: Array<{ id: string; title: string; type: string; objectives: Array<{ description: string; progress: number; target: number; complete: boolean }> }>;
 }
 
 // ── Fleet Stats ──
@@ -140,6 +146,17 @@ export interface OpenOrder {
   owner: "personal" | "faction";
 }
 
+export interface WorkOrderInfo {
+  type: "mine" | "craft" | "trade" | "explore";
+  targetId: string;
+  description: string;
+  priority: number;
+  reason: string;
+  quantity?: number;
+  /** Bot currently working on this order (matched by routine type) */
+  assignedBot?: string | null;
+}
+
 export interface EconomyState {
   deficits: MaterialDeficit[];
   surpluses: MaterialSurplus[];
@@ -147,6 +164,7 @@ export interface EconomyState {
   totalRevenue24h: number;
   totalCosts24h: number;
   netProfit24h: number;
+  workOrders?: WorkOrderInfo[];
 }
 
 // ── Market Data (for Market page) ──
@@ -286,6 +304,10 @@ export interface FactionFacility {
   systemId: string;
   systemName: string;
   status: string;
+  level: number;
+  output: string;
+  upgradeAvailable: boolean;
+  upgradeCost: number | null;
 }
 
 export interface FactionState {
@@ -327,6 +349,21 @@ export interface FactionState {
     status: string;
     createdAt: string;
   }>;
+  /** Facility types catalog (what can be built, costs, descriptions) */
+  facilityTypes?: FacilityTypeInfo[];
+  /** Facility types queued for building by the user */
+  buildQueue?: string[];
+}
+
+export interface FacilityTypeInfo {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  level: number;
+  cost: number;
+  prerequisite: string;
+  effect: string;
 }
 
 // ── Bot Storage Data (fetched on demand) ──
@@ -454,7 +491,7 @@ export type ServerMessage =
   | { type: "goals_update"; goals: Goal[] }
   | { type: "faction_update"; faction: FactionState }
   | { type: "connected"; version: string }
-  | { type: "fleet_settings_update"; settings: { factionTaxPercent: number; minBotCredits: number; homeSystem?: string; homeBase?: string; defaultStorageMode?: string } }
+  | { type: "fleet_settings_update"; settings: { factionTaxPercent: number; minBotCredits: number; maxBotCredits: number; homeSystem?: string; homeBase?: string; defaultStorageMode?: string; evaluationInterval?: number } }
   | { type: "bot_storage"; botId: string; storage: BotStorageData }
   | { type: "brain_health_update"; brains: BrainHealthStatus[] }
   | { type: "supply_chain_flow"; nodes: SupplyChainNode[]; links: SupplyChainLink[] }
@@ -491,4 +528,9 @@ export type ClientMessage =
   | { type: "request_catalog" }
   | { type: "request_galaxy" }
   | { type: "request_galaxy_detail" }
-  | { type: "prefer_ship"; botId: string; shipId: string; classId: string };
+  | { type: "prefer_ship"; botId: string; shipId: string; classId: string }
+  | { type: "queue_facility_build"; facilityType: string }
+  | { type: "cancel_facility_build"; facilityType: string }
+  | { type: "buy_ship_upgrade"; botId: string; shipClass: string }
+  | { type: "buy_module"; botId: string; moduleId: string }
+  | { type: "set_bot_role"; botId: string; role: string | null };

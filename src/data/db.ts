@@ -35,9 +35,6 @@ export function createDatabase(dbPath = "commander.db"): { db: DB; sqlite: Datab
  */
 function ensureTables(sqlite: Database): void {
   const tx = sqlite.transaction(() => {
-    // Schema version
-    sqlite.run(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`);
-
     // Cache
     sqlite.run(`CREATE TABLE IF NOT EXISTS cache (
       key TEXT PRIMARY KEY,
@@ -183,8 +180,11 @@ function ensureTables(sqlite: Database): void {
       max_cargo_fill_pct REAL NOT NULL DEFAULT 90,
       storage_mode TEXT NOT NULL DEFAULT 'sell',
       faction_storage INTEGER NOT NULL DEFAULT 0,
+      role TEXT,
       updated_at TEXT DEFAULT (datetime('now'))
     )`);
+    // Migration: add role column to existing bot_settings tables
+    try { sqlite.run(`ALTER TABLE bot_settings ADD COLUMN role TEXT`); } catch { /* already exists */ }
 
     // Financial events
     sqlite.run(`CREATE TABLE IF NOT EXISTS financial_events (
@@ -236,13 +236,6 @@ function ensureTables(sqlite: Database): void {
     )`);
     sqlite.run("CREATE INDEX IF NOT EXISTS idx_llm_tick ON llm_decisions(tick)");
     sqlite.run("CREATE INDEX IF NOT EXISTS idx_llm_brain ON llm_decisions(brain_name)");
-
-    // System cache (persistent system details)
-    sqlite.run(`CREATE TABLE IF NOT EXISTS system_cache (
-      system_id TEXT PRIMARY KEY,
-      data TEXT NOT NULL,
-      updated_at TEXT DEFAULT (datetime('now'))
-    )`);
 
     // POI cache
     sqlite.run(`CREATE TABLE IF NOT EXISTS poi_cache (

@@ -31,6 +31,7 @@ import {
   safetyCheck,
   getParam,
   interruptibleSleep,
+  payFactionTax,
 } from "./helpers";
 
 // Weapon module patterns — hunter must have at least one actual combat weapon
@@ -117,29 +118,35 @@ export async function* hunter(ctx: BotContext): AsyncGenerator<RoutineYield, voi
       yield "cargo getting full — docking to sell loot";
       try {
         await findAndDock(ctx);
+        let lootEarned = 0;
         for (const item of [...ctx.ship.cargo]) {
           if (ctx.shouldStop) break;
           if (item.itemId === "fuel_cell") continue;
           // Try sell first
           try {
-            await ctx.api.sell(item.itemId, item.quantity);
+            const sellRes = await ctx.api.sell(item.itemId, item.quantity);
+            lootEarned += sellRes.total;
             await ctx.refreshState();
             continue;
-          } catch { /* sell failed */ }
+          } catch (err) { console.warn(`[${ctx.botId}] loot sell failed: ${err instanceof Error ? err.message : err}`); }
           // Fallback: deposit to faction storage
           try {
             await ctx.api.factionDepositItems(item.itemId, item.quantity);
             await ctx.refreshState();
             yield `deposited ${item.quantity} ${item.itemId} to faction`;
-          } catch { /* can't sell or deposit — leave it */ }
+          } catch (err) { console.warn(`[${ctx.botId}] loot deposit failed: ${err instanceof Error ? err.message : err}`); }
+        }
+        if (lootEarned > 0) {
+          const tax = await payFactionTax(ctx, lootEarned);
+          if (tax.message) yield tax.message;
         }
         await refuelIfNeeded(ctx);
         if (ctx.player.dockedAtBase) {
           await ctx.api.undock();
           await ctx.refreshState();
         }
-      } catch {
-        yield "sell trip failed";
+      } catch (err) {
+        yield `sell trip failed: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
 
@@ -169,8 +176,8 @@ export async function* hunter(ctx: BotContext): AsyncGenerator<RoutineYield, voi
     let nearby: NearbyPlayer[];
     try {
       nearby = await ctx.api.getNearby();
-    } catch {
-      yield "scan failed";
+    } catch (err) {
+      yield `scan failed: ${err instanceof Error ? err.message : String(err)}`;
       continue;
     }
 
@@ -262,8 +269,8 @@ export async function* hunter(ctx: BotContext): AsyncGenerator<RoutineYield, voi
         }
         await repairIfNeeded(ctx, 90);
         await refuelIfNeeded(ctx);
-      } catch {
-        yield "repair trip failed";
+      } catch (err) {
+        yield `repair trip failed: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
 

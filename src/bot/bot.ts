@@ -59,6 +59,7 @@ export class Bot {
   private _session: SessionInfo | null = null;
   private _routineStartedAt: number = 0;
   private _rapidRoutines: Map<RoutineName, number> = new Map();
+  private _role: string | null = null;
 
   /** Credits withdrawn from faction treasury (not real revenue). Drained by broadcast loop. */
   private _factionWithdrawals = 0;
@@ -69,6 +70,8 @@ export class Bot {
   private _skillsRefreshedAt = 0;
   /** All ships this bot owns (populated after login) */
   private _ownedShips: Array<{ id: string; classId: string; location?: string }> = [];
+  /** Cached active missions (updated by mission_runner routine) */
+  private _activeMissions: Array<{ id: string; title: string; type: string; objectives: Array<{ description: string; progress: number; target: number; complete: boolean }> }> = [];
 
   /** Cached name resolution for toSummary() — updated on location change */
   private _cachedSystemName: string | null = null;
@@ -85,6 +88,7 @@ export class Bot {
     maxCargoFillPct: 90,
     storageMode: "sell",
     factionStorage: false,
+    role: null,
   };
 
   /** Fleet-wide config (set by BotManager from app config) */
@@ -95,6 +99,8 @@ export class Bot {
     factionStorageStation: "",
     factionTaxPercent: 0,
     minBotCredits: 0,
+    maxBotCredits: 0,
+    facilityBuildQueue: [],
   };
 
   /** Optional callback invoked on each routine state yield (for broadcasting to dashboard) */
@@ -151,9 +157,20 @@ export class Bot {
   get ownedShips(): Array<{ id: string; classId: string; location?: string }> {
     return this._ownedShips;
   }
+  /** Specialist role (null = generalist, legacy behavior) */
+  get role(): string | null {
+    return this._role;
+  }
+  set role(r: string | null) {
+    this._role = r;
+  }
   /** Record a faction treasury withdrawal (not real revenue) */
   recordFactionWithdrawal(amount: number): void {
     this._factionWithdrawals += amount;
+  }
+
+  setActiveMissions(missions: Array<{ id: string; title: string; type: string; objectives: Array<{ description: string; progress: number; target: number; complete: boolean }> }>): void {
+    this._activeMissions = missions;
   }
   /** Drain accumulated faction withdrawals (returns and resets to 0) */
   drainFactionWithdrawals(): number {
@@ -221,6 +238,7 @@ export class Bot {
       empire: this._player?.empire ?? "",
       status: this._status,
       routine: this._routine,
+      role: this._role,
       routineState: this._routineState,
       systemId,
       systemName,
@@ -261,6 +279,8 @@ export class Bot {
         storageMode: this.settings.storageMode,
         factionStorage: this.settings.factionStorage,
       },
+      description: this._player?.statusMessage ?? null,
+      activeMissions: this._activeMissions,
     };
   }
 
@@ -483,6 +503,10 @@ export class Bot {
     if (!ONE_SHOT.has(routineName)) {
       this._lastRoutine = routineName;
     }
+    // Clear cached missions when switching away from mission_runner
+    if (routineName !== "mission_runner") {
+      this._activeMissions = [];
+    }
     this._params = params;
     this._routineState = "starting";
     this._shouldStop = false;
@@ -491,6 +515,17 @@ export class Bot {
 
     // Build context
     const ctx = this.buildContext();
+
+    // Set player status message (visible to other players) — fire-and-forget
+    const statusEmoji: Record<string, string> = {
+      miner: "⛏️", harvester: "🧊", crafter: "🔧", trader: "📦",
+      explorer: "🔭", hunter: "⚔️", salvager: "🔩", quartermaster: "🏪",
+      mission_runner: "📋", scout: "📡", ship_upgrade: "🚀", refit: "🔄",
+      return_home: "🏠", scavenger: "🗑️",
+    };
+    const emoji = statusEmoji[routineName] ?? "🤖";
+    const system = this._player?.currentSystem ?? "";
+    ctx.api.setStatus(`${emoji} ${routineName}${system ? ` @ ${system}` : ""}`).catch(() => {});
 
     // Dispose leftover cargo before starting new routine (sell → faction deposit → skip)
     // Prevents miners leaving ore in cargo when switching to trader, etc.
@@ -614,6 +649,9 @@ export class Bot {
       },
       recordFactionWithdrawal: (amount: number) => {
         bot.recordFactionWithdrawal(amount);
+      },
+      setActiveMissions: (missions) => {
+        bot.setActiveMissions(missions);
       },
     };
   }

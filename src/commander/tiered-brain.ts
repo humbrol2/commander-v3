@@ -34,6 +34,7 @@ export class TieredBrain implements CommanderBrain {
 
   async evaluate(input: EvaluationInput): Promise<EvaluationOutput> {
     const errors: Array<{ brain: string; error: string }> = [];
+    let lastEmptyResult: EvaluationOutput | null = null;
 
     // Try each tier in order
     for (const brain of this.tiers) {
@@ -47,6 +48,20 @@ export class TieredBrain implements CommanderBrain {
 
       try {
         const result = await brain.evaluate(input);
+
+        // Treat 0 assignments as a soft failure if bots are available
+        // (LLM brains sometimes return empty results without erroring)
+        const availableBots = input.fleet.bots.filter(
+          b => b.status === "ready" || b.status === "running"
+        ).length;
+        if (result.assignments.length === 0 && availableBots > 0) {
+          const name = health?.name ?? result.brainName;
+          console.log(`[TieredBrain] ${name} returned 0 assignments for ${availableBots} bots, trying next tier...`);
+          errors.push({ brain: name, error: "returned 0 assignments" });
+          lastEmptyResult = result;
+          continue;
+        }
+
         this.lastUsedBrain = result.brainName;
 
         // Run shadow comparison in background (non-blocking)
@@ -61,6 +76,13 @@ export class TieredBrain implements CommanderBrain {
         errors.push({ brain: name, error: msg });
         console.log(`[TieredBrain] ${name} failed: ${msg}, trying next tier...`);
       }
+    }
+
+    // If all tiers returned empty (not hard failures), return the last empty result
+    // rather than throwing — this handles the case where scoring brain legitimately returns 0
+    if (lastEmptyResult) {
+      this.lastUsedBrain = lastEmptyResult.brainName;
+      return lastEmptyResult;
     }
 
     // All tiers failed

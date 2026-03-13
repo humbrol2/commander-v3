@@ -38,6 +38,7 @@ import {
   adjustMarketCache,
   payFactionTax,
   ensureMinCredits,
+  depositExcessCredits,
   interruptibleSleep,
   withdrawFromFaction,
   MAX_MATERIAL_BUY_PRICE,
@@ -184,30 +185,38 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
     }
     if (ctx.player.dockedAtBase) {
       yield "clearing leftover cargo from previous role";
+      let cleared = false;
       for (const c of [...ctx.ship.cargo]) {
         if (isProtectedItem(c.itemId)) continue;
         if (c.quantity <= 0) continue;
         // Try sell first (earns credits)
         try {
           const result = await ctx.api.sell(c.itemId, c.quantity);
-          await ctx.refreshState();
           if (result.total > 0) {
             yield `sold ${result.quantity} ${c.itemId} @ ${result.priceEach}cr = ${result.total}cr`;
+            cleared = true;
             continue;
           }
-        } catch { /* try deposit */ }
+        } catch (err) {
+          console.warn(`[${ctx.botId}] pre-trade sell failed for ${c.itemId}: ${err instanceof Error ? err.message : err}`);
+          // Refresh state to fix stale cargo data (e.g., item already sold/moved)
+          await ctx.refreshState();
+          continue;
+        }
         // Deposit to faction storage
         try {
           await ctx.api.factionDepositItems(c.itemId, c.quantity);
-          await ctx.refreshState();
           yield `deposited ${c.quantity} ${c.itemId} to faction storage`;
-        } catch { /* try personal storage */ }
+          cleared = true;
+          continue;
+        } catch (err) { console.warn(`[${ctx.botId}] faction deposit failed for ${c.itemId}: ${err instanceof Error ? err.message : err}`); }
         // Personal storage fallback
         try {
           await ctx.api.depositItems(c.itemId, c.quantity);
-          await ctx.refreshState();
-        } catch { /* skip */ }
+          cleared = true;
+        } catch (err) { console.warn(`[${ctx.botId}] personal deposit failed for ${c.itemId}: ${err instanceof Error ? err.message : err}`); }
       }
+      if (cleared) await ctx.refreshState();
       await refuelIfNeeded(ctx);
     }
   }
@@ -264,6 +273,46 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
         }
       } catch {
         // viewFactionStorage may fail if not docked or not in a faction — continue normally
+      }
+    }
+  }
+
+  // ── Market discovery: scan stations when cache is too thin for route finding ──
+  if (!buyStation && !sellStation && !item) {
+    const cachedCount = ctx.cache.getAllMarketFreshness().length;
+    if (cachedCount < 2) {
+      yield `market cache thin (${cachedCount} station${cachedCount !== 1 ? "s" : ""}) — scanning nearby stations`;
+      // Dock if not already, scan current station
+      if (!ctx.player.dockedAtBase) {
+        try { await findAndDock(ctx); } catch { /* continue */ }
+      }
+      if (ctx.player.dockedAtBase) {
+        try {
+          const market = await ctx.api.viewMarket();
+          if (market.length > 0) {
+            cacheMarketData(ctx, ctx.player.dockedAtBase, market);
+            yield `scanned ${market.length} orders at current station`;
+          }
+        } catch { /* continue */ }
+      }
+      // Look for other stations in-system and scan them too
+      if (!ctx.shouldStop) {
+        try {
+          const system = await ctx.api.getSystem();
+          const otherBases = system.pois.filter(p => p.hasBase && p.baseId && p.baseId !== ctx.player.dockedAtBase);
+          for (const poi of otherBases.slice(0, 2)) { // Scan up to 2 other stations
+            if (ctx.shouldStop) break;
+            try {
+              yield `scanning market at ${poi.baseName ?? poi.name}`;
+              await navigateAndDock(ctx, poi.baseId!);
+              const market = await ctx.api.viewMarket();
+              if (market.length > 0) {
+                cacheMarketData(ctx, poi.baseId!, market);
+                yield `scanned ${market.length} orders at ${poi.baseName ?? poi.name}`;
+              }
+            } catch { /* skip this station */ }
+          }
+        } catch { /* continue */ }
       }
     }
   }
@@ -381,7 +430,9 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
           }
           yield `sold cargo for ${sellResult.totalEarned} credits`;
         }
-      } catch {}
+      } catch (err) {
+        console.warn(`[${ctx.botId}] trader: failed to sell remaining cargo: ${err instanceof Error ? err.message : err}`);
+      }
     }
     await refuelIfNeeded(ctx);
     await interruptibleSleep(ctx, 120_000);
@@ -516,14 +567,16 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
       } else {
         // Weight-aware: divide free cargo weight by per-unit size
         let buyQty = Math.floor(freeWeight / Math.max(1, itemSize));
+        // Cap by known sell demand volume — don't buy more than we can sell
+        const sellDemandVol = sellStationPrices?.find((p) => p.itemId === item)?.sellVolume ?? 0;
         if (bestPrice > 0) {
-          // Spend cap: don't risk more than 50% of credits on a single trade
-          const spendCap = Math.floor(ctx.player.credits * 0.50);
+          // Dynamic spend cap: raise to 75% when margin is strong (>30%) and demand is confirmed
+          const margin = expectedSellPrice > 0 ? (expectedSellPrice - bestPrice) / bestPrice : 0;
+          const spendPct = (margin >= 0.30 && sellDemandVol > 0) ? 0.75 : 0.50;
+          const spendCap = Math.floor(ctx.player.credits * spendPct);
           const maxByCredits = Math.floor(spendCap / bestPrice);
           buyQty = Math.min(buyQty, maxByCredits, availableQty || buyQty);
         }
-        // Cap by known sell demand volume — don't buy more than we can sell
-        const sellDemandVol = sellStationPrices?.find((p) => p.itemId === item)?.sellVolume ?? 0;
         if (sellDemandVol > 0) {
           buyQty = Math.min(buyQty, sellDemandVol);
         }
@@ -702,7 +755,9 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
       if (sellMarketOrders.length > 0) {
         cacheMarketData(ctx, sellStation, sellMarketOrders);
       }
-    } catch {}
+    } catch (err) {
+      console.warn(`[${ctx.botId}] trader: sell market scan failed: ${err instanceof Error ? err.message : err}`);
+    }
 
     const qty = ctx.cargo.getItemQuantity(ctx.ship, item);
     if (qty > 0) {
@@ -866,17 +921,19 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
     // Also sell any other cargo items we might have picked up
     if (ctx.ship.cargo.length > 0) {
       const otherItems = ctx.ship.cargo.filter((c) => c.itemId !== item && !isProtectedItem(c.itemId));
+      let soldOther = false;
       for (const other of otherItems) {
         try {
           const result = await ctx.api.sell(other.itemId, other.quantity);
-          await ctx.refreshState();
           if (result.quantity > 0 && result.total > 0) {
             yield `sold ${result.quantity} ${other.itemId} @ ${result.priceEach}cr = ${result.total}cr`;
+            soldOther = true;
           }
         } catch {
           // Non-critical — some items may not be sellable here
         }
       }
+      if (soldOther) await ctx.refreshState();
     }
 
     // ── Multi-hop: buy something here for the return trip ──
@@ -948,6 +1005,8 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
     // ── Ensure minimum credits ──
     const minCr = await ensureMinCredits(ctx);
     if (minCr.message) yield minCr.message;
+    const maxCr = await depositExcessCredits(ctx);
+    if (maxCr.message) yield maxCr.message;
 
     // ── Service ──
     await refuelIfNeeded(ctx);
@@ -1005,17 +1064,35 @@ async function* insightGatedArbitrageTrip(
     return;
   }
 
-  const route = gatedRoutes[0]; // Best by profit-per-tick
+  // Pick first unclaimed route (prevents fleet stampede — multiple traders racing same route)
+  let route = gatedRoutes[0];
+  for (const candidate of gatedRoutes) {
+    if (ctx.cache.claimArbitrageRoute(candidate.itemId, candidate.buyStationId, candidate.sellStationId, ctx.botId)) {
+      route = candidate;
+      break;
+    }
+    yield `arbitrage: ${candidate.itemName} @ ${candidate.buyStationId} → ${candidate.sellStationId} already claimed, trying next`;
+  }
+  // If all routes were claimed, the last candidate's claim attempt failed — skip
+  if (ctx.cache.isArbitrageRouteClaimed(route.itemId, route.buyStationId, route.sellStationId, ctx.botId)) {
+    yield "arbitrage: all routes claimed by other traders";
+    return;
+  }
+
   yield `arbitrage: ${route.itemName} buy@${route.buyPrice}cr → sell@${route.sellPrice}cr (+${route.profitPerUnit}cr/unit, ${route.jumps} jumps)`;
+
+  // Release claim helper — called on every exit path
+  const releaseClaim = () => ctx.cache.releaseArbitrageRoute(route.itemId, route.buyStationId, route.sellStationId);
 
   // ── Navigate to buy station ──
   try {
     await navigateAndDock(ctx, route.buyStationId);
   } catch (err) {
     yield `arbitrage: buy station nav failed: ${err instanceof Error ? err.message : String(err)}`;
+    releaseClaim();
     return;
   }
-  if (ctx.shouldStop) return;
+  if (ctx.shouldStop) { releaseClaim(); return; }
 
   // ── Scan live market and re-verify ──
   const liveMarket = await ctx.api.viewMarket();
@@ -1028,6 +1105,7 @@ async function* insightGatedArbitrageTrip(
   );
   if (!liveOrder) {
     yield `arbitrage: ${route.itemName} no longer available at buy station`;
+    releaseClaim();
     return;
   }
 
@@ -1035,6 +1113,7 @@ async function* insightGatedArbitrageTrip(
   const liveGate = isInsightGatedBuyAllowed(ctx, route.itemId, liveOrder.priceEach, route.sellStationId);
   if (!liveGate.allowed) {
     yield `arbitrage: buy blocked (live price): ${liveGate.reason}`;
+    releaseClaim();
     return;
   }
 
@@ -1043,6 +1122,7 @@ async function* insightGatedArbitrageTrip(
   const expectedSellPrice = sellStationPrices?.find((p) => p.itemId === route.itemId)?.sellPrice ?? 0;
   if (expectedSellPrice <= liveOrder.priceEach) {
     yield `arbitrage: unprofitable at live prices (buy ${liveOrder.priceEach}cr >= sell ${expectedSellPrice}cr)`;
+    releaseClaim();
     return;
   }
 
@@ -1076,9 +1156,10 @@ async function* insightGatedArbitrageTrip(
     yield `arbitrage: bought ${result.quantity} @ ${actualBuyPrice}cr each`;
   } catch (err) {
     yield `arbitrage: buy failed: ${err instanceof Error ? err.message : String(err)}`;
+    releaseClaim();
     return;
   }
-  if (ctx.shouldStop) return;
+  if (ctx.shouldStop) { releaseClaim(); return; }
 
   // ── Navigate to sell station ──
   try {
@@ -1091,9 +1172,10 @@ async function* insightGatedArbitrageTrip(
       await sellAllCargo(ctx);
       yield "arbitrage: sold at fallback station";
     } catch { yield "arbitrage: cargo stranded"; }
+    releaseClaim();
     return;
   }
-  if (ctx.shouldStop) return;
+  if (ctx.shouldStop) { releaseClaim(); return; }
 
   // ── Scan sell market and verify profit ──
   const sellMarket = await ctx.api.viewMarket();
@@ -1104,15 +1186,38 @@ async function* insightGatedArbitrageTrip(
   const cargoQty = ctx.cargo.getItemQuantity(ctx.ship, route.itemId);
   if (cargoQty <= 0) {
     yield "arbitrage: no cargo to sell (lost in transit?)";
+    releaseClaim();
     return;
   }
 
-  // Loss prevention: if live sell price < buy price, deposit to faction instead
+  // Loss prevention: if no buy orders or sell price < buy price, deposit to faction instead
   const liveSellOrder = sellMarket.find(
     (m) => m.type === "buy" && m.itemId === route.itemId && m.quantity > 0,
   );
   const liveSellPrice = liveSellOrder?.priceEach ?? 0;
-  if (liveSellPrice > 0 && liveSellPrice < actualBuyPrice) {
+  if (liveSellPrice <= 0) {
+    yield `arbitrage: no buy orders for ${route.itemName} at sell station — depositing to faction`;
+    try {
+      await ctx.api.depositItems(route.itemId, cargoQty);
+      await ctx.refreshState();
+      yield `arb deposited ${cargoQty} ${route.itemName} to faction (buy order gone)`;
+    } catch {
+      // Fallback: sell at whatever price is available
+      try {
+        const result = await ctx.api.sell(route.itemId, cargoQty);
+        await ctx.refreshState();
+        if (result.quantity > 0) {
+          recordSellResult(ctx, route.sellStationId, route.itemId, route.itemName, result.priceEach, result.quantity);
+          yield `arbitrage: sold ${result.quantity} @ ${result.priceEach}cr (no buy order, best-effort)`;
+        } else {
+          yield `arbitrage: sell returned 0 — blacklisting ${route.itemName} this session`;
+        }
+      } catch { /* cargo stranded */ }
+    }
+    releaseClaim();
+    return;
+  }
+  if (liveSellPrice < actualBuyPrice) {
     yield `arbitrage: would sell at loss (${liveSellPrice}cr < ${actualBuyPrice}cr) — depositing to faction`;
     try {
       await ctx.api.depositItems(route.itemId, cargoQty);
@@ -1128,6 +1233,7 @@ async function* insightGatedArbitrageTrip(
         yield `arbitrage: sold ${result.quantity} @ ${result.priceEach}cr (loss accepted)`;
       } catch { /* cargo stranded */ }
     }
+    releaseClaim();
     return;
   }
 
@@ -1143,6 +1249,8 @@ async function* insightGatedArbitrageTrip(
   } catch (err) {
     yield `arbitrage: sell failed: ${err instanceof Error ? err.message : String(err)}`;
   }
+
+  releaseClaim();
 
   // ── Faction tax on profit ──
   const profit = ctx.player.credits - creditsBeforeSell;
@@ -1167,6 +1275,7 @@ async function* factionSellLoop(
   blacklistedItems: Set<string> = new Set(),
 ): AsyncGenerator<RoutineYield, void, void> {
   let tripCount = 0;
+  let navFailures = 0;
 
   while (!ctx.shouldStop && tripCount < maxTrips) {
     const issue = safetyCheck(ctx);
@@ -1187,14 +1296,32 @@ async function* factionSellLoop(
     yield "traveling to faction storage";
     try {
       await navigateAndDock(ctx, factionStation);
+      navFailures = 0; // Reset on success
     } catch (err) {
-      yield `navigation failed: ${err instanceof Error ? err.message : String(err)}`;
+      navFailures++;
+      yield `navigation failed (${navFailures}/3): ${err instanceof Error ? err.message : String(err)}`;
+      if (navFailures >= 3) {
+        yield "navigation to faction storage failed 3 times — aborting";
+        yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
+        return;
+      }
       await interruptibleSleep(ctx, 60_000);
       yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
       continue;
     }
 
     if (ctx.shouldStop) return;
+
+    // ── Opportunistic market scan (populates cache for route finding) ──
+    if (ctx.player.dockedAtBase) {
+      const freshness = ctx.cache.getMarketFreshness(ctx.player.dockedAtBase);
+      if (!freshness.fresh) {
+        try {
+          const market = await ctx.api.viewMarket();
+          if (market.length > 0) cacheMarketData(ctx, ctx.player.dockedAtBase, market);
+        } catch { /* non-critical */ }
+      }
+    }
 
     // ── Check faction storage for valuable items ──
     let storageItems: Array<{ itemId: string; quantity: number }> = [];
@@ -1210,10 +1337,9 @@ async function* factionSellLoop(
     }
 
     if (storageItems.length === 0) {
-      yield "faction storage empty — waiting for crafters to produce";
-      await interruptibleSleep(ctx, 120_000);
+      yield "faction storage empty — nothing to sell";
       yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
-      continue;
+      return; // Exit entirely — rapid-complete will flag for reassignment
     }
 
     // ── Pre-select sell station BEFORE withdrawing ──
@@ -1221,17 +1347,32 @@ async function* factionSellLoop(
     // This prevents blind withdrawals that end up re-deposited.
     const cachedStations = ctx.cache.getAllMarketFreshness().map((f) => f.stationId);
     // Include non-ore items + ores with 5000+ units (overstocked, need to sell)
-    // Skip items that failed to sell this session
-    const nonOreStorage = storageItems.filter((s) =>
-      s.quantity > 0 && (!isOre(s.itemId) || s.quantity >= 5000) && !blacklistedItems.has(s.itemId)
+    // Skip items that failed to sell this session, and items reserved for facility builds
+    const facilityNeeds = ctx.cache.getFacilityMaterialNeeds();
+    let nonOreStorage = storageItems.filter((s) =>
+      s.quantity > 0 && (!isOre(s.itemId) || s.quantity >= 5000)
+      && !blacklistedItems.has(s.itemId)
+      && !facilityNeeds.has(s.itemId) // Don't sell items needed for facility builds
     );
+
+    // Fallback: if no crafted goods available, sell OVERSTOCKED ores only (5000+ units)
+    // Don't sell small ore quantities — miners/crafters need them in the supply chain
+    if (nonOreStorage.length === 0) {
+      const facilityNeeds = ctx.cache.getFacilityMaterialNeeds();
+      nonOreStorage = storageItems.filter((s) =>
+        s.quantity >= 5000 && isOre(s.itemId) && !blacklistedItems.has(s.itemId)
+        && !facilityNeeds.has(s.itemId) // Don't sell ore needed for facility builds
+      );
+      if (nonOreStorage.length > 0) {
+        yield "no crafted goods — selling overstocked ore (5000+ units)";
+      }
+    }
 
     if (nonOreStorage.length === 0) {
       const blCount = blacklistedItems.size;
-      yield `all sellable items blacklisted (${blCount} item${blCount !== 1 ? "s" : ""}) — waiting for new stock`;
-      await interruptibleSleep(ctx, 120_000);
+      yield `all sellable items blacklisted (${blCount} item${blCount !== 1 ? "s" : ""}) — nothing tradeable`;
       yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
-      continue;
+      return; // Exit entirely — rapid-complete will flag for reassignment
     }
 
     // Build a ranked list of stations by total revenue for items in storage
@@ -1263,7 +1404,9 @@ async function* factionSellLoop(
       }
 
       if (revenue <= 0) continue;
-      const fuelCost = jumps * 2 * 15;
+      // Fuel cost: round trip × estimated fuel/jump × ~15cr per fuel unit
+      const fuelPerJump = ctx.nav.estimateJumpFuel(ctx.ship);
+      const fuelCost = jumps * 2 * fuelPerJump * 15;
       const netRevenue = revenue - fuelCost;
 
       // Boost from market insights: demand signals increase station attractiveness
@@ -1295,7 +1438,13 @@ async function* factionSellLoop(
       }
     }
 
-    stationBids.sort((a, b) => b.revenue - a.revenue);
+    // Rank by revenue per tick (travel-time-adjusted, speed-aware since v0.188.0)
+    const ticksPerJump = ctx.nav.estimateJumpTicks(ctx.ship);
+    stationBids.sort((a, b) => {
+      const aTicks = Math.max(1, a.jumps * 2 * ticksPerJump + 4); // round trip + overhead
+      const bTicks = Math.max(1, b.jumps * 2 * ticksPerJump + 4);
+      return (b.revenue / bTicks) - (a.revenue / aTicks);
+    });
 
     if (stationBids.length === 0) {
       yield "no known buyers — will try sell orders at home station";
@@ -1334,22 +1483,26 @@ async function* factionSellLoop(
     // ── Free up cargo space if needed (leftover from previous routine) ──
     if (ctx.cargo.freeSpace(ctx.ship) <= 0 && ctx.ship.cargo.length > 0 && ctx.player.dockedAtBase) {
       yield "clearing cargo before faction withdrawal";
-      for (const c of ctx.ship.cargo) {
+      let clearedAny = false;
+      for (const c of [...ctx.ship.cargo]) {
         if (isProtectedItem(c.itemId)) continue;
         // Deposit to faction storage first (free, keeps goods in supply chain)
         try {
           await ctx.api.factionDepositItems(c.itemId, c.quantity);
-          await ctx.refreshState();
           yield `deposited ${c.quantity} ${c.itemId} to faction storage`;
+          clearedAny = true;
           continue;
         } catch { /* try sell */ }
         // Sell as fallback
         try {
           const result = await ctx.api.sell(c.itemId, c.quantity);
-          await ctx.refreshState();
-          if (result.total > 0) yield `sold ${result.quantity} ${c.itemId} @ ${result.priceEach}cr`;
+          if (result.total > 0) {
+            yield `sold ${result.quantity} ${c.itemId} @ ${result.priceEach}cr`;
+            clearedAny = true;
+          }
         } catch { /* skip */ }
       }
+      if (clearedAny) await ctx.refreshState();
     }
 
     // ── Withdraw valuable items — fill cargo with multiple types ──
@@ -1408,10 +1561,9 @@ async function* factionSellLoop(
     }
 
     if (withdrawnItems.length === 0) {
-      yield "could not withdraw any items — waiting";
-      await interruptibleSleep(ctx, 120_000);
+      yield "could not withdraw any items — nothing tradeable";
       yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
-      continue;
+      return; // Exit entirely — rapid-complete will flag for reassignment
     }
 
     if (withdrawnItems.length > 1) {
@@ -1457,6 +1609,14 @@ async function* factionSellLoop(
       } catch (err) {
         yield `navigation failed: ${err instanceof Error ? err.message : String(err)}`;
         continue; // Try next station
+      }
+
+      // Refresh market cache while docked (helps future route finding)
+      if (ctx.player.dockedAtBase) {
+        try {
+          const market = await ctx.api.viewMarket();
+          if (market.length > 0) cacheMarketData(ctx, ctx.player.dockedAtBase, market);
+        } catch { /* non-critical */ }
       }
 
       // Sell all withdrawn items at this station
@@ -1573,6 +1733,8 @@ async function* factionSellLoop(
 
     const minCr = await ensureMinCredits(ctx);
     if (minCr.message) yield minCr.message;
+    const maxCr = await depositExcessCredits(ctx);
+    if (maxCr.message) yield maxCr.message;
 
     await refuelIfNeeded(ctx);
     await repairIfNeeded(ctx);

@@ -16,6 +16,7 @@ export interface BotSettingsData {
   maxCargoFillPct: number;
   storageMode: "sell" | "deposit" | "faction_deposit";
   factionStorage: boolean;
+  role: string | null;
 }
 
 export function saveBotSettings(db: DB, username: string, settings: BotSettingsData): void {
@@ -27,6 +28,7 @@ export function saveBotSettings(db: DB, username: string, settings: BotSettingsD
       maxCargoFillPct: settings.maxCargoFillPct,
       storageMode: settings.storageMode,
       factionStorage: settings.factionStorage ? 1 : 0,
+      role: settings.role ?? null,
     })
     .onConflictDoUpdate({
       target: botSettings.username,
@@ -36,6 +38,7 @@ export function saveBotSettings(db: DB, username: string, settings: BotSettingsD
         maxCargoFillPct: settings.maxCargoFillPct,
         storageMode: settings.storageMode,
         factionStorage: settings.factionStorage ? 1 : 0,
+        role: settings.role ?? null,
       },
     })
     .run();
@@ -51,6 +54,7 @@ export function loadBotSettings(db: DB, username: string): BotSettingsData | nul
     maxCargoFillPct: row.maxCargoFillPct,
     storageMode: row.storageMode as BotSettingsData["storageMode"],
     factionStorage: row.factionStorage === 1,
+    role: row.role ?? null,
   };
 }
 
@@ -59,6 +63,13 @@ export function loadBotSettings(db: DB, username: string): BotSettingsData | nul
 export interface FleetSettingsData {
   factionTaxPercent: number;
   minBotCredits: number;
+  maxBotCredits: number;
+  homeSystem?: string;
+  homeBase?: string;
+  defaultStorageMode?: string;
+  evaluationInterval?: number;
+  reassignmentCooldown?: number;
+  reassignmentThreshold?: number;
 }
 
 export function saveFleetSettings(db: DB, settings: FleetSettingsData): void {
@@ -81,6 +92,13 @@ export function loadFleetSettings(db: DB): FleetSettingsData | null {
   return {
     factionTaxPercent: Number(map.get("factionTaxPercent") ?? 0),
     minBotCredits: Number(map.get("minBotCredits") ?? 0),
+    maxBotCredits: Number(map.get("maxBotCredits") ?? 0),
+    homeSystem: map.get("homeSystem") ?? undefined,
+    homeBase: map.get("homeBase") ?? undefined,
+    defaultStorageMode: map.get("defaultStorageMode") ?? undefined,
+    evaluationInterval: map.has("evaluationInterval") ? Number(map.get("evaluationInterval")) : undefined,
+    reassignmentCooldown: map.has("reassignmentCooldown") ? Number(map.get("reassignmentCooldown")) : undefined,
+    reassignmentThreshold: map.has("reassignmentThreshold") ? Number(map.get("reassignmentThreshold")) : undefined,
   };
 }
 

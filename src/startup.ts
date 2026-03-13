@@ -31,16 +31,18 @@ import { EconomyEngine } from "./commander/economy-engine";
 import { buildRoutineRegistry } from "./routines";
 import { createServer, broadcast, sendTo, type ServerOptions } from "./server/server";
 import { activityLog } from "./data/schema";
-import { gt } from "drizzle-orm";
+import { gt, lt } from "drizzle-orm";
 import { handleClientMessage, type MessageRouterDeps } from "./server/message-router";
 import { startBroadcastLoop, type BroadcastDeps } from "./server/broadcast";
 import {
   loadBotSettings, loadFleetSettings, loadGoals,
+  saveBotSettings,
   discoverFactionStorage, propagateFleetHome,
   ensureFactionMembership,
 } from "./fleet";
 import type { CommanderBrain } from "./commander/types";
 import { MemoryStore } from "./data/memory-store";
+import { parseBotRole, type RolePoolConfig } from "./commander/roles";
 
 export interface AppServices {
   db: DB;
@@ -61,8 +63,17 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const { db, sqlite } = createDatabase("commander.db");
   const trainingLogger = new TrainingLogger(db);
   const gameCache = new GameCache(db, trainingLogger);
+  const shipyardCount = gameCache.loadShipyardData();
+  if (shipyardCount > 0) console.log(`[Cache] Loaded ${shipyardCount} shipyard scans from disk`);
   const sessionStore = new SessionStore(db);
   const eventBus = new EventBus();
+
+  // ── Cleanup stale data ──
+  try {
+    const cutoff = Date.now() - 48 * 3_600_000; // 48 hours
+    db.delete(activityLog).where(lt(activityLog.timestamp, cutoff)).run();
+    console.log(`[Cleanup] Trimmed activity log entries older than 48h`);
+  } catch { /* non-critical */ }
 
   // ── Event Handlers ──
   registerTradeTracker(eventBus, trainingLogger);
@@ -109,6 +120,8 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     factionStorageStation: config.fleet.faction_storage_station,
     factionTaxPercent: config.fleet.faction_tax_percent,
     minBotCredits: config.fleet.min_bot_credits,
+    maxBotCredits: config.fleet.max_bot_credits,
+    facilityBuildQueue: [],
   };
 
   // Load saved fleet settings
@@ -116,7 +129,11 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   if (savedFleetSettings) {
     botManager.fleetConfig.factionTaxPercent = savedFleetSettings.factionTaxPercent;
     botManager.fleetConfig.minBotCredits = savedFleetSettings.minBotCredits;
-    console.log(`[Config] Loaded fleet settings: tax=${savedFleetSettings.factionTaxPercent}%, minCredits=${savedFleetSettings.minBotCredits}`);
+    botManager.fleetConfig.maxBotCredits = savedFleetSettings.maxBotCredits;
+    if (savedFleetSettings.homeSystem) botManager.fleetConfig.homeSystem = savedFleetSettings.homeSystem;
+    if (savedFleetSettings.homeBase) botManager.fleetConfig.homeBase = savedFleetSettings.homeBase;
+    if (savedFleetSettings.defaultStorageMode) botManager.fleetConfig.defaultStorageMode = savedFleetSettings.defaultStorageMode as "sell" | "deposit" | "faction_deposit";
+    console.log(`[Config] Loaded fleet settings: tax=${savedFleetSettings.factionTaxPercent}%, minCredits=${savedFleetSettings.minBotCredits}, maxCredits=${savedFleetSettings.maxBotCredits}, home=${savedFleetSettings.homeSystem || 'auto'}/${savedFleetSettings.homeBase || 'auto'}, storage=${savedFleetSettings.defaultStorageMode || 'config'}`);
   }
 
   // Register routines
@@ -133,16 +150,19 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     if (logBatch.length === 0) return;
     const batch = logBatch.splice(0, MAX_LOG_BATCH);
     try {
-      const insertLog = db.insert(activityLog);
+      // Wrap in transaction for ~10x faster batch insert (single fsync)
+      sqlite.exec("BEGIN");
       for (const entry of batch) {
-        insertLog.values({
+        db.insert(activityLog).values({
           timestamp: entry.timestamp,
           level: entry.level,
           botId: entry.botId,
           message: entry.message,
         }).run();
       }
+      sqlite.exec("COMMIT");
     } catch (err) {
+      try { sqlite.exec("ROLLBACK"); } catch { /* ignore */ }
       console.error(`[Log] Failed to flush ${batch.length} log entries:`, err);
     }
   };
@@ -175,6 +195,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 
   // ── Economy Engine ──
   const economy = new EconomyEngine();
+  economy.crafting = crafting;
 
   // ── Persistent Memory Store (inspired by CHAPERON) ──
   const memoryStore = new MemoryStore(db);
@@ -183,7 +204,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const brain = buildBrain(config, trainingLogger);
 
   const commanderConfig: CommanderConfig = {
-    evaluationIntervalSec: config.commander.evaluation_interval,
+    evaluationIntervalSec: savedFleetSettings?.evaluationInterval ?? config.commander.evaluation_interval,
     urgencyOverride: config.commander.urgency_override,
   };
 
@@ -201,10 +222,35 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       return readyBot?.api ?? null;
     },
     homeBase: config.fleet.home_base || undefined,
+    getFleetConfig: () => botManager.fleetConfig,
     memoryStore,
+    setBotRole: (botId: string, role: string | null) => {
+      const bot = botManager.getBot(botId);
+      if (!bot) return;
+      bot.role = role;
+      bot.settings.role = role;
+      saveBotSettings(db, bot.username, bot.settings);
+    },
+    recoverErrorBots: () => botManager.recoverStuckBots(),
   };
 
   const commander = new Commander(commanderConfig, commanderDeps, brain);
+
+  // Load role pool config from config.toml
+  if (config.fleet.roles.length > 0) {
+    const poolConfig: RolePoolConfig[] = config.fleet.roles
+      .filter(r => parseBotRole(r.role))
+      .map(r => ({
+        role: parseBotRole(r.role)!,
+        min: r.min,
+        max: r.max,
+        preferredShip: r.preferred_ship,
+      }));
+    if (poolConfig.length > 0) {
+      commander.setPoolConfig(poolConfig);
+      console.log(`[Config] Loaded ${poolConfig.length} role pool configs`);
+    }
+  }
 
   // Load saved goals
   const savedGoals = loadGoals(db);
@@ -220,6 +266,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     const settings = loadBotSettings(db, creds.username);
     if (settings) {
       bot.settings = settings;
+      if (settings.role) bot.role = settings.role;
     }
   }
   if (savedBots.length > 0) {
@@ -294,9 +341,11 @@ export async function startup(config: AppConfig): Promise<AppServices> {
         settings: {
           factionTaxPercent: botManager.fleetConfig.factionTaxPercent,
           minBotCredits: botManager.fleetConfig.minBotCredits,
+          maxBotCredits: botManager.fleetConfig.maxBotCredits,
           homeSystem: botManager.fleetConfig.homeSystem,
           homeBase: botManager.fleetConfig.homeBase,
           defaultStorageMode: botManager.fleetConfig.defaultStorageMode,
+          evaluationInterval: commander.getConfig().evaluationIntervalSec,
         },
       } as any);
 
@@ -355,6 +404,9 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   return {
     db,
     close: () => {
+      commander.stop();
+      stopBroadcast();
+      if (discoveryTimer) { clearInterval(discoveryTimer); discoveryTimer = null; }
       if (logFlushTimer) clearInterval(logFlushTimer);
       flushLogs(); // Flush remaining logs before close
       sqlite.close();
@@ -374,28 +426,33 @@ function buildBrain(config: AppConfig, logger: TrainingLogger): CommanderBrain {
   }
 
   // Build LLM brains for tiered system
+  const promptFile = config.ai.prompt_file || undefined;
   const brainMap: Record<string, () => CommanderBrain> = {
     ollama: () => createOllamaBrain({
       baseUrl: config.ai.ollama_base_url,
       model: config.ai.ollama_model,
       timeoutMs: config.ai.max_latency_ms,
       maxTokens: config.ai.max_tokens,
+      promptFile,
     }),
     openai: () => createOpenAIBrain({
       baseUrl: config.ai.openai_base_url,
       model: config.ai.openai_model,
       timeoutMs: config.ai.max_latency_ms,
       maxTokens: config.ai.max_tokens,
+      promptFile,
     }),
     gemini: () => createGeminiBrain({
       model: config.ai.gemini_model,
       timeoutMs: config.ai.max_latency_ms,
       maxTokens: config.ai.max_tokens,
+      promptFile,
     }),
     claude: () => createClaudeBrain({
       model: config.ai.claude_model,
       timeoutMs: config.ai.max_latency_ms,
       maxTokens: config.ai.max_tokens,
+      promptFile,
     }),
     scoring: () => scoringBrain,
   };

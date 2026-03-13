@@ -28,6 +28,7 @@ import {
   getParam,
   interruptibleSleep,
   disposeCargo,
+  payFactionTax,
 } from "./helpers";
 
 /** Loot all items from wrecks at the current POI. Returns number of items looted. */
@@ -195,7 +196,11 @@ export async function* scavenger(ctx: BotContext): AsyncGenerator<RoutineYield, 
       yield "cargo getting full — docking to sell";
       try {
         await findAndDock(ctx);
-        await disposeCargo(ctx);
+        const sellResult = await disposeCargo(ctx);
+        if (sellResult.totalEarned > 0) {
+          const tax = await payFactionTax(ctx, sellResult.totalEarned);
+          if (tax.message) yield tax.message;
+        }
         await refuelIfNeeded(ctx);
         await repairIfNeeded(ctx);
         await ctx.refreshState();
@@ -211,8 +216,8 @@ export async function* scavenger(ctx: BotContext): AsyncGenerator<RoutineYield, 
       try {
         await ctx.api.undock();
         await ctx.refreshState();
-      } catch {
-        // Already undocked
+      } catch (err) {
+        console.warn(`[${ctx.botId}] undock failed: ${err instanceof Error ? err.message : err}`);
       }
     }
 
@@ -288,7 +293,7 @@ export async function* scavenger(ctx: BotContext): AsyncGenerator<RoutineYield, 
         try {
           await ctx.api.undock();
           await ctx.refreshState();
-        } catch { /* ok */ }
+        } catch (err) { console.warn(`[${ctx.botId}] undock failed: ${err instanceof Error ? err.message : err}`); }
       }
     }
 

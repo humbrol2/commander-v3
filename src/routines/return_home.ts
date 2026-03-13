@@ -18,6 +18,7 @@ import {
   refuelIfNeeded,
   repairIfNeeded,
   ensureMinCredits,
+  depositExcessCredits,
   recoverStranded,
   getParam,
 } from "./helpers";
@@ -74,6 +75,8 @@ export async function* returnHome(ctx: BotContext): AsyncGenerator<RoutineYield,
     // Withdraw credits from faction treasury if below minimum
     const minCr = await ensureMinCredits(ctx);
     if (minCr.message) yield minCr.message;
+    const maxCr = await depositExcessCredits(ctx);
+    if (maxCr.message) yield maxCr.message;
 
     yield "home, docked and serviced";
   }

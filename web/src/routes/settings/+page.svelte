@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { send, commanderLog, goals as goalsStore, fleetSettings as fleetSettingsStore } from "$stores/websocket";
+	import { send, commanderLog, goals as goalsStore, fleetSettings as fleetSettingsStore, galaxySystems } from "$stores/websocket";
 
 	let activeTab = $state("goals");
 
@@ -25,6 +25,8 @@
 		"establish_trade_route",
 		"resource_stockpile",
 		"faction_operations",
+		"upgrade_ships",
+		"upgrade_modules",
 	];
 
 	let editingIndex = $state<number | null>(null);
@@ -73,6 +75,7 @@
 		snapshotInterval: 30,
 		factionTaxPercent: 0,
 		minBotCredits: 0,
+		maxBotCredits: 0,
 		homeSystem: "",
 		homeBase: "",
 		defaultStorageMode: "faction_deposit" as string,
@@ -92,10 +95,44 @@
 		const fs = $fleetSettingsStore;
 		fleetSettings.factionTaxPercent = fs.factionTaxPercent;
 		fleetSettings.minBotCredits = fs.minBotCredits;
-		if ((fs as any).homeSystem) fleetSettings.homeSystem = (fs as any).homeSystem;
-		if ((fs as any).homeBase) fleetSettings.homeBase = (fs as any).homeBase;
-		if ((fs as any).defaultStorageMode) fleetSettings.defaultStorageMode = (fs as any).defaultStorageMode;
+		fleetSettings.maxBotCredits = fs.maxBotCredits;
+		if (fs.homeSystem !== undefined) fleetSettings.homeSystem = fs.homeSystem;
+		if (fs.homeBase !== undefined) fleetSettings.homeBase = fs.homeBase;
+		if (fs.defaultStorageMode) fleetSettings.defaultStorageMode = fs.defaultStorageMode;
+		if (fs.evaluationInterval) commanderSettings.evaluationInterval = fs.evaluationInterval;
 	});
+
+	// Clear home base if it's no longer in the selected system
+	$effect(() => {
+		if (fleetSettings.homeSystem && fleetSettings.homeBase) {
+			const validBases = $galaxySystems
+				.find((s) => s.id === fleetSettings.homeSystem)
+				?.pois.filter((p) => p.hasBase && p.baseId)
+				.map((p) => p.baseId) ?? [];
+			if (!validBases.includes(fleetSettings.homeBase)) {
+				fleetSettings.homeBase = "";
+			}
+		}
+	});
+
+	// Derive system and base options from galaxy data
+	let systemOptions = $derived(
+		$galaxySystems
+			.filter((s) => s.visited)
+			.map((s) => ({ id: s.id, name: s.name, empire: s.empire }))
+			.sort((a, b) => a.name.localeCompare(b.name))
+	);
+
+	let baseOptions = $derived(
+		$galaxySystems
+			.flatMap((s) =>
+				s.pois
+					.filter((p) => p.hasBase && p.baseId)
+					.map((p) => ({ baseId: p.baseId!, baseName: p.baseName ?? p.name, systemId: s.id, systemName: s.name }))
+			)
+			.filter((b) => !fleetSettings.homeSystem || b.systemId === fleetSettings.homeSystem)
+			.sort((a, b) => a.baseName.localeCompare(b.baseName))
+	);
 
 	let saveSuccess = $state(false);
 
@@ -295,24 +332,30 @@
 			<h3 class="text-md font-semibold text-star-white mb-3">Home Base</h3>
 			<div class="space-y-4 max-w-md">
 				<div>
-					<label class="block text-sm text-chrome-silver mb-1">Home System ID</label>
-					<input
-						type="text"
+					<label class="block text-sm text-chrome-silver mb-1">Home System</label>
+					<select
 						bind:value={fleetSettings.homeSystem}
-						placeholder="Auto-discovered if empty"
-						class="w-full px-3 py-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-sm focus:border-plasma-cyan focus:outline-none placeholder:text-hull-grey/50"
-					/>
+						class="w-full px-3 py-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-sm focus:border-plasma-cyan focus:outline-none"
+					>
+						<option value="">Auto-discover from faction</option>
+						{#each systemOptions as sys}
+							<option value={sys.id}>{sys.name} ({sys.empire})</option>
+						{/each}
+					</select>
 					<p class="text-xs text-hull-grey mt-1">Star system where your faction base is. Leave empty for auto-discovery.</p>
 				</div>
 				<div>
-					<label class="block text-sm text-chrome-silver mb-1">Home Base ID</label>
-					<input
-						type="text"
+					<label class="block text-sm text-chrome-silver mb-1">Home Base</label>
+					<select
 						bind:value={fleetSettings.homeBase}
-						placeholder="Auto-discovered if empty"
-						class="w-full px-3 py-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-sm focus:border-plasma-cyan focus:outline-none placeholder:text-hull-grey/50"
-					/>
-					<p class="text-xs text-hull-grey mt-1">Station ID for fleet home. Bots return here to sell, deposit, refuel. Set manually or auto-discover from faction.</p>
+						class="w-full px-3 py-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-sm focus:border-plasma-cyan focus:outline-none"
+					>
+						<option value="">Auto-discover from faction</option>
+						{#each baseOptions as base}
+							<option value={base.baseId}>{base.baseName} — {base.systemName}</option>
+						{/each}
+					</select>
+					<p class="text-xs text-hull-grey mt-1">Station for fleet home. Bots return here to sell, deposit, refuel.{#if fleetSettings.homeSystem} Filtered to selected system.{/if}</p>
 				</div>
 				<div>
 					<label class="block text-sm text-chrome-silver mb-1">Default Storage Mode</label>
@@ -381,6 +424,17 @@
 						class="w-full px-3 py-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-sm focus:border-plasma-cyan focus:outline-none"
 					/>
 					<p class="text-xs text-hull-grey mt-1">Bots below this threshold withdraw from faction treasury to top up. 0 = disabled.</p>
+				</div>
+				<div>
+					<label class="block text-sm text-chrome-silver mb-1">Max Bot Credits</label>
+					<input
+						type="number"
+						bind:value={fleetSettings.maxBotCredits}
+						min="0"
+						step="1000"
+						class="w-full px-3 py-2 bg-deep-void border border-hull-grey/50 rounded-lg text-star-white text-sm focus:border-plasma-cyan focus:outline-none"
+					/>
+					<p class="text-xs text-hull-grey mt-1">Bots above this threshold deposit excess to faction treasury. 0 = disabled.</p>
 				</div>
 			</div>
 

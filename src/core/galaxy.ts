@@ -18,8 +18,47 @@ export class Galaxy {
   private depletedPois = new Set<string>();
   /** Timestamp of last resource scan per POI */
   private poiScannedAt = new Map<string, number>();
+  /** Resource location index: resourceId → Set<poiId> (rebuilt on load/update) */
+  private resourceIndex = new Map<string, Set<string>>();
+  /** Callback for POI persistence — wired by startup to persist discoveries to DB */
+  onPoisDiscovered?: (systemId: string, pois: PoiSummary[]) => void;
   /** Dirty flag: set when galaxy data changes, cleared after broadcast */
   dirty = true;
+
+  /** Hydrate POI data from persisted discoveries (call after load) */
+  hydrateFromPersistedPois(pois: Array<{ poiId: string; systemId: string; poi: PoiSummary }>): number {
+    let enriched = 0;
+    for (const { systemId, poi } of pois) {
+      const node = this.graph.get(systemId);
+      if (!node) continue;
+      // Only add if the system has no POIs or this POI is missing
+      const existing = node.system.pois.find(p => p.id === poi.id);
+      if (!existing) {
+        node.system.pois.push(poi);
+        this.poiIndex.set(poi.id, { systemId, poi });
+        if (poi.baseId) this.baseToSystem.set(poi.baseId, systemId);
+        for (const r of poi.resources) {
+          if (!r.resourceId) continue;
+          let set = this.resourceIndex.get(r.resourceId);
+          if (!set) { set = new Set(); this.resourceIndex.set(r.resourceId, set); }
+          set.add(poi.id);
+        }
+        enriched++;
+      } else if (existing.resources.length === 0 && poi.resources.length > 0) {
+        // Enrich existing POI with persisted resource data
+        existing.resources = poi.resources;
+        for (const r of poi.resources) {
+          if (!r.resourceId) continue;
+          let set = this.resourceIndex.get(r.resourceId);
+          if (!set) { set = new Set(); this.resourceIndex.set(r.resourceId, set); }
+          set.add(poi.id);
+        }
+        enriched++;
+      }
+    }
+    if (enriched > 0) this.dirty = true;
+    return enriched;
+  }
 
   /** Load systems into the graph. Preserves existing enriched data (POIs, coordinates). */
   load(systems: StarSystem[]): void {
@@ -36,6 +75,7 @@ export class Galaxy {
     this.graph.clear();
     this.poiIndex.clear();
     this.baseToSystem.clear();
+    this.resourceIndex.clear();
 
     for (let sys of systems) {
       const old = oldData.get(sys.id);
@@ -74,6 +114,9 @@ export class Galaxy {
       }
     }
     this.addSystemToGraph(sys);
+    if (sys.pois.length > 0 && this.onPoisDiscovered) {
+      this.onPoisDiscovered(sys.id, sys.pois);
+    }
     this.dirty = true;
   }
 
@@ -84,6 +127,13 @@ export class Galaxy {
       this.poiIndex.set(poi.id, { systemId: sys.id, poi });
       if (poi.baseId) {
         this.baseToSystem.set(poi.baseId, sys.id);
+      }
+      // Build resource index
+      for (const r of poi.resources) {
+        if (!r.resourceId) continue;
+        let set = this.resourceIndex.get(r.resourceId);
+        if (!set) { set = new Set(); this.resourceIndex.set(r.resourceId, set); }
+        set.add(poi.id);
       }
     }
   }
@@ -277,6 +327,13 @@ export class Galaxy {
     if (entry) {
       entry.poi.resources = resources;
       this.poiScannedAt.set(poiId, Date.now());
+      // Update resource index
+      for (const r of resources) {
+        if (!r.resourceId) continue;
+        let set = this.resourceIndex.get(r.resourceId);
+        if (!set) { set = new Set(); this.resourceIndex.set(r.resourceId, set); }
+        set.add(poiId);
+      }
       this.dirty = true;
     }
   }
@@ -305,6 +362,53 @@ export class Galaxy {
       if (entry.poi.type === type) results.push(entry);
     }
     return results;
+  }
+
+  /** Find all POIs that have a specific resource (O(1) index lookup) */
+  findPoisWithResource(resourceId: string): Array<{ systemId: string; poi: PoiSummary }> {
+    const poiIds = this.resourceIndex.get(resourceId);
+    if (!poiIds) return [];
+    const results: Array<{ systemId: string; poi: PoiSummary }> = [];
+    for (const poiId of poiIds) {
+      const entry = this.poiIndex.get(poiId);
+      if (entry) results.push(entry);
+    }
+    return results;
+  }
+
+  /** Find all systems that have a specific resource */
+  findSystemsWithResource(resourceId: string): string[] {
+    const poiIds = this.resourceIndex.get(resourceId);
+    if (!poiIds) return [];
+    const systemIds = new Set<string>();
+    for (const poiId of poiIds) {
+      const entry = this.poiIndex.get(poiId);
+      if (entry) systemIds.add(entry.systemId);
+    }
+    return [...systemIds];
+  }
+
+  /** Get all known resource IDs across the galaxy */
+  getKnownResources(): string[] {
+    return [...this.resourceIndex.keys()];
+  }
+
+  /** Find nearest POI with a specific resource (BFS by jump distance) */
+  findNearestResourceById(fromSystemId: string, resourceId: string): { systemId: string; poi: PoiSummary; distance: number } | null {
+    const pois = this.findPoisWithResource(resourceId);
+    if (pois.length === 0) return null;
+    let best: { systemId: string; poi: PoiSummary; distance: number } | null = null;
+    for (const { systemId, poi } of pois) {
+      if (this.depletedPois.has(poi.id)) continue;
+      const deposit = poi.resources.find(r => r.resourceId === resourceId);
+      if (deposit && deposit.remaining <= 0) continue;
+      const dist = systemId === fromSystemId ? 0 : this.getDistance(fromSystemId, systemId);
+      if (dist < 0) continue;
+      if (!best || dist < best.distance) {
+        best = { systemId, poi, distance: dist };
+      }
+    }
+    return best;
   }
 
   /** Find all stations (POIs with bases) */

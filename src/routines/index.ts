@@ -18,6 +18,7 @@ import { quartermaster } from "./quartermaster";
 import { ship_upgrade } from "./ship_upgrade";
 import { scavenger } from "./scavenger";
 import { refit } from "./refit";
+import { ship_dealer } from "./ship_dealer";
 
 export { miner } from "./miner";
 export { harvester } from "./harvester";
@@ -33,8 +34,9 @@ export { quartermaster } from "./quartermaster";
 export { ship_upgrade } from "./ship_upgrade";
 export { scavenger } from "./scavenger";
 export { refit } from "./refit";
+export { ship_dealer } from "./ship_dealer";
 
-/** Build the complete routine registry with all 14 routines. */
+/** Build the complete routine registry with all 15 routines. */
 export function buildRoutineRegistry(): RoutineRegistry {
   return {
     miner,
@@ -51,5 +53,6 @@ export function buildRoutineRegistry(): RoutineRegistry {
     ship_upgrade,
     scavenger,
     refit,
+    ship_dealer,
   };
 }

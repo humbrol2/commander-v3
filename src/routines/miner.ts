@@ -27,6 +27,7 @@ import {
   isProtectedItem,
   payFactionTax,
   ensureMinCredits,
+  depositExcessCredits,
   equipModulesForRoutine,
 } from "./helpers";
 
@@ -54,16 +55,26 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
         const hasGasHarvester = ctx.ship.modules.some((m) =>
           m.moduleId.includes("gas_harvester") || m.name.toLowerCase().includes("gas harvester")
         );
+        const hasMiningLaser = ctx.ship.modules.some((m) =>
+          m.moduleId.includes("mining_laser") || m.name.toLowerCase().includes("mining laser")
+        );
         const belt = system.pois.find((p) =>
           !ctx.galaxy.isPoiDepleted(p.id) && (
             p.type === "asteroid_belt" || p.type === "asteroid"
             || (p.type === "ice_field" && hasIceHarvester)
-            || ((p.type === "gas_cloud" || p.type === "nebula") && hasGasHarvester)
+            || (p.type === "gas_cloud" && hasGasHarvester)
+            || (p.type === "nebula" && (hasGasHarvester || hasMiningLaser))
           )
         );
         if (belt) {
           targetBelt = belt.id;
           yield `found belt: ${belt.name}`;
+        } else {
+          // Log why no belt was found
+          const beltLike = system.pois.filter((p) => p.name.toLowerCase().includes("belt") || p.name.toLowerCase().includes("asteroid"));
+          if (beltLike.length > 0) {
+            yield `no mineable belt in ${system.name ?? system.id} (belt-like POIs: ${beltLike.map(p => `${p.name}[type=${p.type}]`).join(", ")})`;
+          }
         }
       }
       // Find a station to sell at in current system
@@ -81,11 +92,30 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
 
   // If no belt found locally, search galaxy for nearest non-depleted belt and navigate there
   if (!targetBelt) {
-    const allBelts = [
+    let allBelts = [
       ...ctx.galaxy.findPoisByType("asteroid_belt"),
       ...ctx.galaxy.findPoisByType("asteroid"),
+      ...ctx.galaxy.findPoisByType("nebula"),
     ].filter(b => !ctx.galaxy.isPoiDepleted(b.poi.id));
-    // Sort by distance from current system
+
+    // Cold-start: galaxy cache empty — bootstrap from API map
+    if (allBelts.length === 0) {
+      yield "galaxy cache cold — fetching map...";
+      try {
+        const systems = await ctx.api.getMap();
+        for (const sys of systems) ctx.galaxy.updateSystem(sys);
+        allBelts = [
+          ...ctx.galaxy.findPoisByType("asteroid_belt"),
+          ...ctx.galaxy.findPoisByType("asteroid"),
+          ...ctx.galaxy.findPoisByType("nebula"),
+        ].filter(b => !ctx.galaxy.isPoiDepleted(b.poi.id));
+        yield `map loaded: ${systems.length} systems, ${allBelts.length} belts found`;
+      } catch (err) {
+        yield `map fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+    // Sort by ROI: prefer belts with stations nearby (for selling) and short distance
+    // Belts in systems with a station score higher (no wasted travel to sell)
     const botSystem = ctx.player.currentSystem;
     if (botSystem) {
       allBelts.sort((a, b) => {
@@ -93,12 +123,18 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
         const distB = ctx.galaxy.getDistance(botSystem, b.systemId);
         const da = a.systemId === botSystem ? 0 : (distA < 0 ? 99 : distA);
         const db = b.systemId === botSystem ? 0 : (distB < 0 ? 99 : distB);
-        return da - db;
+        // Bonus: system has a station (can sell without extra travel)
+        const sysA = ctx.galaxy.getSystem(a.systemId);
+        const sysB = ctx.galaxy.getSystem(b.systemId);
+        const hasStationA = sysA?.pois.some(p => p.hasBase) ? 0 : 2; // +2 jump penalty if no station
+        const hasStationB = sysB?.pois.some(p => p.hasBase) ? 0 : 2;
+        return (da + hasStationA) - (db + hasStationB);
       });
     }
     const nearestBelt = allBelts[0];
     if (nearestBelt) {
-      yield `no belt in current system — traveling to ${nearestBelt.systemId}`;
+      const currentSys = ctx.player.currentSystem ?? "unknown";
+      yield `no mineable belt in ${currentSys} — traveling to ${nearestBelt.poi.name ?? nearestBelt.poi.id} in ${nearestBelt.systemId}`;
       try {
         await navigateToPoi(ctx, nearestBelt.poi.id);
         targetBelt = nearestBelt.poi.id;
@@ -113,7 +149,7 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
         return;
       }
     } else {
-      yield "error: no asteroid belt found anywhere in known galaxy";
+      yield `error: no mineable asteroid/ice/gas belt found in ${ctx.galaxy.systemCount} known systems (${ctx.player.currentSystem ?? "unknown"} has ${(await ctx.api.getSystem().catch(() => ({ pois: [] }))).pois.length} POIs)`;
       return;
     }
   }
@@ -168,8 +204,12 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
             quantity: result.quantity, remaining: result.remaining, poiId: targetBelt,
           });
         } catch (err) {
-          yield `mining error: ${err instanceof Error ? err.message : String(err)}`;
-          beltDepleted = true;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          yield `mining error: ${errMsg}`;
+          // cargo_full is NOT belt depletion — just means we need to sell
+          if (!errMsg.includes("cargo_full")) {
+            beltDepleted = true;
+          }
           break;
         }
 
@@ -212,7 +252,10 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
             }
             await refuelIfNeeded(ctx);
           }
-        } catch { /* best effort — continue to cycle_complete */ }
+        } catch (err) { /* best effort — log and continue to cycle_complete */
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[${ctx.botId}] leftover cargo disposal failed: ${msg}`);
+        }
       }
       yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "miner" });
       return;
@@ -305,8 +348,8 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
                     }
                   }
                 }
-              } catch {
-                // API search failed — will retry next cycle
+              } catch (err) {
+                yield `API search failed: ${err instanceof Error ? err.message : String(err)}`;
               }
             }
           }
@@ -339,8 +382,8 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
                   try {
                     await ctx.api.factionDepositItems(item.itemId, item.quantity);
                     yield `deposited ${item.quantity} ${item.itemId} to faction storage`;
-                  } catch {
-                    // If deposit still fails, fall through to sell
+                  } catch (err) {
+                    yield `faction deposit retry failed: ${err instanceof Error ? err.message : String(err)}`;
                     break;
                   }
                 }
@@ -371,11 +414,18 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
         yield `sold ${s.quantity} ${s.itemId} @ ${s.priceEach}cr = ${s.total}cr`;
       }
       yield `total earned: ${sellResult.totalEarned} credits`;
+      // Pay faction tax on sell earnings
+      if (sellResult.totalEarned > 0) {
+        const tax = await payFactionTax(ctx, sellResult.totalEarned);
+        if (tax.message) yield tax.message;
+      }
     }
 
     // ── Ensure minimum credits ──
     const minCr = await ensureMinCredits(ctx);
     if (minCr.message) yield minCr.message;
+    const maxCr = await depositExcessCredits(ctx);
+    if (maxCr.message) yield maxCr.message;
 
     // ── Service ship ──
     await refuelIfNeeded(ctx);

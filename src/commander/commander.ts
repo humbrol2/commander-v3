@@ -23,6 +23,7 @@ import { PerformanceTracker } from "./performance-tracker";
 import { ChatIntelligence } from "./chat-intelligence";
 import type { MemoryStore } from "../data/memory-store";
 import type { StuckBot } from "../types/protocol";
+import { type BotRole, type RolePoolConfig, DEFAULT_POOL_CONFIG, parseBotRole, routineToRole } from "./roles";
 
 export interface CommanderConfig {
   /** Evaluation interval in seconds */
@@ -53,8 +54,14 @@ export interface CommanderDeps {
   defaultStorageMode?: "sell" | "deposit" | "faction_deposit";
   /** Minimum credits per bot — bots below this should return home to withdraw */
   minBotCredits?: number;
+  /** Live fleet config getter — used to sync homeBase/homeSystem after discovery */
+  getFleetConfig?: () => { homeBase?: string; homeSystem?: string; factionStorageStation?: string; defaultStorageMode?: string; minBotCredits?: number };
   /** Persistent memory store (optional) */
   memoryStore?: MemoryStore;
+  /** Callback to set a bot's role (for pool sizing auto-assignment) */
+  setBotRole?: (botId: string, role: string | null) => void;
+  /** Callback to recover bots stuck in error state */
+  recoverErrorBots?: () => Promise<void>;
 }
 
 export class Commander {
@@ -80,6 +87,10 @@ export class Commander {
   private performanceTracker = new PerformanceTracker();
   /** Chat intelligence — reads and learns from global/faction chat */
   private _chatIntelligence: ChatIntelligence | null = null;
+  /** Prevents overlapping evaluations when tiered brain is slow */
+  private _evaluating = false;
+  /** Role pool sizing config */
+  private _poolConfig: RolePoolConfig[] = DEFAULT_POOL_CONFIG;
 
   constructor(
     private config: CommanderConfig,
@@ -97,6 +108,22 @@ export class Commander {
     scoringBrain.minBotCredits = deps.minBotCredits ?? 0;
     this.brain = brain ?? scoringBrain;
     this.economy = new EconomyEngine();
+  }
+
+  /** Get current commander config */
+  getConfig(): Readonly<CommanderConfig> {
+    return this.config;
+  }
+
+  /** Update commander config and restart eval timer if interval changed */
+  updateConfig(updates: Partial<CommanderConfig>): void {
+    const oldInterval = this.config.evaluationIntervalSec;
+    Object.assign(this.config, updates);
+    // Restart timer if interval changed and commander is running
+    if (updates.evaluationIntervalSec && updates.evaluationIntervalSec !== oldInterval && this.evaluationTimer) {
+      this.stop();
+      this.start();
+    }
   }
 
   // ── Goal Management ──
@@ -156,6 +183,10 @@ export class Commander {
     if (this.evaluationTimer) return;
 
     this.evaluationTimer = setInterval(() => {
+      if (this._evaluating) {
+        console.log("[Commander] Skipping eval — previous cycle still running");
+        return;
+      }
       this.evaluateAndAssign().catch((err) => {
         console.error("[Commander] Evaluation error:", err);
       });
@@ -188,10 +219,27 @@ export class Commander {
     this.brain = brain;
   }
 
+  /** Find the ScoringBrain inside any brain (direct, tiered, or shadow) */
+  private getScoringBrain(): ScoringBrain | null {
+    if (this.brain instanceof ScoringBrain) return this.brain;
+    // TieredBrain: check tiers and shadowBrain
+    if ("tiers" in this.brain) {
+      const tiered = this.brain as any;
+      for (const tier of tiered.tiers ?? []) {
+        if (tier instanceof ScoringBrain) return tier;
+      }
+      if (tiered.shadowBrain instanceof ScoringBrain) return tiered.shadowBrain;
+    }
+    // Fallback: duck-type check
+    if ("pendingUpgrades" in this.brain) return this.brain as unknown as ScoringBrain;
+    return null;
+  }
+
   /** Set ship catalog for upgrade evaluation (call after loading from cache/API) */
   setShipCatalog(catalog: ShipClass[]): void {
-    if ("shipCatalog" in this.brain) {
-      (this.brain as ScoringBrain).shipCatalog = catalog;
+    const sb = this.getScoringBrain();
+    if (sb) {
+      sb.shipCatalog = catalog;
       console.log(`[Commander] Ship catalog loaded: ${catalog.length} ship classes`);
     }
   }
@@ -239,13 +287,123 @@ export class Commander {
     return this._chatIntelligence;
   }
 
+  /** Set role pool config (from config.toml or dashboard) */
+  setPoolConfig(config: RolePoolConfig[]): void {
+    this._poolConfig = config;
+  }
+
+  /** Get current pool config */
+  getPoolConfig(): RolePoolConfig[] {
+    return [...this._poolConfig];
+  }
+
+  /**
+   * Evaluate pool sizing — assigns roles to unassigned bots to fill minimums.
+   * Called during each evaluation cycle. Only assigns roles to bots with role=null.
+   * Returns list of role assignments made (for logging).
+   */
+  private evaluatePoolSizing(fleet: FleetStatus): Array<{ botId: string; role: BotRole }> {
+    const assignments: Array<{ botId: string; role: BotRole }> = [];
+
+    // Count current bots per role
+    const roleCounts = new Map<BotRole, number>();
+    const unassignedBots: string[] = [];
+
+    for (const bot of fleet.bots) {
+      if (bot.status !== "ready" && bot.status !== "running") continue;
+      const role = parseBotRole(bot.role);
+      if (role) {
+        roleCounts.set(role, (roleCounts.get(role) ?? 0) + 1);
+      } else {
+        unassignedBots.push(bot.botId);
+      }
+    }
+
+    if (unassignedBots.length === 0) return assignments;
+
+    // Fill minimums first, sorted by priority (order in pool config)
+    for (const pool of this._poolConfig) {
+      if (unassignedBots.length === 0) break;
+      const current = roleCounts.get(pool.role) ?? 0;
+      const needed = Math.max(0, pool.min - current);
+      for (let i = 0; i < needed && unassignedBots.length > 0; i++) {
+        const botId = unassignedBots.shift()!;
+        assignments.push({ botId, role: pool.role });
+        roleCounts.set(pool.role, (roleCounts.get(pool.role) ?? 0) + 1);
+      }
+    }
+
+    // Fill remaining unassigned bots into roles that haven't hit max, prioritizing supply chain
+    const SUPPLY_CHAIN_ORDER: BotRole[] = ["ore_miner", "trader", "crafter", "mission_runner", "explorer"];
+    for (const role of SUPPLY_CHAIN_ORDER) {
+      if (unassignedBots.length === 0) break;
+      const pool = this._poolConfig.find(p => p.role === role);
+      if (!pool) continue;
+      const current = roleCounts.get(pool.role) ?? 0;
+      const room = Math.max(0, pool.max - current);
+      for (let i = 0; i < room && unassignedBots.length > 0; i++) {
+        const botId = unassignedBots.shift()!;
+        assignments.push({ botId, role: pool.role });
+        roleCounts.set(pool.role, (roleCounts.get(pool.role) ?? 0) + 1);
+      }
+    }
+
+    // Anything still unassigned gets ore_miner (safe default)
+    for (const botId of unassignedBots) {
+      assignments.push({ botId, role: "ore_miner" });
+    }
+
+    return assignments;
+  }
+
   // ── Core Evaluation ──
 
   private async evaluateAndAssign(): Promise<CommanderDecision> {
+    this._evaluating = true;
+    try {
+      return await this._doEvaluateAndAssign();
+    } finally {
+      this._evaluating = false;
+    }
+  }
+
+  private async _doEvaluateAndAssign(): Promise<CommanderDecision> {
     this.tick = Math.floor(Date.now() / 1000);
+
+    // Step 0: Sync homeBase/homeSystem from live fleet config (discovery may have updated it)
+    this.syncFleetConfig();
+
+    // Step 0.5: Recover bots stuck in error state (re-login and reset to ready)
+    if (this.deps.recoverErrorBots) {
+      try { await this.deps.recoverErrorBots(); } catch { /* non-critical */ }
+    }
+
+    // Step 0.7: Ensure galaxy map is loaded (cold-start: bots log in but galaxy may be empty)
+    if (this.deps.galaxy.systemCount < 50) {
+      const api = this.deps.getApi?.();
+      if (api) {
+        try {
+          const systems = await api.getMap();
+          for (const sys of systems) this.deps.galaxy.updateSystem(sys);
+          console.log(`[Commander] Galaxy bootstrap: loaded ${systems.length} systems`);
+        } catch { /* will retry next cycle */ }
+      }
+    }
 
     // Step 1: Get fleet state
     const fleet = this.deps.getFleetStatus();
+
+    // Step 1.2: Pool sizing — auto-assign roles to unassigned bots
+    if (this.deps.setBotRole) {
+      const roleAssignments = this.evaluatePoolSizing(fleet);
+      for (const { botId, role } of roleAssignments) {
+        this.deps.setBotRole(botId, role);
+        // Update fleet snapshot so brain sees the new role
+        const botInfo = fleet.bots.find(b => b.botId === botId);
+        if (botInfo) botInfo.role = role;
+        console.log(`[Commander] Auto-assigned role: ${botId} → ${role}`);
+      }
+    }
 
     // Step 1.5: Poll faction storage (non-blocking, best-effort)
     await this.pollFactionStorage();
@@ -254,6 +412,10 @@ export class Commander {
     this.cleanupShipUpgrades(fleet);
     // Step 1.6b: Discover new ship upgrades (every 5 minutes)
     await this.checkShipUpgrades(fleet);
+
+    // Step 1.7: Sync facility material needs into economy engine
+    const facilityNeeds = this.deps.cache.getFacilityMaterialNeeds();
+    this.economy.setFacilityMaterialNeeds(facilityNeeds);
 
     // Step 2: Analyze economy
     const economySnapshot = this.economy.analyze(fleet);
@@ -297,7 +459,7 @@ export class Commander {
     const ROUTINE_CAPS: Partial<Record<string, number>> = {
       scout: 1, explorer: fleet.bots.length >= 6 ? 2 : 1,
       quartermaster: 1, hunter: 1, salvager: 1, scavenger: 1,
-      ship_upgrade: 1, refit: 2,
+      ship_upgrade: 1, refit: 2, ship_dealer: 1,
     };
     // Count bots already running each routine (that won't be reassigned)
     const routineCounts = new Map<string, number>();
@@ -321,10 +483,14 @@ export class Commander {
     const executedAssignments: FleetAssignment[] = [];
     const botStatusMap = new Map(fleet.bots.map((b) => [b.botId, b]));
     // One-shot routines must not be interrupted mid-execution
-    const PROTECTED_ROUTINES = new Set(["ship_upgrade", "refit", "return_home"]);
+    const PROTECTED_ROUTINES = new Set(["ship_upgrade", "refit", "return_home", "scout"]);
 
     for (const assignment of cappedAssignments) {
       const botInfo = botStatusMap.get(assignment.botId);
+      // Skip bots not yet ready (still logging in or idle)
+      if (botInfo && botInfo.status !== "ready" && botInfo.status !== "running") {
+        continue;
+      }
       // Skip re-assigning a bot that's already running this exact routine
       if (botInfo && botInfo.routine === assignment.routine && botInfo.status === "running") {
         continue; // Already doing this — don't interrupt
@@ -381,6 +547,51 @@ export class Commander {
     return decision;
   }
 
+  /** Sync homeBase/homeSystem from live fleet config into brain (discovery updates fleet config async) */
+  private syncFleetConfig(): void {
+    const live = this.deps.getFleetConfig?.();
+    if (!live) return;
+
+    const homeBase = live.factionStorageStation || live.homeBase || "";
+    const homeSystem = live.homeSystem || "";
+
+    // Update deps cache
+    if (homeBase && !this.deps.homeBase) this.deps.homeBase = homeBase;
+    if (homeSystem && !this.deps.homeSystem) this.deps.homeSystem = homeSystem;
+
+    // Update scoring brain (may be wrapped in TieredBrain)
+    const updateBrain = (brain: CommanderBrain) => {
+      if ("homeBase" in brain) {
+        const sb = brain as ScoringBrain;
+        if (homeBase && sb.homeBase !== homeBase) {
+          sb.homeBase = homeBase;
+          console.log(`[Commander] Synced homeBase → ${homeBase}`);
+        }
+        if (homeSystem && sb.homeSystem !== homeSystem) {
+          sb.homeSystem = homeSystem;
+        }
+        if (live.defaultStorageMode) {
+          sb.defaultStorageMode = live.defaultStorageMode as "sell" | "deposit" | "faction_deposit";
+        }
+        if (live.minBotCredits !== undefined) {
+          sb.minBotCredits = live.minBotCredits;
+        }
+      }
+      // If tiered brain, also update sub-brains
+      if ("tiers" in brain) {
+        for (const tier of (brain as any).tiers) {
+          updateBrain(tier);
+        }
+      }
+      // Also check shadowBrain
+      if ("shadowBrain" in brain && (brain as any).shadowBrain) {
+        updateBrain((brain as any).shadowBrain);
+      }
+    };
+
+    updateBrain(this.brain);
+  }
+
   /** Poll faction storage inventory (best-effort, non-blocking, max every 3 minutes) */
   private async pollFactionStorage(): Promise<void> {
     const now = Date.now();
@@ -412,8 +623,8 @@ export class Commander {
 
   /** Clean up stale/failed ship upgrades — runs every eval (not gated by timer) */
   private cleanupShipUpgrades(fleet: FleetStatus): void {
-    if (!("pendingUpgrades" in this.brain)) return;
-    const brain = this.brain as ScoringBrain;
+    const brain = this.getScoringBrain();
+    if (!brain) return;
     const now = Date.now();
 
     // Expire old blacklist entries (30 minute cooldown)
@@ -458,8 +669,8 @@ export class Commander {
     this.lastShipCheck = now;
 
     // Only works with ScoringBrain (has pendingUpgrades + shipCatalog)
-    if (!("pendingUpgrades" in this.brain) || !("shipCatalog" in this.brain)) return;
-    const brain = this.brain as ScoringBrain;
+    const brain = this.getScoringBrain();
+    if (!brain) return;
 
     // Auto-load ship catalog if not yet loaded
     if (!brain.shipCatalog || brain.shipCatalog.length === 0) {
@@ -487,7 +698,7 @@ export class Commander {
       if (brain.pendingUpgrades.has(bot.botId)) continue; // Already queued
       if (this.botUpgradeCooldown.has(bot.botId)) continue; // Recently failed — on cooldown
 
-      const role = bot.routine ?? "default";
+      const role = bot.role ?? bot.routine ?? "default";
       const currentClass = catalog.find((s) => s.id === bot.shipClass)
         ?? LEGACY_SHIPS.find((s) => s.id === bot.shipClass);
       if (!currentClass) continue;
@@ -556,15 +767,21 @@ export class Commander {
       // Find which station sells this ship (from cached shipyard scans)
       const shipyard = this.deps.cache.findShipyardForClass(upgrade.id);
 
+      // Only queue buy-mode upgrades when a known shipyard stocks the ship
+      // Without this, bots waste time traveling to home station only to find "not available"
+      if (!shipyard) {
+        continue;
+      }
+
       brain.pendingUpgrades.set(bot.botId, {
         targetShipClass: upgrade.id,
         targetPrice: upgrade.basePrice,
         role,
         roi,
-        buyStation: shipyard?.stationId,
+        buyStation: shipyard.stationId,
       });
 
-      console.log(`[Commander] Ship upgrade queued: ${bot.botId} ${currentClass.id} → ${upgrade.id} (role=${role}, price=${upgrade.basePrice}cr, score ${currentScore}→${upgradeScore}, ROI=${roi.toFixed(2)}) [${stats}]`);
+      console.log(`[Commander] Ship upgrade queued: ${bot.botId} ${currentClass.id} → ${upgrade.id} (role=${role}, price=${upgrade.basePrice}cr, score ${currentScore}→${upgradeScore}, ROI=${roi.toFixed(2)}, station=${shipyard.stationId}) [${stats}]`);
     }
   }
 

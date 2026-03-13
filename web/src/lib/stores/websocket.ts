@@ -27,6 +27,7 @@ import type {
   SocialChatMessage,
   SocialForumThread,
   SocialDM,
+  WorkOrderInfo,
 } from "../../../../src/types/protocol";
 import type { Goal } from "../../../../src/config/schema";
 
@@ -54,7 +55,15 @@ export const marketStations = writable<MarketStationData[]>([]);
 export const goals = writable<Goal[]>([]);
 export const factionState = writable<FactionState | null>(null);
 export const botStorage = writable<Map<string, BotStorageData>>(new Map());
-export const fleetSettings = writable<{ factionTaxPercent: number; minBotCredits: number }>({ factionTaxPercent: 0, minBotCredits: 0 });
+export const fleetSettings = writable<{
+	factionTaxPercent: number;
+	minBotCredits: number;
+	maxBotCredits: number;
+	homeSystem?: string;
+	homeBase?: string;
+	defaultStorageMode?: string;
+	evaluationInterval?: number;
+}>({ factionTaxPercent: 0, minBotCredits: 0, maxBotCredits: 0 });
 export const brainHealth = writable<BrainHealthStatus[]>([]);
 export const supplyChain = writable<{ nodes: SupplyChainNode[]; links: SupplyChainLink[] }>({ nodes: [], links: [] });
 export const commanderMemory = writable<MemoryEntry[]>([]);
@@ -63,6 +72,7 @@ export const socialChat = writable<SocialChatMessage[]>([]);
 export const socialForum = writable<SocialForumThread[]>([]);
 export const socialDMs = writable<SocialDM[]>([]);
 export const brainDecisionStats = writable<BrainDecisionStats | null>(null);
+export const workOrders = writable<WorkOrderInfo[]>([]);
 
 // Galaxy detail (enriched with market data)
 export interface GalaxyDetailData {
@@ -81,7 +91,7 @@ export const galaxyDetail = writable<GalaxyDetailData | null>(null);
 // Catalog data (ships, items, skills, recipes)
 export interface CatalogData {
   ships: Array<{ id: string; name: string; category: string; description: string; basePrice: number; hull: number; shield: number; armor: number; speed: number; fuel: number; cargoCapacity: number; cpuCapacity: number; powerCapacity: number; region?: string; commissionable?: boolean; extra?: Record<string, unknown> }>;
-  items: Array<{ id: string; name: string; category: string; description: string; basePrice: number; stackSize: number }>;
+  items: Array<{ id: string; name: string; category: string; description: string; basePrice: number; stackSize: number; cpuCost?: number; powerCost?: number; slotType?: string }>;
   skills: Array<{ id: string; name: string; category: string; description: string; maxLevel: number; prerequisites: Record<string, number> }>;
   recipes: Array<{ id: string; name: string; description: string; outputItem: string; outputQuantity: number; ingredients: Array<{ itemId: string; quantity: number }>; requiredSkills: Record<string, number>; xpRewards: Record<string, number> }>;
 }
@@ -130,6 +140,9 @@ function handleMessage(event: MessageEvent) {
 
       case "economy_update":
         economy.set(msg.economy);
+        if (msg.economy.workOrders) {
+          workOrders.set(msg.economy.workOrders);
+        }
         break;
 
       case "commander_decision":

@@ -10,6 +10,7 @@ export interface ClaudeBrainConfig {
   model?: string;
   maxTokens?: number;
   timeoutMs?: number;
+  promptFile?: string;
 }
 
 export function createClaudeBrain(config: ClaudeBrainConfig = {}): LlmBrain {
@@ -21,5 +22,6 @@ export function createClaudeBrain(config: ClaudeBrainConfig = {}): LlmBrain {
     model,
     maxTokens: config.maxTokens ?? 1024,
     timeoutMs: config.timeoutMs ?? 15_000,
+    promptFile: config.promptFile,
   });
 }
