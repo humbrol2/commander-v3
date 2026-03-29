@@ -5,7 +5,7 @@
  */
 
 import type { Goal, StockTarget } from "../config/schema";
-import type { CommanderDecision, FleetAssignment } from "../types/protocol";
+import type { CommanderDecision, FleetAssignment, RoutineName } from "../types/protocol";
 import type { TrainingLogger } from "../data/training-logger";
 import type { Galaxy } from "../core/galaxy";
 import type { Market } from "../core/market";
@@ -23,7 +23,7 @@ import { PerformanceTracker } from "./performance-tracker";
 import { ChatIntelligence } from "./chat-intelligence";
 import type { MemoryStore } from "../data/memory-store";
 import type { StuckBot } from "../types/protocol";
-import { type BotRole, type RolePoolConfig, DEFAULT_POOL_CONFIG, parseBotRole, routineToRole } from "./roles";
+import { type BotRole, type RolePoolConfig, DEFAULT_POOL_CONFIG, parseBotRole, routineToRole, getAllowedRoutines } from "./roles";
 import { EmbeddingStore, type OutcomeCategory } from "./embedding-store";
 import { extractContext } from "./bandit-brain";
 import { computeReward, emptySignals } from "./reward-function";
@@ -684,6 +684,19 @@ export class Commander {
           // LLM overrides only the bots it specifically mentions
           const overrideMap = new Map(strategicOutput.assignments.map(a => [a.botId, a]));
           for (const [botId, override] of overrideMap) {
+            // Validate role constraint before accepting LLM assignment
+            const bot = fleet.bots.find(b => b.botId === botId);
+            if (bot?.role) {
+              const role = parseBotRole(bot.role);
+              if (role) {
+                const allowed = getAllowedRoutines(role);
+                if (!allowed.includes(override.routine as RoutineName)) {
+                  console.log(`[Commander] LLM role violation: ${botId} role=${bot.role} cannot do ${override.routine}, reverting to scoring brain`);
+                  continue; // Skip this override — scoring brain assignment stands
+                }
+              }
+            }
+
             const idx = output.assignments.findIndex(a => a.botId === botId);
             if (idx >= 0) {
               output.assignments[idx] = override;
