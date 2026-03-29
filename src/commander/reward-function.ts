@@ -85,6 +85,11 @@ const GOAL_PROFILES: Record<GoalType, GoalWeightProfile> = {
     creditDelta: 3.0,
     itemsCrafted: 2.0,
   },
+  maximize_profit: {
+    creditDelta: 4.0,
+    itemsCrafted: 2.5,
+    itemsDeposited: 1.5,
+  },
   explore_region: {
     systemsExplored: 4.0,
     stationsScanned: 3.0,
