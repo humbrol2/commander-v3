@@ -294,18 +294,18 @@ describe("ScoringBrain", () => {
   test("updateConfig changes scoring behavior", async () => {
     const bot = makeBot({ botId: "bot1", status: "ready", routine: null });
 
-    // Default: miner has highest base score (60)
+    // Default: crafter has highest base score (90)
     const result1 = await brain.evaluate({
       fleet: makeFleet([bot]),
       goals: [],
       economy: emptyEconomy,
       tick: 1,
     });
-    expect(result1.assignments[0].routine).toBe("miner");
+    expect(result1.assignments[0].routine).toBe("crafter");
 
-    // Boost miner base score to 100
+    // Boost miner base score above crafter (90) to 200 to override
     brain.updateConfig({
-      baseScores: { ...brain["config"].baseScores, miner: 100 },
+      baseScores: { ...brain["config"].baseScores, miner: 200 },
     });
 
     brain.clearAllCooldowns();

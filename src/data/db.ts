@@ -28,6 +28,8 @@ export interface DatabaseConnection {
   close: () => Promise<void>;
   /** Raw SQL client for PostgreSQL */
   raw: postgres.Sql;
+  /** Raw SQLite Database handle (only for SQLite connections) */
+  sqlite?: Database;
 }
 
 /**
@@ -75,6 +77,7 @@ export function createSqliteDatabase(dbPath = "commander.db"): DatabaseConnectio
     db: db as unknown as DB,
     driver: "sqlite",
     raw: sqlite as unknown as import("postgres").Sql,
+    sqlite,
     close: async () => { sqlite.close(); },
   };
 }
@@ -106,10 +109,14 @@ export async function ensurePostgresTables(client: postgres.Sql, tenantId?: stri
 function ensureSqliteTables(sqlite: Database): void {
   const tx = sqlite.transaction(() => {
     sqlite.run(`CREATE TABLE IF NOT EXISTS cache (
-      key TEXT PRIMARY KEY, data TEXT NOT NULL, game_version TEXT, fetched_at INTEGER NOT NULL
+      tenant_id TEXT NOT NULL DEFAULT '', key TEXT NOT NULL,
+      data TEXT NOT NULL, game_version TEXT, fetched_at INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, key)
     )`);
     sqlite.run(`CREATE TABLE IF NOT EXISTS timed_cache (
-      key TEXT PRIMARY KEY, data TEXT NOT NULL, fetched_at INTEGER NOT NULL, ttl_ms INTEGER NOT NULL
+      tenant_id TEXT NOT NULL DEFAULT '', key TEXT NOT NULL,
+      data TEXT NOT NULL, fetched_at INTEGER NOT NULL, ttl_ms INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, key)
     )`);
     sqlite.run(`CREATE TABLE IF NOT EXISTS decision_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT, tick INTEGER NOT NULL, bot_id TEXT NOT NULL,
@@ -163,15 +170,18 @@ function ensureSqliteTables(sqlite: Database): void {
     )`);
     sqlite.run("CREATE INDEX IF NOT EXISTS idx_credit_ts ON credit_history(timestamp)");
     sqlite.run(`CREATE TABLE IF NOT EXISTS goals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, priority INTEGER NOT NULL,
+      id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL DEFAULT 'default',
+      type TEXT NOT NULL, priority INTEGER NOT NULL,
       params TEXT NOT NULL DEFAULT '{}', constraints TEXT
     )`);
     sqlite.run(`CREATE TABLE IF NOT EXISTS bot_settings (
-      username TEXT PRIMARY KEY, fuel_emergency_threshold REAL NOT NULL DEFAULT 20,
+      tenant_id TEXT NOT NULL DEFAULT 'default', username TEXT NOT NULL,
+      fuel_emergency_threshold REAL NOT NULL DEFAULT 20,
       auto_repair INTEGER NOT NULL DEFAULT 1, max_cargo_fill_pct REAL NOT NULL DEFAULT 90,
       storage_mode TEXT NOT NULL DEFAULT 'sell', faction_storage INTEGER NOT NULL DEFAULT 0,
       role TEXT, manual_control INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT DEFAULT (datetime('now'))
+      updated_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, username)
     )`);
     sqlite.run(`CREATE TABLE IF NOT EXISTS financial_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, event_type TEXT NOT NULL,
@@ -187,7 +197,9 @@ function ensureSqliteTables(sqlite: Database): void {
     sqlite.run("CREATE INDEX IF NOT EXISTS idx_trade_ts ON trade_log(timestamp)");
     sqlite.run("CREATE INDEX IF NOT EXISTS idx_trade_bot ON trade_log(bot_id)");
     sqlite.run(`CREATE TABLE IF NOT EXISTS fleet_settings (
-      key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now'))
+      tenant_id TEXT NOT NULL DEFAULT 'default', key TEXT NOT NULL,
+      value TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, key)
     )`);
     sqlite.run(`CREATE TABLE IF NOT EXISTS llm_decisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT, tick INTEGER NOT NULL, brain_name TEXT NOT NULL,
@@ -220,7 +232,9 @@ function ensureSqliteTables(sqlite: Database): void {
       updated_at TEXT DEFAULT (datetime('now'))
     )`);
     sqlite.run(`CREATE TABLE IF NOT EXISTS bot_skills (
-      username TEXT PRIMARY KEY, skills TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now'))
+      tenant_id TEXT NOT NULL DEFAULT 'default', username TEXT NOT NULL,
+      skills TEXT NOT NULL, updated_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (tenant_id, username)
     )`);
     sqlite.run(`CREATE TABLE IF NOT EXISTS bandit_weights (
       role TEXT PRIMARY KEY, weights TEXT NOT NULL, covariance TEXT NOT NULL,

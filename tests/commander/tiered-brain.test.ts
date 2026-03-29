@@ -66,16 +66,28 @@ function makeInput(bots: FleetBotInfo[] = [makeBot()]): EvaluationInput {
   };
 }
 
-/** Mock brain that always succeeds */
+/** Mock brain that always succeeds — returns one assignment per available bot */
 function mockBrain(name: string): CommanderBrain {
   return {
-    evaluate: async (input) => ({
-      assignments: [],
-      reasoning: `${name} evaluated`,
-      brainName: name,
-      latencyMs: 10,
-      confidence: 0.9,
-    }),
+    evaluate: async (input) => {
+      const availableBots = input.fleet.bots.filter(
+        b => b.status === "ready" || b.status === "running"
+      );
+      return {
+        assignments: availableBots.map(b => ({
+          botId: b.botId,
+          routine: "miner" as const,
+          params: {},
+          score: 50,
+          reasoning: `${name} assigned`,
+          previousRoutine: null,
+        })),
+        reasoning: `${name} evaluated`,
+        brainName: name,
+        latencyMs: 10,
+        confidence: 0.9,
+      };
+    },
     clearCooldown: () => {},
     getHealth: () => ({
       name,
