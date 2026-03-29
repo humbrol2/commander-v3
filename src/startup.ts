@@ -38,7 +38,7 @@ import { EconomyEngine } from "./commander/economy-engine";
 import { buildRoutineRegistry } from "./routines";
 import { createServer, broadcast, sendTo, type ServerOptions } from "./server/server";
 import { activityLog } from "./data/schema";
-import { gt, lt } from "drizzle-orm";
+import { gt, lt, eq, and } from "drizzle-orm";
 import { handleClientMessage, type MessageRouterDeps } from "./server/message-router";
 import { startBroadcastLoop, type BroadcastDeps } from "./server/broadcast";
 import {
@@ -103,7 +103,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   // ── Cleanup stale data ──
   try {
     const cutoff = Date.now() - 48 * 3_600_000; // 48 hours
-    await db.delete(activityLog).where(lt(activityLog.timestamp, cutoff));
+    await db.delete(activityLog).where(and(eq(activityLog.tenantId, tenantId), lt(activityLog.timestamp, cutoff)));
     console.log(`[Cleanup] Trimmed activity log entries older than 48h`);
   } catch { /* non-critical */ }
 
@@ -190,9 +190,10 @@ export async function startup(config: AppConfig): Promise<AppServices> {
         try {
           for (const entry of batch) {
             await db.insert(activityLog).values({
+              tenantId,
               timestamp: entry.timestamp,
               level: entry.level,
-              botId: entry.botId,
+              botId: entry.botId ?? null,
               message: entry.message,
             });
           }
@@ -205,9 +206,10 @@ export async function startup(config: AppConfig): Promise<AppServices> {
         // PostgreSQL — insert all entries (Drizzle handles async)
         for (const entry of batch) {
           await db.insert(activityLog).values({
+            tenantId,
             timestamp: entry.timestamp,
             level: entry.level,
-            botId: entry.botId,
+            botId: entry.botId ?? null,
             message: entry.message,
           });
         }
