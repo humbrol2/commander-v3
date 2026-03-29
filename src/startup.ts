@@ -90,7 +90,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 
   // ── Data Layer ──
   const trainingLogger = new TrainingLogger(db, tenantId);
-  const gameCache = new GameCache(db, trainingLogger);
+  const gameCache = new GameCache(db, trainingLogger, redisCache, tenantId);
   const shipyardCount = await gameCache.loadShipyardData();
   if (shipyardCount > 0) console.log(`[Cache] Loaded ${shipyardCount} shipyard scans from disk`);
   await gameCache.loadRecentMarketData();
