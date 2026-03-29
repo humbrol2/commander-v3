@@ -962,10 +962,10 @@ export class GameCache {
       poiId,
       systemId,
       data: JSON.stringify(poi),
-      updatedAt: new Date().toISOString(),
+      updatedAt: new Date(),
     }).onConflictDoUpdate({
       target: [poiCache.tenantId, poiCache.poiId],
-      set: { systemId, data: JSON.stringify(poi), updatedAt: new Date().toISOString() },
+      set: { systemId, data: JSON.stringify(poi), updatedAt: new Date() },
     });
   }
 

@@ -26,7 +26,7 @@ export class MemoryStore {
   /** Record or update a memory fact */
   async set(key: string, fact: string, importance: number = 5): Promise<void> {
     const clampedImportance = Math.max(0, Math.min(10, importance));
-    const now = new Date().toISOString();
+    const now = new Date();
 
     await this.db
       .insert(commanderMemory)

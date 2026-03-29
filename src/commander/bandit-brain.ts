@@ -405,7 +405,7 @@ export class BanditBrain {
           weights: JSON.stringify(weights),
           covariance: JSON.stringify(covariance),
           episodeCount: totalPulls,
-          updatedAt: new Date().toISOString(),
+          updatedAt: new Date(),
         },
       });
     }

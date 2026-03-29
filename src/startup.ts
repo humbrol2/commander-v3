@@ -71,7 +71,7 @@ export interface AppServices {
  */
 export async function startup(config: AppConfig): Promise<AppServices> {
   // ── Tenant ID ──
-  const tenantId = config._tenantId ?? crypto.randomUUID();
+  const tenantId = config._tenantId || config.database?.tenant_id || crypto.randomUUID();
   console.log(`[Startup] Tenant ID: ${tenantId}`);
 
   // ── Database ──
@@ -304,7 +304,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       if (!bot) return;
       bot.role = role;
       bot.settings.role = role;
-      saveBotSettings(db, bot.username, bot.settings);
+      saveBotSettings(db, tenantId, bot.username, bot.settings);
     },
     recoverErrorBots: () => botManager.recoverStuckBots(),
     isBotManual: (botId: string) => botManager.getBot(botId)?.settings.manualControl ?? false,
@@ -363,7 +363,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     if (cachedSkills) bot.seedSkills(cachedSkills);
     // Persist skills to DB whenever refreshed from API
     bot.onSkillsRefreshed = (username, skills) => {
-      try { saveBotSkills(db, username, skills); } catch { /* non-critical */ }
+      try { saveBotSkills(db, tenantId, username, skills); } catch { /* non-critical */ }
     };
   }
   if (savedBots.length > 0) {
@@ -445,6 +445,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     commander,
     galaxy,
     db,
+    tenantId,
     cache: gameCache,
     sessionStore,
     ensureGalaxyLoaded,

@@ -151,6 +151,7 @@ export type StockTarget = z.infer<typeof StockTargetSchema>;
 export const DatabaseConfigSchema = z.object({
   url: z.string().default("commander.db"),
   driver: z.enum(["postgresql", "sqlite"]).default("sqlite"),
+  tenant_id: z.string().default(""),
 });
 
 // ── Redis Config ──
