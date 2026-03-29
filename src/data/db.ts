@@ -39,6 +39,9 @@ export function createPostgresDatabase(url: string): DatabaseConnection {
     idle_timeout: 30,         // close idle connections after 30s
     connect_timeout: 10,      // 10s connection timeout
     prepare: false,           // disable prepared statements (better for connection pooling)
+    transform: {
+      undefined: null,        // convert undefined values to null (matches SQLite behavior)
+    },
   });
 
   const db = drizzlePg(client, { schema: pgSchema });
