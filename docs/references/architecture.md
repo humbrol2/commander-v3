@@ -56,3 +56,4 @@
 | Brain fallback | `tiered-brain.ts` tries LLM brains in sequence; falls back to `scoring-brain.ts` (deterministic) |
 | LinUCB bandit | `bandit-brain.ts` learns per-bot routine preferences from reward signals |
 | Fleet profit maximizer | Danger map + market rotation + ROI analyzer + fleet advisor modules — see [fleet-profit-maximizer](fleet-profit-maximizer.md) |
+| DangerMap persistence | State persisted to Redis (`t:{tenantId}:dangermap`, TTL 2h) and restored on startup. Data older than 4 half-lives (2h at default 30min half-life) naturally expires. |

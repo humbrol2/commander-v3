@@ -11,6 +11,8 @@ Unified system for autonomous fleet profit maximization. Every decision is ROI-d
 - Systems above 50% danger trigger escort recommendations
 - Serializes for persistence across restarts
 
+**Persistence:** DangerMap state is persisted to Redis (`t:{tenantId}:dangermap`, TTL 2h) and restored on startup. Data older than 4 half-lives (2h at default 30min half-life) naturally expires.
+
 ### Market Rotation (`src/commander/market-rotation.ts`)
 - Priority queue of ALL stations by age × distance
 - Distant stations get BONUS (not penalty) to prevent neglect
@@ -56,3 +58,12 @@ Combined strategy weights and reward signals:
 - ROI analysis: trade vs mine vs craft vs mine→craft chain
 - Ship investment: cargo upgrade payback period calculation
 - Active scan orders when no profitable actions available
+
+## Known Issues Fixed (v1.1)
+
+1. **LLM role violations** — LLM could assign bots to routines outside their role (e.g., quartermaster → explorer). Now enforced with `getAllowedRoutines()` validation post-LLM.
+2. **Fleet composition summary stale** — "Fleet composition" in commander thoughts showed pre-assignment routines. Now overlays pending assignments.
+3. **Fleet advisor empty on request** — Dashboard "Refresh Analysis" returned nothing until 15-min timer fired. Now force-computes on demand.
+4. **LLM blind to ship value** — LLM saw cargo percentage but not absolute capacity. Now receives `cargoCap` and `fitness` score per bot.
+5. **DangerMap lost on restart** — Attack history was in-memory only despite serialize/deserialize existing. Now persisted to Redis with 2h TTL.
+6. **Zero observability** — DangerMap, MarketRotation, FleetAdvisor, ROIAnalyzer had no console output. Added `[Tag]` prefixed logs at key decision points.

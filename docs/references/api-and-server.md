@@ -66,6 +66,8 @@ Endpoint: `/ws?token=` (auth required when `--require-auth`)
 |------|-------------|
 | `request_fleet_advisor` | Force immediate fleet advisor recompute |
 
+**`request_fleet_advisor`**: Now triggers an immediate `forceComputeAdvisor()` instead of returning the cached result. Dashboard no longer needs to wait for the 15-minute timer.
+
 See [fleet-profit-maximizer](fleet-profit-maximizer.md) for the full module overview.
 
 ## Authentication (`src/auth/jwt.ts`)

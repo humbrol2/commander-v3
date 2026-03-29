@@ -74,3 +74,7 @@ See [fleet-profit-maximizer](fleet-profit-maximizer.md) for full detail.
 - **Bandit context additions:** `market_freshness` (real per-station age from `market-rotation.ts`) and `danger_level` (from `danger-map.ts`) are injected as bandit context features, replacing placeholder zeros.
 - **ROI Analyzer (`roi-analyzer.ts`):** computes unified `profitPerTick` for trade/mine/craft/mine→craft/ship-invest; LLM receives ranked options rather than raw economy data.
 - **Market Rotation (`market-rotation.ts`):** integrates with scoring brain; bots assigned scan-duty receive a bonus to prevent market data from going stale.
+
+**Role Validation:** LLM strategic overrides are validated against `getAllowedRoutines(role)` before acceptance. Assignments that violate role constraints are silently reverted to the scoring brain's decision with a warning log.
+
+**Ship Context:** LLM prompt includes `cargoCap` (absolute cargo capacity) and `fitness={routine}:{score}` (0-100 ship suitability) per bot. System prompt instructs LLM not to waste high-cargo ships on exploration.
