@@ -96,6 +96,17 @@ export function createServer(opts: ServerOptions) {
         if (url.pathname === "/api/public/learning") {
           return handlePublicLearning(opts);
         }
+        if (url.pathname === "/api/public/training-stats" && opts.trainingLogger) {
+          const stats = await opts.trainingLogger.getStats();
+          return new Response(JSON.stringify({
+            decisions: stats.decisions,
+            snapshots: stats.snapshots,
+            episodes: stats.episodes,
+            marketRecords: stats.marketRecords,
+            commanderDecisions: stats.commanderDecisions,
+            dbSizeMB: +(stats.dbSizeBytes / 1048576).toFixed(2),
+          }), { headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } });
+        }
 
         // Auth endpoints are always public (login/register)
         if (url.pathname === "/api/login" && req.method === "POST") {
