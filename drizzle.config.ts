@@ -5,6 +5,6 @@ export default defineConfig({
   schema: "./src/data/schema-pg.ts",
   out: "./drizzle",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "postgresql://humbrol2:3e1779ab4980bd4c7133eb457f8d3a0b@10.0.0.54:5432/commander",
+    url: process.env.DATABASE_URL ?? "postgresql://commander:ddbb464f3cae9fe857f085d015382eed@localhost:5433/commander",
   },
 });
