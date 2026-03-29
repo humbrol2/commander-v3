@@ -29,6 +29,10 @@ export interface ServerOptions {
   trainingLogger?: TrainingLogger;
   /** If true, require JWT auth on WS and API (multi-tenant mode). If false, open access (legacy). */
   requireAuth?: boolean;
+  /** Bot manager for public stats */
+  botManager?: { getAllBots(): Array<{ username: string; status: string; routine: string | null; role?: string }> };
+  /** Start time for uptime calculation */
+  startTime?: number;
   onClientMessage?: (ws: ServerWebSocket<WsData>, msg: ClientMessage) => void;
   onClientConnect?: (ws: ServerWebSocket<WsData>) => void;
 }
@@ -82,9 +86,12 @@ export function createServer(opts: ServerOptions) {
 
       // API routes
       if (url.pathname.startsWith("/api/")) {
-        // Health endpoint is always public
+        // Public endpoints (no auth required)
         if (url.pathname === "/api/health") {
           return Response.json({ status: "ok", clients: clients.size });
+        }
+        if (url.pathname === "/api/public/stats") {
+          return handlePublicStats(opts);
         }
 
         // Auth endpoints are always public (login/register)
@@ -565,4 +572,78 @@ async function handleLogin(req: Request, opts: ServerOptions): Promise<Response>
     console.error("[Auth] Login error:", err.message);
     return Response.json({ error: "Login failed" }, { status: 500 });
   }
+}
+
+/** GET /api/public/stats — public fleet statistics for website display */
+async function handlePublicStats(opts: ServerOptions): Promise<Response> {
+  const bots = opts.botManager?.getAllBots() ?? [];
+  const totalBots = bots.length;
+  const activeBots = bots.filter(b => b.status === "running" || b.status === "ready").length;
+  const onlineBots = bots.filter(b => b.status === "running").length;
+
+  // Count by role
+  const byRole: Record<string, number> = {};
+  for (const bot of bots) {
+    const role = (bot as any).role ?? "unassigned";
+    byRole[role] = (byRole[role] ?? 0) + 1;
+  }
+
+  // Count by routine (active assignments)
+  const byRoutine: Record<string, number> = {};
+  for (const bot of bots) {
+    if (bot.routine) {
+      byRoutine[bot.routine] = (byRoutine[bot.routine] ?? 0) + 1;
+    }
+  }
+
+  // Users count (from DB)
+  let registeredUsers = 0;
+  if (opts.db) {
+    try {
+      const [row] = await (opts.db as any).execute(sql`SELECT COUNT(*) as count FROM users`);
+      registeredUsers = Number(row?.count ?? 0);
+    } catch { registeredUsers = 1; }
+  }
+
+  // 24h credits earned (from financial events)
+  let credits24h = 0;
+  if (opts.db) {
+    try {
+      const since = Date.now() - 24 * 60 * 60 * 1000;
+      const [row] = await (opts.db as any).execute(
+        sql`SELECT COALESCE(SUM(amount), 0) as total FROM financial_events WHERE event_type = 'revenue' AND timestamp >= ${since}`
+      );
+      credits24h = Math.round(Number(row?.total ?? 0));
+    } catch { /* non-critical */ }
+  }
+
+  // Total credits across all bots
+  let totalCredits = 0;
+  for (const bot of bots) {
+    totalCredits += (bot as any).credits ?? 0;
+  }
+
+  // Uptime
+  const uptimeMs = opts.startTime ? Date.now() - opts.startTime : 0;
+  const uptimeHours = Math.floor(uptimeMs / 3_600_000);
+  const uptimeDays = Math.floor(uptimeHours / 24);
+
+  return new Response(JSON.stringify({
+    totalBots,
+    activeBots,
+    onlineBots,
+    registeredUsers,
+    byRole,
+    byRoutine,
+    credits24h,
+    totalCredits,
+    uptime: uptimeDays > 0 ? `${uptimeDays}d ${uptimeHours % 24}h` : `${uptimeHours}h`,
+    dashboardClients: clients.size,
+    timestamp: new Date().toISOString(),
+  }), {
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
 }

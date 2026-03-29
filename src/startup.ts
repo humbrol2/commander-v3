@@ -459,6 +459,8 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     tenantId,
     requireAuth: config._requireAuth,
     trainingLogger,
+    botManager: botManager as any,
+    startTime: Date.now(),
     onClientMessage: (ws, msg) => handleClientMessage(ws, msg, routerDeps),
     onClientConnect: (ws) => {
       console.log("[WS] New client — sending initial state");
