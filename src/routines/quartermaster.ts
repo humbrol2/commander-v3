@@ -31,6 +31,8 @@ import {
   fleetViewFactionStorage,
   MAX_MATERIAL_BUY_PRICE,
 } from "./helpers";
+import { ROIAnalyzer } from "../commander/roi-analyzer";
+import type { ROIEstimate } from "../commander/types";
 
 // Equipment modules to accumulate for fleet use
 const MODULE_TARGETS = [
@@ -281,6 +283,11 @@ export async function* quartermaster(ctx: BotContext): AsyncGenerator<RoutineYie
     const priceIndex = buildPriceIndex(ctx, homeBase);
     // Build cost basis cache for this cycle (was O(n²) per item)
     const costBasisCache = new Map<string, number>();
+
+    if (ctx.shouldStop) return;
+
+    // ── 0. CFO ROI Analysis — rank all profit paths before acting ──
+    yield* runCFOAnalysis(ctx, priceIndex);
 
     if (ctx.shouldStop) return;
 
@@ -1605,6 +1612,153 @@ async function* manageFactionFacilities(
       return; // Max one upgrade per cycle
     } else if (upgradeCost > 0) {
       yield `${facName} upgrade available (Lv${upgradeLevel}, ${upgradeCost}cr) — faction funds: ${factionCredits}cr`;
+    }
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// CFO ROI Analysis
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * Fleet CFO logic: survey all profit paths (trade, craft) by ROI and yield
+ * a ranked summary. Also checks if trader ships would benefit from a cargo upgrade.
+ *
+ * Does NOT make purchases — analysis only. Recommendations appear in routine logs.
+ */
+async function* runCFOAnalysis(
+  ctx: BotContext,
+  priceIndex: Map<string, PriceEntry>,
+): AsyncGenerator<RoutineYield, void, void> {
+  const analyzer = new ROIAnalyzer({
+    fuelCostPerJump: 50,
+    ticksPerJump: 2,
+    dangerCostMultiplier: 500,
+  });
+
+  const candidates: ROIEstimate[] = [];
+
+  // ── Trade ROI: scan cached cross-station arbitrage opportunities ──
+  const freshness = ctx.cache.getAllMarketFreshness();
+  const stationIds = freshness.map((f) => f.stationId);
+
+  // For each item in the price index, check if there's a buy-low/sell-high opportunity
+  for (const [itemId, entry] of priceIndex) {
+    // Need both a cheap source and a demand price
+    if (entry.cheapestBuy === Infinity || entry.cheapestBuy <= 0) continue;
+    if (entry.bestSell <= 0) continue;
+
+    const margin = entry.bestSell - entry.cheapestBuy;
+    if (margin <= 0) continue;
+
+    // Estimate volume as min of median observations (conservative)
+    const volume = Math.min(entry.medianBuy > 0 ? 10 : 5, 20);
+
+    // Data age: use average freshness of cached stations
+    const dataAgeMs = freshness.length > 0
+      ? freshness.reduce((sum, f) => sum + (Date.now() - f.fetchedAt), 0) / freshness.length
+      : 600_000;
+
+    const roi = analyzer.tradeROI({
+      buyPrice: entry.cheapestBuy,
+      sellPrice: entry.bestSell,
+      volume,
+      jumps: 2, // Conservative default — no galaxy routing from QM
+      dataAgeMs,
+      dangerScore: 0,
+    });
+
+    if (roi.netProfit > 0) {
+      // Attach item context for logging
+      (roi as ROIEstimate & { _itemId?: string })._itemId = itemId;
+      candidates.push(roi);
+    }
+  }
+
+  // ── Craft ROI: check top profitable recipes ──
+  const recipes = ctx.crafting.getAllRecipes();
+  for (const recipe of recipes) {
+    const { profit } = ctx.crafting.estimateMarketProfit(recipe.id);
+    if (profit <= 0) continue;
+
+    const materialCost = recipe.ingredients.reduce(
+      (sum, ing) => sum + ctx.crafting.getItemBasePrice(ing.itemId) * ing.quantity,
+      0,
+    );
+
+    const roi = analyzer.craftROI({
+      outputValue: ctx.crafting.getItemBasePrice(recipe.outputItem) * recipe.outputQuantity,
+      materialCosts: recipe.ingredients.map((ing) => ({
+        itemId: ing.itemId,
+        qty: ing.quantity,
+        unitCost: ctx.crafting.getItemBasePrice(ing.itemId),
+      })),
+      craftTimeTicks: Math.max(1, recipe.craftTime ?? 4),
+    });
+
+    if (roi.netProfit > 0) {
+      (roi as ROIEstimate & { _itemId?: string })._itemId = recipe.outputItem;
+      candidates.push(roi);
+    }
+  }
+
+  // ── Rank all candidates by weighted profitPerTick ──
+  const ranked = analyzer.comparePaths(candidates);
+  const top = ranked.slice(0, 5);
+
+  if (top.length === 0) {
+    yield "CFO: no profitable actions identified in current market data";
+  } else {
+    const best = top[0];
+    const bestLabel = (best as ROIEstimate & { _itemId?: string })._itemId
+      ? ctx.crafting.getItemName((best as ROIEstimate & { _itemId?: string })._itemId!) || (best as ROIEstimate & { _itemId?: string })._itemId
+      : "unknown";
+    yield `CFO: best ROI path — ${best.type} [${bestLabel}] ${Math.round(best.profitPerTick)}cr/tick (net ${Math.round(best.netProfit)}cr, conf ${(best.confidence * 100).toFixed(0)}%)`;
+
+    if (top.length > 1) {
+      const summary = top.slice(1).map((r) => {
+        const label = (r as ROIEstimate & { _itemId?: string })._itemId
+          ? ctx.crafting.getItemName((r as ROIEstimate & { _itemId?: string })._itemId!) || (r as ROIEstimate & { _itemId?: string })._itemId
+          : r.type;
+        return `${label}(${Math.round(r.profitPerTick)}cr/tick)`;
+      }).join(", ");
+      yield `CFO: other candidates — ${summary}`;
+    }
+  }
+
+  // ── Ship investment analysis: check trader bots with small cargo ──
+  const fleet = ctx.getFleetStatus();
+  const CARGO_UPGRADE_THRESHOLD = 150;  // Consider upgrade if cargo < this
+  const PAYBACK_LIMIT_HOURS = 24;       // Only recommend if pays back within 24h
+
+  for (const bot of fleet.bots) {
+    if (bot.routine !== "trader" && bot.routine !== "arbitrage_trader") continue;
+    if (bot.cargoCapacity >= CARGO_UPGRADE_THRESHOLD) continue;
+
+    // Estimate current profit from recent ROI candidates
+    const traderROI = ranked.filter((r) => r.type === "trade");
+    if (traderROI.length === 0) continue;
+
+    const bestTradeROI = traderROI[0];
+    // Scale profit per tick to per-hour (1 tick ≈ 10 seconds → 360 ticks/hour)
+    const TICKS_PER_HOUR = 360;
+    const currentProfitPerHour = bestTradeROI.profitPerTick * TICKS_PER_HOUR;
+    if (currentProfitPerHour <= 0) continue;
+
+    // Standard upgrade: assume next ship tier has ~2x cargo
+    const newCargoCapacity = bot.cargoCapacity * 2;
+    // TODO: query shipyard for actual upgrade prices when API is available
+    const estimatedUpgradeCost = 200_000; // Conservative placeholder
+
+    const investROI = analyzer.shipInvestmentROI({
+      currentCargoCapacity: bot.cargoCapacity,
+      newCargoCapacity,
+      acquisitionCost: estimatedUpgradeCost,
+      currentProfitPerHour,
+    });
+
+    if (investROI.paybackHours <= PAYBACK_LIMIT_HOURS) {
+      yield `CFO: ship upgrade recommended for ${bot.username} — cargo ${bot.cargoCapacity} → ${newCargoCapacity}, payback ${investROI.paybackHours.toFixed(1)}h (+${Math.round(investROI.profitIncreasePerHour)}cr/h)`;
     }
   }
 }
