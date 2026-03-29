@@ -574,8 +574,8 @@ export function handleClientMessage(
       }
 
       case "request_fleet_advisor": {
-        // Return last computed fleet advisor result to the requesting client only
-        const result = commander.getAdvisorResult();
+        // Force recompute and return result to requesting client
+        const result = commander.forceComputeAdvisor() ?? commander.getAdvisorResult();
         if (result) {
           sendTo(ws, { type: "fleet_advisor_update", advisor: result });
         }

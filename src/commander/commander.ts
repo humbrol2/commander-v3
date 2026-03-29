@@ -396,6 +396,34 @@ export class Commander {
     return this.lastAdvisorResult;
   }
 
+  /** Force recompute fleet advisor (e.g., on dashboard request) */
+  forceComputeAdvisor(): FleetAdvisorResult | null {
+    try {
+      const fleet = this.deps.getFleetStatus();
+      const economySnapshot = this.economy.analyze(fleet);
+      this.lastAdvisorResult = this.fleetAdvisor.compute({
+        currentBots: fleet.bots.length,
+        currentRoles: this.countRoles(fleet),
+        totalStations: this.marketRotation.getTotalStations(),
+        freshStations: this.marketRotation.getTotalStations() - this.marketRotation.getStaleCount(),
+        staleStations: this.marketRotation.getStaleCount(),
+        knownSystems: this.deps.galaxy.systemCount,
+        unknownSystems: 0,
+        dangerousSystems: this.dangerMap.getAllDangerous().length,
+        avgJumpsBetweenStations: 4,
+        avgScanCycleMinutes: this.marketRotation.getTotalStations() * 5,
+        profitableRoutes: 0,
+        currentProfitPerHour: economySnapshot.netProfit,
+        tradeCapacityUsed: 0,
+      });
+      this.lastAdvisorCompute = Date.now();
+      return this.lastAdvisorResult;
+    } catch (err) {
+      console.log(`[Commander] Force advisor compute failed: ${err instanceof Error ? err.message : err}`);
+      return this.lastAdvisorResult;
+    }
+  }
+
   /**
    * Evaluate pool sizing — assigns roles to unassigned bots to fill minimums.
    * Called during each evaluation cycle. Only assigns roles to bots with role=null.
