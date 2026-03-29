@@ -449,7 +449,7 @@ export class Commander {
     if (this.deps.cache && this.deps.galaxy.poiCount === 0) {
       // Hydrate with persisted system details (full POI data from previous sessions)
       try {
-        const persistedSystems = this.deps.cache.loadPersistedSystemDetails();
+        const persistedSystems = await this.deps.cache.loadPersistedSystemDetails();
         if (persistedSystems.length > 0) {
           let poiBefore = this.deps.galaxy.poiCount;
           for (const sys of persistedSystems) {
@@ -462,7 +462,7 @@ export class Commander {
 
       // Hydrate persisted POI discoveries
       try {
-        const persistedPois = this.deps.cache.loadPersistedPois();
+        const persistedPois = await this.deps.cache.loadPersistedPois();
         if (persistedPois.length > 0) {
           const enriched = this.deps.galaxy.hydrateFromPersistedPois(persistedPois);
           if (enriched > 0) console.log(`[Commander] Hydrated ${enriched} POIs from ${persistedPois.length} persisted discoveries`);
@@ -481,7 +481,7 @@ export class Commander {
           ]);
           this.deps.crafting.load(recipes);
           this.deps.crafting.loadItems(items);
-          const facilityOnly = this.deps.cache.getFacilityOnlyRecipes();
+          const facilityOnly = await this.deps.cache.getFacilityOnlyRecipes();
           if (facilityOnly.length > 0) {
             this.deps.crafting.setFacilityOnlyRecipes(facilityOnly);
           }

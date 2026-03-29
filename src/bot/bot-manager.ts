@@ -363,14 +363,14 @@ export class BotManager {
             console.log(`[Galaxy] Map loaded: ${this.services.galaxy.systemCount} systems`);
 
             // Hydrate galaxy with persisted POI discoveries
-            const persistedPois = this.services.cache.loadPersistedPois();
+            const persistedPois = await this.services.cache.loadPersistedPois();
             if (persistedPois.length > 0) {
               const enriched = this.services.galaxy.hydrateFromPersistedPois(persistedPois);
               console.log(`[Galaxy] Hydrated ${enriched} POIs from ${persistedPois.length} persisted discoveries`);
             }
 
             // Hydrate galaxy with persisted system details (full POI data from previous sessions)
-            const persistedSystems = this.services.cache.loadPersistedSystemDetails();
+            const persistedSystems = await this.services.cache.loadPersistedSystemDetails();
             if (persistedSystems.length > 0) {
               let poiBefore = this.services.galaxy.poiCount;
               for (const sys of persistedSystems) {
@@ -428,7 +428,7 @@ export class BotManager {
               this.services.crafting.load(recipes);
               this.services.crafting.loadItems(items);
               // Seed facility-only recipe filter so crafting engine never selects them
-              const facilityOnly = this.services.cache.getFacilityOnlyRecipes();
+              const facilityOnly = await this.services.cache.getFacilityOnlyRecipes();
               if (facilityOnly.length > 0) {
                 this.services.crafting.setFacilityOnlyRecipes(facilityOnly);
               }
