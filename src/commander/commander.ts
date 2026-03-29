@@ -1328,10 +1328,17 @@ export class Commander {
       thoughts.push(`Routine performance: ${perf}.`);
     }
 
-    // Routine distribution
-    const routineCounts = new Map<string, number>();
+    // Routine distribution (includes pending assignments)
+    const effectiveRoutines = new Map<string, string>();
     for (const bot of fleet.bots) {
-      if (bot.routine) routineCounts.set(bot.routine, (routineCounts.get(bot.routine) ?? 0) + 1);
+      if (bot.routine) effectiveRoutines.set(bot.botId, bot.routine);
+    }
+    for (const a of output.assignments) {
+      effectiveRoutines.set(a.botId, a.routine);
+    }
+    const routineCounts = new Map<string, number>();
+    for (const routine of effectiveRoutines.values()) {
+      routineCounts.set(routine, (routineCounts.get(routine) ?? 0) + 1);
     }
     if (routineCounts.size > 0) {
       const dist = [...routineCounts.entries()]
