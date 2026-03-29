@@ -1,0 +1,71 @@
+# SpaceMolt Commander v3 Configuration Example
+# Copy this file to config.toml and customize for your setup
+
+[commander]
+brain = "tiered"                  # "scoring", "ollama", "openai", "gemini", "claude", "tiered"
+evaluation_interval = 60          # Seconds between fleet evaluations
+reassignment_cooldown = 300       # Cooldown before reassigning same bot
+reassignment_threshold = 0.3      # Score difference threshold for reassignment
+switch_cost_weight = 1.0          # Weight for routine switch cost
+urgency_override = true           # Override scoring for critical situations
+
+[ai]
+# ── Ollama (local LLM via native /api/chat endpoint) ──
+ollama_base_url = "http://localhost:11434"
+ollama_model = "qwen3:8b"
+
+# ── OpenAI-compatible (LM Studio, vLLM, etc via /v1/chat/completions) ──
+openai_base_url = "http://127.0.0.1:1234"
+openai_model = "gpt-3.5-turbo"
+
+# ── Google & Anthropic (requires API keys in environment) ──
+gemini_model = "gemini-2.5-pro"
+claude_model = "claude-3-5-haiku-latest"
+
+# ── Tier order: tries each brain in sequence, first success wins ──
+tier_order = ["ollama", "openai", "gemini", "claude", "scoring"]
+
+# ── AI settings ──
+max_latency_ms = 60000            # Max time for AI evaluation
+max_tokens = 2048                 # Max response tokens
+shadow_mode = true                # Run scoring brain in parallel for comparison
+prompt_file = "prompt.md"          # Editable system prompt (loaded fresh each eval)
+
+# ── Fleet Goals ──
+[[goals]]
+type = "maximize_income"          # "maximize_income", "explore_region", "prepare_for_war", etc.
+priority = 1                       # Higher = more important
+
+[fleet]
+max_bots = 20                      # Maximum bots in fleet
+login_stagger_ms = 5000            # Delay between bot logins
+snapshot_interval = 30             # Seconds between fleet snapshots
+default_storage_mode = "faction_deposit"  # Where to store goods: "sell", "deposit", "faction_deposit"
+home_system = ""                   # Override home system (empty = auto-discover)
+home_base = ""                     # Override home base station (empty = auto-discover)
+faction_storage_station = ""       # Faction storage station ID (empty = auto-discover)
+faction_tax_percent = 0            # Tax percentage for faction operations
+min_bot_credits = 0                # Minimum credits before triggering income focus
+
+[cache]
+market_ttl_ms = 300000             # Market data cache time (5 minutes)
+system_ttl_ms = 3600000            # System data cache time (1 hour)
+catalog_refresh = "on_version_change"  # When to refresh game catalog
+
+[server]
+port = 3000                        # Dashboard port
+host = "localhost"                 # Dashboard host
+
+[training]
+log_decisions = true               # Log commander decisions
+log_snapshots = true               # Log fleet snapshots
+log_episodes = true                # Log episodes
+log_market_history = true          # Log market data
+snapshot_interval = 30             # Snapshot frequency (seconds)
+
+[economy]
+enable_premium_orders = true       # Allow premium market orders
+max_premium_pct = 50               # Max premium order percentage
+min_crafting_margin_pct = 30       # Minimum crafting profit margin
+batch_sell_size = 100              # Batch size for selling
+order_stale_timeout_min = 120      # Market order timeout (minutes)

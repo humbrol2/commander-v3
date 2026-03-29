@@ -67,11 +67,88 @@ export interface AppServices {
 }
 
 /**
+ * Check LM Studio is running with the correct models loaded.
+ * Only runs when openai is in the tier_order or embed_provider is "openai".
+ */
+async function ensureLmStudioModels(config: AppConfig): Promise<void> {
+  const useOpenAI = config.ai.tier_order.includes("openai") || config.ai.embed_provider === "openai";
+  if (!useOpenAI) return;
+
+  const baseUrl = config.ai.openai_base_url;
+  const llmModel = config.ai.openai_model;
+  const embedModel = config.ai.embed_model;
+
+  // 1. Check what's loaded
+  let loaded: string[];
+  try {
+    const resp = await fetch(`${baseUrl}/v1/models`);
+    const data = await resp.json() as { data?: Array<{ id: string }> };
+    loaded = data.data?.map((m) => m.id) ?? [];
+  } catch {
+    console.error(`[Startup] Cannot connect to LM Studio at ${baseUrl}. Is it running?`);
+    process.exit(1);
+  }
+
+  // 2. Check for wrong models
+  if (loaded.length > 0) {
+    const hasLlm = loaded.some(id => id === llmModel || id.includes(llmModel));
+    const hasEmbed = loaded.some(id => id === embedModel || id.includes(embedModel));
+
+    if (!hasLlm && !hasEmbed) {
+      console.error(`[Startup] LM Studio has wrong models loaded: ${loaded.join(', ')}`);
+      console.error(`[Startup] Expected LLM: ${llmModel}, Embedding: ${embedModel}`);
+      console.error(`[Startup] Unload current models and restart, or update config.toml`);
+      process.exit(1);
+    }
+  }
+
+  // 3. Load missing models
+  if (!loaded.some(id => id === llmModel || id.includes(llmModel))) {
+    console.log(`[Startup] Loading LLM model: ${llmModel}...`);
+    try {
+      const resp = await fetch(`${baseUrl}/api/v1/models/load`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: llmModel }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      console.log(`[Startup] LLM model loaded: ${llmModel}`);
+    } catch (e) {
+      console.error(`[Startup] Failed to load LLM model ${llmModel}: ${e}`);
+      process.exit(1);
+    }
+  } else {
+    console.log(`[Startup] LLM model already loaded: ${llmModel}`);
+  }
+
+  if (!loaded.some(id => id === embedModel || id.includes(embedModel))) {
+    console.log(`[Startup] Loading embedding model: ${embedModel}...`);
+    try {
+      const resp = await fetch(`${baseUrl}/api/v1/models/load`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: embedModel }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+      console.log(`[Startup] Embedding model loaded: ${embedModel}`);
+    } catch (e) {
+      console.error(`[Startup] Failed to load embedding model ${embedModel}: ${e}`);
+      process.exit(1);
+    }
+  } else {
+    console.log(`[Startup] Embedding model already loaded: ${embedModel}`);
+  }
+}
+
+/**
  * Wire all services together and start the application.
  */
 export async function startup(config: AppConfig): Promise<AppServices> {
+  // ── LM Studio model check (before anything else that uses AI) ──
+  await ensureLmStudioModels(config);
+
   // ── Tenant ID ──
-  const tenantId = config._tenantId ?? crypto.randomUUID();
+  const tenantId = config._tenantId || config.database?.tenant_id || crypto.randomUUID();
   console.log(`[Startup] Tenant ID: ${tenantId}`);
 
   // ── Database ──
@@ -90,7 +167,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 
   // ── Data Layer ──
   const trainingLogger = new TrainingLogger(db, tenantId);
-  const gameCache = new GameCache(db, trainingLogger);
+  const gameCache = new GameCache(db, trainingLogger, redisCache, tenantId);
   const shipyardCount = await gameCache.loadShipyardData();
   if (shipyardCount > 0) console.log(`[Cache] Loaded ${shipyardCount} shipyard scans from disk`);
   await gameCache.loadRecentMarketData();
@@ -132,7 +209,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const apiFactory: ApiClientFactory = (username: string) => {
     const client = new ApiClient({ username, sessionStore, logger: trainingLogger });
     // Restore session asynchronously (fire-and-forget, login will re-auth if needed)
-    client.restoreSession().catch(() => {});
+    client.restoreSession().catch((e) => console.warn(`Failed to restore session for ${username}: ${e}`));
     return client;
   };
 
@@ -160,7 +237,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   };
 
   // Load saved fleet settings
-  const savedFleetSettings = await loadFleetSettings(db);
+  const savedFleetSettings = await loadFleetSettings(db, tenantId);
   if (savedFleetSettings) {
     botManager.fleetConfig.factionTaxPercent = savedFleetSettings.factionTaxPercent;
     botManager.fleetConfig.minBotCredits = savedFleetSettings.minBotCredits;
@@ -188,7 +265,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       // For SQLite we can use raw transactions for performance.
       // For PostgreSQL, Drizzle handles batching efficiently.
       if (driver === "sqlite") {
-        const sqlite = connection.raw as import("bun:sqlite").Database;
+        const sqlite = connection.raw as unknown as import("bun:sqlite").Database;
         sqlite.exec("BEGIN");
         try {
           for (const entry of batch) {
@@ -263,15 +340,17 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 
   // ── Embedding Store (semantic memory for strategic decisions) ──
   const embeddingStore = new EmbeddingStore(db, {
-    ollamaUrl: config.ai.ollama_base_url,
+    provider: config.ai.embed_provider,
+    baseUrl: config.ai.embed_provider === "openai" ? config.ai.openai_base_url : config.ai.ollama_base_url,
+    model: config.ai.embed_model,
     tenantId,
   });
   // Check embedding model availability (non-blocking)
   embeddingStore.checkHealth().then(available => {
     if (available) {
-      console.log("[Startup] Embedding model (nomic-embed-text) available for semantic memory");
+      console.log(`[Startup] Embedding model (${config.ai.embed_model}) available for semantic memory`);
     } else {
-      console.log("[Startup] Embedding model not available — memory store will use recency fallback. Run: ollama pull nomic-embed-text");
+      console.log(`[Startup] Embedding model not available — memory store will use recency fallback`);
     }
   }).catch(() => {});
 
@@ -304,7 +383,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       if (!bot) return;
       bot.role = role;
       bot.settings.role = role;
-      saveBotSettings(db, bot.username, bot.settings);
+      saveBotSettings(db, tenantId, bot.username, bot.settings);
     },
     recoverErrorBots: () => botManager.recoverStuckBots(),
     isBotManual: (botId: string) => botManager.getBot(botId)?.settings.manualControl ?? false,
@@ -341,10 +420,13 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   }
 
   // Load saved goals
-  const savedGoals = await loadGoals(db);
+  const savedGoals = await loadGoals(db, tenantId);
   if (savedGoals.length > 0) {
     commander.setGoals(savedGoals);
-    console.log(`[Config] Loaded ${savedGoals.length} saved goals`);
+    console.log(`[Config] Loaded ${savedGoals.length} saved goals from DB`);
+  } else if (config.goals.length > 0) {
+    commander.setGoals(config.goals);
+    console.log(`[Config] Loaded ${config.goals.length} goals from config.toml`);
   }
 
   // ── Load Bot Credentials ──
@@ -352,18 +434,18 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const manualBotIds = new Set<string>();
   for (const creds of savedBots) {
     const bot = botManager.addBot(creds.username);
-    const settings = await loadBotSettings(db, creds.username);
+    const settings = await loadBotSettings(db, tenantId, creds.username);
     if (settings) {
       bot.settings = settings;
       if (settings.role) bot.role = settings.role;
       if (settings.manualControl) manualBotIds.add(bot.id);
     }
     // Seed cached skills from DB (available immediately without API call)
-    const cachedSkills = await loadBotSkills(db, creds.username);
+    const cachedSkills = await loadBotSkills(db, tenantId, creds.username);
     if (cachedSkills) bot.seedSkills(cachedSkills);
     // Persist skills to DB whenever refreshed from API
     bot.onSkillsRefreshed = (username, skills) => {
-      try { saveBotSkills(db, username, skills); } catch { /* non-critical */ }
+      try { saveBotSkills(db, tenantId, username, skills); } catch { /* non-critical */ }
     };
   }
   if (savedBots.length > 0) {
@@ -445,6 +527,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     commander,
     galaxy,
     db,
+    tenantId,
     cache: gameCache,
     sessionStore,
     ensureGalaxyLoaded,

@@ -44,6 +44,8 @@ import {
   fleetViewMarket,
   fleetGetSystem,
   fleetViewFactionStorage,
+  collectScatteredCargo,
+  depositAllToFaction,
   MAX_MATERIAL_BUY_PRICE,
   INSIGHT_GATE_PRICE,
 } from "./helpers";
@@ -147,7 +149,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
   const traderIndex = getParam(ctx, "traderIndex", 0);
 
   // Track items that failed to sell — seeded from fleet-wide cache, persists across sessions
-  const blacklistedItems = new Set<string>(ctx.cache.getUnsellableItems());
+  const blacklistedItems = new Set<string>(await ctx.cache.getUnsellableItems());
 
   // Commander-assigned route (from scoring brain's arbitrage analysis)
   const assignedItem = getParam(ctx, "assignedItem", "");
@@ -726,25 +728,59 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
           sellStation = altStation;
         } catch (altErr) {
           yield `alternate route also failed: ${altErr instanceof Error ? altErr.message : String(altErr)}`;
-          // Last resort: sell at nearest reachable station
-          try {
-            await findAndDock(ctx);
-            await sellAllCargo(ctx);
-            await ctx.refreshState();
-            yield "sold cargo at nearest station";
-          } catch { yield "all sell attempts failed — cargo stranded"; }
+          // Try faction storage before selling at random station
+          const factionStation = ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase;
+          let depositedToFaction = false;
+          if (factionStation) {
+            try {
+              yield "returning cargo to faction storage";
+              await navigateAndDock(ctx, factionStation);
+              const nDeposited = await depositAllToFaction(ctx);
+              if (nDeposited > 0) {
+                yield `deposited ${nDeposited} item type(s) to faction storage (failed trade return)`;
+                depositedToFaction = true;
+              }
+            } catch (fErr) {
+              yield `faction return failed: ${fErr instanceof Error ? fErr.message : String(fErr)}`;
+            }
+          }
+          if (!depositedToFaction) {
+            try {
+              await findAndDock(ctx);
+              await sellAllCargo(ctx);
+              await ctx.refreshState();
+              yield "sold cargo at nearest station";
+            } catch { yield "all sell attempts failed — cargo stranded"; }
+          }
           yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
           return;
         }
       } else {
-        // No cached alternate — sell at nearest station
-        yield "no alternate buyers known — selling at nearest station";
-        try {
-          await findAndDock(ctx);
-          await sellAllCargo(ctx);
-          await ctx.refreshState();
-          yield "sold cargo at fallback station";
-        } catch { yield "fallback sell failed — cargo stranded"; }
+        // No cached alternate — try faction storage first, then nearest station
+        const factionStation = ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase;
+        let depositedToFaction = false;
+        if (factionStation) {
+          yield "no alternate buyers known — returning cargo to faction storage";
+          try {
+            await navigateAndDock(ctx, factionStation);
+            const nDeposited = await depositAllToFaction(ctx);
+            if (nDeposited > 0) {
+              yield `deposited ${nDeposited} item type(s) to faction storage (failed trade return)`;
+              depositedToFaction = true;
+            }
+          } catch (fErr) {
+            yield `faction return failed: ${fErr instanceof Error ? fErr.message : String(fErr)}`;
+          }
+        }
+        if (!depositedToFaction) {
+          yield "faction return failed — selling at nearest station";
+          try {
+            await findAndDock(ctx);
+            await sellAllCargo(ctx);
+            await ctx.refreshState();
+            yield "sold cargo at fallback station";
+          } catch { yield "fallback sell failed — cargo stranded"; }
+        }
         yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
         return;
       }
@@ -1023,6 +1059,18 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
     await refuelIfNeeded(ctx);
     await repairIfNeeded(ctx);
 
+    // ── Collect scattered cargo on empty return trip ──
+    // If cargo is now empty, pick up any personal storage items at current station
+    if (ctx.player.dockedAtBase) {
+      const nonProtectedCargo = ctx.ship.cargo.filter((c) => !isProtectedItem(c.itemId) && c.quantity > 0);
+      if (nonProtectedCargo.length === 0) {
+        const nCollected = await collectScatteredCargo(ctx);
+        if (nCollected > 0) {
+          yield `collected ${nCollected} scattered item type(s) from station storage`;
+        }
+      }
+    }
+
     tripCount++;
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
   }
@@ -1079,14 +1127,14 @@ async function* insightGatedArbitrageTrip(
   // Pick first unclaimed route (prevents fleet stampede — multiple traders racing same route)
   let route = gatedRoutes[0];
   for (const candidate of gatedRoutes) {
-    if (ctx.cache.claimArbitrageRoute(candidate.itemId, candidate.buyStationId, candidate.sellStationId, ctx.botId)) {
+    if (await ctx.cache.claimArbitrageRoute(candidate.itemId, candidate.buyStationId, candidate.sellStationId, ctx.botId)) {
       route = candidate;
       break;
     }
     yield `arbitrage: ${candidate.itemName} @ ${candidate.buyStationId} → ${candidate.sellStationId} already claimed, trying next`;
   }
   // If all routes were claimed, the last candidate's claim attempt failed — skip
-  if (ctx.cache.isArbitrageRouteClaimed(route.itemId, route.buyStationId, route.sellStationId, ctx.botId)) {
+  if (await ctx.cache.isArbitrageRouteClaimed(route.itemId, route.buyStationId, route.sellStationId, ctx.botId)) {
     yield "arbitrage: all routes claimed by other traders";
     return;
   }

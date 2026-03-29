@@ -47,12 +47,12 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
   const sellOutput = getParam(ctx, "sellOutput", true);
   // v0.227.0: skill requirements removed from all recipes
   // Seed from persistent cache so we never retry known facility-only recipes
-  const facilityOnlyRecipes = new Set<string>(ctx.cache.getFacilityOnlyRecipes());
+  const facilityOnlyRecipes = new Set<string>(await ctx.cache.getFacilityOnlyRecipes());
   // Track recipes that failed due to missing materials — skip them for a while
   const failedRecipes = new Set<string>();
   // Track materials that couldn't be sourced — skip any recipe needing them
   // Seeded from persistent cache so blacklist survives routine restarts
-  const unavailableMaterials = new Set<string>(ctx.cache.getUnavailableMaterials(ctx.botId));
+  const unavailableMaterials = new Set<string>(await ctx.cache.getUnavailableMaterials(ctx.botId));
   if (unavailableMaterials.size > 0) {
     console.log(`[${ctx.botId}] crafter: restored ${unavailableMaterials.size} unavailable materials from cache: ${[...unavailableMaterials].join(", ")}`);
   }
@@ -160,7 +160,7 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
 
   while (!ctx.shouldStop) {
     // ── Sync material blacklist with cache TTLs (expired entries = retry) ──
-    const currentBlacklist = ctx.cache.getUnavailableMaterials(ctx.botId);
+    const currentBlacklist = await ctx.cache.getUnavailableMaterials(ctx.botId);
     const currentSet = new Set(currentBlacklist);
     for (const mat of unavailableMaterials) {
       if (!currentSet.has(mat)) {

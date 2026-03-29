@@ -8,6 +8,7 @@ import { z } from "zod";
 
 export const GoalTypeSchema = z.enum([
   "maximize_income",
+  "maximize_profit",
   "explore_region",
   "prepare_for_war",
   "level_skills",
@@ -59,6 +60,8 @@ export const AiConfigSchema = z.object({
   max_tokens: z.number().default(2048),
   shadow_mode: z.boolean().default(false),
   prompt_file: z.string().default(""),
+  embed_provider: z.enum(["ollama", "openai"]).default("openai"),
+  embed_model: z.string().default("text-embedding-nomic-embed-text-v1.5"),
 });
 
 export type AiConfig = z.infer<typeof AiConfigSchema>;
@@ -151,6 +154,7 @@ export type StockTarget = z.infer<typeof StockTargetSchema>;
 export const DatabaseConfigSchema = z.object({
   url: z.string().default("commander.db"),
   driver: z.enum(["postgresql", "sqlite"]).default("sqlite"),
+  tenant_id: z.string().default(""),
 });
 
 // ── Redis Config ──
@@ -165,7 +169,7 @@ export const RedisConfigSchema = z.object({
 export const AppConfigSchema = z.object({
   commander: CommanderConfigSchema.default({}),
   ai: AiConfigSchema.default({}),
-  goals: z.array(GoalSchema).default([]),
+  goals: z.array(GoalSchema).default([{ type: "maximize_profit", priority: 1, params: {} }]),
   fleet: FleetConfigSchema.default({}),
   cache: CacheConfigSchema.default({}),
   server: ServerConfigSchema.default({}),

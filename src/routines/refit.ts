@@ -406,7 +406,7 @@ export async function* refit(ctx: BotContext): AsyncGenerator<RoutineYield, void
 
       // If neither source has modules, check other known stations
       if (availStorage.length === 0 && availMarket.length === 0) {
-        const remote = ctx.cache.findItemSeller(pattern, budget);
+        const remote = await ctx.cache.findItemSeller(pattern, budget);
         if (remote && remote.stationId !== ctx.player.dockedAtBase && canFitModule(ctx, remote.itemId).fits) {
           yield `${pattern}: found at remote station — traveling to buy`;
           try {

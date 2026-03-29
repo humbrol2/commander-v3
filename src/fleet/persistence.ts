@@ -80,7 +80,7 @@ export async function saveBotSkills(db: DB, tenantId: string, username: string, 
       target: [botSkills.tenantId, botSkills.username],
       set: {
         skills: JSON.stringify(skills),
-        updatedAt: new Date().toISOString().replace("T", " ").slice(0, 19),
+        updatedAt: new Date(),
       },
     });
 }

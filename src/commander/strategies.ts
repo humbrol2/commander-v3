@@ -37,6 +37,16 @@ const STRATEGY_PROFILES: Record<GoalType, Partial<StrategyWeights>> = {
     salvager: 0.8,
     mission_runner: 0.9,
   },
+  maximize_profit: {
+    trader: 1.8,
+    crafter: 1.6,
+    miner: 1.2,
+    harvester: 1.0,
+    hunter: 0.5,
+    explorer: 0.3,
+    salvager: 0.7,
+    mission_runner: 0.8,
+  },
   explore_region: {
     explorer: 2.0,
     miner: 0.5,

@@ -314,8 +314,8 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
 
       // Brain decision stats (LLM vs scoring breakdown)
       if (deps.trainingLogger) {
-        const decisionStats = deps.trainingLogger.getBrainDecisionStats();
-        const shadowStats = deps.trainingLogger.getShadowStats();
+        const decisionStats = await deps.trainingLogger.getBrainDecisionStats();
+        const shadowStats = await deps.trainingLogger.getShadowStats();
         broadcast({
           type: "brain_decision_stats",
           stats: {
@@ -441,7 +441,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
 
       // Refresh 24h financial totals from DB (persists across restarts)
       if (deps.trainingLogger) {
-        try { cached24hTotals = deps.trainingLogger.get24hFinancialTotals(); } catch { /* non-critical */ }
+        try { cached24hTotals = await deps.trainingLogger.get24hFinancialTotals(); } catch { /* non-critical */ }
       }
     }
 

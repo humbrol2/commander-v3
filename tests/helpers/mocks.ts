@@ -201,6 +201,33 @@ export class MockGameCache {
   hasFreshInsights(_stationId: string) {
     return false;
   }
+  getFacilityMaterialNeeds() {
+    return [];
+  }
+  async getMap(_api: unknown) {
+    return [];
+  }
+  async loadPersistedSystemDetails() {
+    return [];
+  }
+  async loadPersistedPois() {
+    return [];
+  }
+  async getRecipes(_api: unknown) {
+    return [];
+  }
+  async getItemCatalog(_api: unknown) {
+    return [];
+  }
+  async getFacilityOnlyRecipes() {
+    return [];
+  }
+  async getShipCatalog(_api: unknown) {
+    return [];
+  }
+  findShipyardForClass(_classId: string) {
+    return null;
+  }
 }
 
 // ── Setup Galaxy ──

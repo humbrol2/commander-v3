@@ -25,7 +25,7 @@ import type { Goal } from "../config/schema";
 // ── Context Feature Extraction ──
 
 /** Number of features in the context vector */
-export const CONTEXT_DIM = 22;
+export const CONTEXT_DIM = 23;
 
 /** Feature names (for debugging) */
 export const FEATURE_NAMES = [
@@ -37,6 +37,7 @@ export const FEATURE_NAMES = [
   "deficit_count", "surplus_count", "net_profit_sign",
   "market_freshness", "fleet_size_log",
   "goal_income", "goal_explore",
+  "danger_level",
 ];
 
 /**
@@ -79,10 +80,11 @@ export function extractContext(
     Math.min(economy.deficits.length / 10, 1),                     // 15: deficit_count
     Math.min(economy.surpluses.length / 10, 1),                    // 16: surplus_count
     economy.netProfit > 0 ? 1 : (economy.netProfit < 0 ? -1 : 0), // 17: net_profit_sign
-    0.5,                                                            // 18: market_freshness (placeholder)
+    Math.min(economy.dataFreshnessRatio ?? 0.5, 1),                // 18: market_freshness (real)
     Math.log10(Math.max(1, fleetSize)) / 2,                        // 19: fleet_size_log
     Math.min(goalIncome, 1),                                        // 20: goal_income
     Math.min(goalExplore, 1),                                       // 21: goal_explore
+    0,                                                              // 22: danger_level (will be wired when danger map is integrated)
   ];
 }
 
@@ -112,6 +114,32 @@ function createArmModel(dim: number, prior?: number[]): ArmModel {
   const theta = prior ?? new Array(dim).fill(0);
 
   return { theta, A, b, pulls: 0 };
+}
+
+/**
+ * Resize an arm's matrices if its dimension doesn't match current CONTEXT_DIM.
+ * New features get identity-matrix diagonal (neutral regularization) and zero weights.
+ */
+function resizeArm(arm: ArmModel, targetDim: number): ArmModel {
+  const oldDim = arm.theta.length;
+  if (oldDim === targetDim) return arm;
+
+  const theta = new Array(targetDim).fill(0);
+  const b = new Array(targetDim).fill(0);
+  const A: number[][] = Array.from({ length: targetDim }, (_, i) =>
+    Array.from({ length: targetDim }, (_, j) => i === j ? 1 : 0)
+  );
+
+  const copyDim = Math.min(oldDim, targetDim);
+  for (let i = 0; i < copyDim; i++) {
+    theta[i] = arm.theta[i];
+    b[i] = arm.b[i];
+    for (let j = 0; j < copyDim; j++) {
+      A[i][j] = arm.A[i][j];
+    }
+  }
+
+  return { theta, A, b, pulls: arm.pulls };
 }
 
 /**
@@ -368,7 +396,8 @@ export class BanditBrain {
             Array.from({ length: CONTEXT_DIM }, (_, j) => i === j ? 1 : 0)
           );
           const b = theta.map((t, i) => t * Math.max(A[i]?.[i] ?? 1, 0.001));
-          roleModels.set(routine, { theta, A, b, pulls: row.episodeCount });
+          const arm = resizeArm({ theta, A, b, pulls: row.episodeCount }, CONTEXT_DIM);
+          roleModels.set(routine, arm);
         }
         this.models.set(row.role, roleModels);
       } catch {
@@ -405,7 +434,7 @@ export class BanditBrain {
           weights: JSON.stringify(weights),
           covariance: JSON.stringify(covariance),
           episodeCount: totalPulls,
-          updatedAt: new Date().toISOString(),
+          updatedAt: new Date(),
         },
       });
     }

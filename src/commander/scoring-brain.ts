@@ -922,6 +922,16 @@ export class ScoringBrain implements CommanderBrain {
       if (routine === "explorer") bonus += 5;
     }
 
+    // Scan-duty bonus: when data freshness is critically low, strongly boost scanning routines
+    // This integrates with market rotation — low freshness means the rotation scheduler
+    // has many stale targets, so explorers/scouts/mission_runners earn extra priority
+    if (world.dataFreshnessRatio < 0.4) {
+      const urgency = Math.round((1 - world.dataFreshnessRatio) * 15); // 0-15 bonus
+      if (routine === "explorer") bonus += urgency;
+      if (routine === "scout") bonus += urgency;
+      if (routine === "mission_runner") bonus += Math.round(urgency * 0.5);
+    }
+
     // Have fresh trade routes → boost trader
     if (world.tradeRouteCount > 0 && routine === "trader") {
       bonus += Math.min(world.bestTradeProfit * 5, 25);

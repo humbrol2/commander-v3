@@ -4,6 +4,7 @@
 
 import type { Goal, StockTarget } from "../config/schema";
 import type { ShipClass, CatalogItem, Skill, Recipe } from "./game";
+import type { FleetAdvisorResult } from "../commander/types";
 
 // ── Routine Types ──
 
@@ -502,7 +503,9 @@ export type ServerMessage =
   | { type: "social_forum_update"; threads: SocialForumThread[] }
   | { type: "social_dm_update"; messages: SocialDM[] }
   | { type: "brain_decision_stats"; stats: BrainDecisionStats }
-  | { type: "catalog_data"; ships: ShipClass[]; items: CatalogItem[]; skills: Skill[]; recipes: Recipe[] };
+  | { type: "catalog_data"; ships: ShipClass[]; items: CatalogItem[]; skills: Skill[]; recipes: Recipe[] }
+  | { type: "fleet_advisor_update"; advisor: FleetAdvisorResult }
+  | { type: "danger_map_update"; systems: Array<{ systemId: string; score: number; attacks: number; lastAttack: number }> };
 
 // ── Dashboard → Server Messages ──
 
@@ -535,4 +538,5 @@ export type ClientMessage =
   | { type: "buy_ship_upgrade"; botId: string; shipClass: string }
   | { type: "buy_module"; botId: string; moduleId: string }
   | { type: "set_bot_role"; botId: string; role: string | null }
-  | { type: "set_manual_control"; botId: string; enabled: boolean };
+  | { type: "set_manual_control"; botId: string; enabled: boolean }
+  | { type: "request_fleet_advisor" };

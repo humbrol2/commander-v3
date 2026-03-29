@@ -54,7 +54,8 @@
 		{ href: "/economy", label: "Economy", key: "5" },
 		{ href: "/faction", label: "Faction", key: "6" },
 		{ href: "/training", label: "Training", key: "7" },
-		{ href: "/manual", label: "Manual", key: "8" },
+		{ href: "/advisor", label: "Advisor", key: "8" },
+		{ href: "/manual", label: "Manual", key: "9" },
 	];
 
 	function isActive(href: string, pathname: string): boolean {
@@ -95,12 +96,7 @@
 		const path = window.location.pathname;
 		const isAuthPage = path === "/login" || path === "/register";
 		if (!isAuthPage) {
-			if ($isAuthenticated) {
-				connect();
-			} else {
-				// Redirect to login if not authenticated
-				goto("/login");
-			}
+			connect();
 		}
 		window.addEventListener("keydown", handleKeydown);
 	});

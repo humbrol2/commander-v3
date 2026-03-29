@@ -404,31 +404,29 @@ export class ChatIntelligence {
     context: { isTrade: boolean; isQuestion: boolean; isWarning: boolean; mentionsUs: boolean },
   ): Promise<string | null> {
     const systemPrompt = this.buildChatPersona();
-    const userPrompt = this.buildChatPrompt(msg, channel, context);
+    const userPrompt = await this.buildChatPrompt(msg, channel, context);
 
     try {
-      const resp = await fetch(`${this.ollamaUrl}/api/chat`, {
+      const resp = await fetch(`${this.ollamaUrl}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: this.ollamaModel,
-          think: false,
           stream: false,
           messages: [
             { role: "system", content: systemPrompt },
-            // Include conversation history for this player (multi-turn)
             ...this.getConversationHistory(msg.username),
             { role: "user", content: userPrompt },
           ],
-          options: { num_predict: 150 }, // Short replies — chat, not essays
+          max_tokens: 150,
         }),
         signal: AbortSignal.timeout(15_000),
       });
 
       if (!resp.ok) return null;
 
-      const data = await resp.json() as { message?: { content?: string } };
-      let reply = data.message?.content?.trim() ?? "";
+      const data = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
+      let reply = data.choices?.[0]?.message?.content?.trim() ?? "";
 
       // Clean up: remove quotes, thinking markers, markdown
       reply = reply.replace(/^["']|["']$/g, "").replace(/^\*.*?\*\s*/g, "").trim();
@@ -485,11 +483,11 @@ RULES:
   }
 
   /** Build the user prompt for a specific message */
-  private buildChatPrompt(
+  private async buildChatPrompt(
     msg: ChatMessage,
     channel: string,
     context: { isTrade: boolean; isQuestion: boolean; isWarning: boolean; mentionsUs: boolean },
-  ): string {
+  ): Promise<string> {
     const parts = [`[${channel} chat] ${msg.username}: ${msg.content}`];
 
     if (context.isTrade) parts.push("(This is a trade offer/request — respond with relevant items and prices)");
@@ -498,13 +496,13 @@ RULES:
     if (context.mentionsUs) parts.push("(They mentioned our faction or a member — respond directly)");
 
     // Add relevant memory facts
-    const memories = this.memoryStore?.getTop(5) ?? [];
+    const memories = (await this.memoryStore?.getTop(5)) ?? [];
     if (memories.length > 0) {
-      const relevant = memories.filter(m =>
+      const relevant = memories.filter((m: { fact: string }) =>
         msg.content.toLowerCase().split(/\s+/).some(w => m.fact.toLowerCase().includes(w))
       );
       if (relevant.length > 0) {
-        parts.push("Relevant intel: " + relevant.map(m => m.fact).join("; "));
+        parts.push("Relevant intel: " + relevant.map((m: { fact: string }) => m.fact).join("; "));
       }
     }
 

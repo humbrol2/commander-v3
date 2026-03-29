@@ -160,6 +160,8 @@ export interface EconomySnapshot {
   factionStorage: Map<string, number>;
   /** Prioritized work orders computed by the economy engine */
   workOrders: FleetWorkOrder[];
+  /** Ratio of fresh vs total known stations (0-1). Lower = more stale data. */
+  dataFreshnessRatio?: number;
 }
 
 /** A prioritized task for the fleet to execute, produced by market/storage analysis */
@@ -239,4 +241,72 @@ export interface ReassignmentState {
   lastAssignment: number;   // timestamp ms
   lastRoutine: RoutineName | null;
   cooldownUntil: number;    // timestamp ms
+}
+
+// ── Danger Map ──
+
+/** Per-system danger tracking */
+export interface DangerEntry {
+  attacks: number;
+  lastAttack: number;
+  score: number;
+}
+
+/** Market rotation state for a station */
+export interface StationScanPriority {
+  stationId: string;
+  systemId: string;
+  ageMs: number;
+  distanceFromHub: number;
+  priority: number;
+  assignedBot: string | null;
+}
+
+/** Fleet advisor recommendation */
+export interface FleetAdvisorResult {
+  currentBots: number;
+  suggestedBots: number;
+  breakdown: Array<{
+    role: string;
+    current: number;
+    suggested: number;
+    reason: string;
+    estimatedProfitIncrease: number;
+  }>;
+  estimatedProfitIncreasePct: number;
+  scanCoverage: number;
+  tradeCapacity: number;
+  safetyScore: number;
+  bottlenecks: string[];
+  computedAt: number;
+}
+
+/** ROI analysis for a single action path */
+export interface ROIEstimate {
+  type: "trade" | "mine" | "craft" | "mine_craft" | "buy_craft" | "ship_invest" | "route_clear";
+  grossProfit: number;
+  costs: {
+    fuel: number;
+    timeTicks: number;
+    materials: number;
+    riskPenalty: number;
+  };
+  netProfit: number;
+  profitPerTick: number;
+  confidence: number;
+  reasoning: string;
+  requirements?: string[];
+}
+
+/** Ship investment analysis */
+export interface ShipInvestmentROI {
+  botId: string;
+  currentShip: string;
+  proposedShip: string;
+  cargoDelta: number;
+  acquisitionCost: number;
+  acquisitionPath: ROIEstimate;
+  profitIncreasePerHour: number;
+  paybackHours: number;
+  approved: boolean;
 }
