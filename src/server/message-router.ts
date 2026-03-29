@@ -573,6 +573,15 @@ export function handleClientMessage(
         break;
       }
 
+      case "request_fleet_advisor": {
+        // Return last computed fleet advisor result to the requesting client only
+        const result = commander.getAdvisorResult();
+        if (result) {
+          sendTo(ws, { type: "fleet_advisor_update", advisor: result });
+        }
+        break;
+      }
+
       default:
         console.log(`[WS] Unknown message type: ${(msg as any).type}`);
     }
