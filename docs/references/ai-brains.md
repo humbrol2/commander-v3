@@ -67,3 +67,10 @@ Score per bot×routine combination:
 - Scoring brain runs in parallel with LLM brain
 - Compares decisions, logs agreement rate to `llm_decisions` table
 - Evaluates LLM brain quality without operational risk
+
+## Fleet Profit Maximizer Additions
+See [fleet-profit-maximizer](fleet-profit-maximizer.md) for full detail.
+
+- **Bandit context additions:** `market_freshness` (real per-station age from `market-rotation.ts`) and `danger_level` (from `danger-map.ts`) are injected as bandit context features, replacing placeholder zeros.
+- **ROI Analyzer (`roi-analyzer.ts`):** computes unified `profitPerTick` for trade/mine/craft/mine→craft/ship-invest; LLM receives ranked options rather than raw economy data.
+- **Market Rotation (`market-rotation.ts`):** integrates with scoring brain; bots assigned scan-duty receive a bonus to prevent market data from going stale.

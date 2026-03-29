@@ -58,6 +58,15 @@ Endpoint: `/ws?token=` (auth required when `--require-auth`)
 | `fleet_update` | 3s | Full fleet state |
 | `commander_update` | on decision | Brain decisions |
 | `economy_update` | on change | P&L data |
+| `fleet_advisor_update` | 15min / on demand | Fleet size recommendation + ROI explanation (fleet profit maximizer) |
+| `danger_map_update` | on change | Per-system danger levels for UI overlay (fleet profit maximizer) |
+
+### Client → Server additions (fleet profit maximizer)
+| Type | Description |
+|------|-------------|
+| `request_fleet_advisor` | Force immediate fleet advisor recompute |
+
+See [fleet-profit-maximizer](fleet-profit-maximizer.md) for the full module overview.
 
 ## Authentication (`src/auth/jwt.ts`)
 | Property | Value |

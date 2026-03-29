@@ -68,3 +68,10 @@ Score: `effectiveProfit × availability² × refiningBoost(1.5x) × intermediate
 
 ## Faction System
 Shared storage (lockbox), treasury, roles: recruit → member → officer → leader. Features: diplomacy, facilities, intel, custom missions, market orders. Tax: configurable % of bot sales → treasury.
+
+## Fleet Profit Maximizer Additions
+See [fleet-profit-maximizer](fleet-profit-maximizer.md) for full detail.
+
+- **Danger Map:** per-system attack tracking (30-min half-life) feeds weighted pathfinding; soft cost multiplier up to 6×, not hard block.
+- **Emergency Dock Protocol:** hull < 60% interrupts current routine; bot repairs at nearest station before resuming. Danger event recorded to map.
+- **Centralized Logistics:** all cargo flows through faction storage; failed trades return cargo to faction; empty return trips collect opportunistic cargo.

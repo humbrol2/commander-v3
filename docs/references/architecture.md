@@ -14,8 +14,8 @@
 | `src/app.ts` | Entry point; CLI args: `--config`, `--database-url`, `--redis-url`, `--tenant-id`, `--port` |
 | `src/startup.ts` (661L) | Service wiring: DB + Redis + all services + HTTP/WS server + broadcast loop |
 | `src/bot/` | Bot lifecycle (`bot.ts` 29KB), fleet mgmt (`bot-manager.ts` 20KB) |
-| `src/commander/` | AI brain: `scoring-brain.ts` (100KB deterministic), `tiered-brain.ts`, `ollama/openai/gemini/claude-brain.ts`, `bandit-brain.ts` (LinUCB), `economy-engine.ts`, `prompt-builder.ts`, `embedding-store.ts`, `chat-intelligence.ts`, `reward-function.ts`, `roles.ts`, `strategies.ts` |
-| `src/core/` | `api-client.ts` (71KB, 151 endpoints), `galaxy.ts` (graph+pathfinding), `market.ts`, `crafting.ts`, `navigation.ts`, `combat.ts`, `cargo.ts`, `fuel.ts`, `ship-fitness.ts` |
+| `src/commander/` | AI brain: `scoring-brain.ts` (100KB deterministic), `tiered-brain.ts`, `ollama/openai/gemini/claude-brain.ts`, `bandit-brain.ts` (LinUCB), `economy-engine.ts`, `prompt-builder.ts`, `embedding-store.ts`, `chat-intelligence.ts`, `reward-function.ts`, `roles.ts`, `strategies.ts`; **profit maximizer**: `danger-map.ts`, `market-rotation.ts`, `roi-analyzer.ts`, `fleet-advisor.ts` |
+| `src/core/` | `api-client.ts` (71KB, 151 endpoints), `galaxy.ts` (graph+pathfinding), `market.ts`, `crafting.ts`, `navigation.ts`, `combat.ts`, `cargo.ts`, `fuel.ts`, `ship-fitness.ts`, `weighted-pathfinding.ts` (danger-aware Dijkstra) |
 | `src/routines/` | 14 async generators: `miner`, `harvester`, `trader`, `crafter`, `quartermaster` (70KB), `explorer`, `hunter`, `salvager`, `scavenger`, `scout`, `mission_runner` (53KB), `refit`, `ship_upgrade`, `ship_dealer`, `return_home` + `helpers.ts` (61KB) |
 | `src/server/` | `server.ts` (HTTP+WS), `message-router.ts` (20 handlers), `broadcast.ts` (48KB state serialization) |
 | `src/data/` | `db.ts` (dual PG/SQLite), `schema-pg.ts` (25 tables), `schema-sqlite.ts` (20 tables), `game-cache.ts` (45KB), `cache-redis.ts`, `training-logger.ts`, `session-store.ts`, `memory-store.ts` |
@@ -55,3 +55,4 @@
 | Two-tier cache | In-memory Maps → Redis (optional) → DB (`timed_cache` table) |
 | Brain fallback | `tiered-brain.ts` tries LLM brains in sequence; falls back to `scoring-brain.ts` (deterministic) |
 | LinUCB bandit | `bandit-brain.ts` learns per-bot routine preferences from reward signals |
+| Fleet profit maximizer | Danger map + market rotation + ROI analyzer + fleet advisor modules — see [fleet-profit-maximizer](fleet-profit-maximizer.md) |
