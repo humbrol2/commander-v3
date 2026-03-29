@@ -146,6 +146,20 @@ export const StockTargetSchema = z.object({
 
 export type StockTarget = z.infer<typeof StockTargetSchema>;
 
+// ── Database Config ──
+
+export const DatabaseConfigSchema = z.object({
+  url: z.string().default("commander.db"),
+  driver: z.enum(["postgresql", "sqlite"]).default("sqlite"),
+});
+
+// ── Redis Config ──
+
+export const RedisConfigSchema = z.object({
+  url: z.string().default(""),
+  enabled: z.boolean().default(false),
+});
+
 // ── Full Config ──
 
 export const AppConfigSchema = z.object({
@@ -158,10 +172,18 @@ export const AppConfigSchema = z.object({
   training: TrainingConfigSchema.default({}),
   economy: EconomyConfigSchema.default({}),
   broadcast: BroadcastConfigSchema.default({}),
+  database: DatabaseConfigSchema.default({}),
+  redis: RedisConfigSchema.default({}),
   inventory_targets: z.array(StockTargetSchema).default([]),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema> & {
-  /** Runtime override: database path (from CLI --db flag) */
+  /** Runtime override: database URL (from CLI --database-url flag) */
   _dbPath?: string;
+  /** Runtime override: tenant ID (from CLI --tenant-id flag) */
+  _tenantId?: string;
+  /** Runtime override: Redis URL (from CLI --redis-url flag) */
+  _redisUrl?: string;
+  /** Runtime override: require auth (multi-tenant mode) */
+  _requireAuth?: boolean;
 };

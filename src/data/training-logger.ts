@@ -1,15 +1,15 @@
 /**
- * Training data logger — Drizzle ORM version.
+ * Training data logger — Drizzle ORM version (async PostgreSQL with tenant scoping).
  * Records decisions, snapshots, episodes, market prices, commander decisions.
  */
 
-import { eq, sql, gte, desc } from "drizzle-orm";
+import { eq, sql, gte, desc, and } from "drizzle-orm";
 import type { DB } from "./db";
 import {
   decisionLog, stateSnapshots, episodes, marketHistory,
   commanderLog, financialEvents, tradeLog, llmDecisions,
   factionTransactions,
-} from "./schema";
+} from "./schema-pg";
 
 const COMMANDER_VERSION = "3.0.0";
 
@@ -30,36 +30,38 @@ export class TrainingLogger {
   }> = [];
   private snapshotFlushTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private db: DB) {}
+  constructor(private db: DB, private tenantId: string) {}
 
   startSnapshotFlush(): void {
     if (this.snapshotFlushTimer) return;
     this.snapshotFlushTimer = setInterval(() => this.flushSnapshots(), 10_000);
   }
 
-  flushSnapshots(): void {
+  async flushSnapshots(): Promise<void> {
     if (this.snapshotBuffer.length === 0) return;
     const batch = this.snapshotBuffer;
     this.snapshotBuffer = [];
-    for (const s of batch) {
-      this.db.insert(stateSnapshots).values({
-        tick: s.tick,
-        botId: s.botId,
-        playerState: JSON.stringify(s.playerState),
-        shipState: JSON.stringify(s.shipState),
-        location: JSON.stringify(s.location),
-        gameVersion: this.gameVersion,
-        commanderVersion: COMMANDER_VERSION,
-      }).run();
-    }
+
+    const rows = batch.map((s) => ({
+      tenantId: this.tenantId,
+      tick: s.tick,
+      botId: s.botId,
+      playerState: JSON.stringify(s.playerState),
+      shipState: JSON.stringify(s.shipState),
+      location: JSON.stringify(s.location),
+      gameVersion: this.gameVersion,
+      commanderVersion: COMMANDER_VERSION,
+    }));
+
+    await this.db.insert(stateSnapshots).values(rows);
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
     if (this.snapshotFlushTimer) {
       clearInterval(this.snapshotFlushTimer);
       this.snapshotFlushTimer = null;
     }
-    this.flushSnapshots();
+    await this.flushSnapshots();
   }
 
   setGameVersion(version: string): void { this.gameVersion = version; }
@@ -68,15 +70,16 @@ export class TrainingLogger {
     Object.assign(this.enabled, opts);
   }
 
-  logDecision(params: {
+  async logDecision(params: {
     tick: number; botId: string; action: string;
     actionParams?: Record<string, unknown>;
     context: Record<string, unknown>;
     result?: Record<string, unknown>;
     commanderGoal?: string;
-  }): void {
+  }): Promise<void> {
     if (!this.enabled.decisions) return;
-    this.db.insert(decisionLog).values({
+    await this.db.insert(decisionLog).values({
+      tenantId: this.tenantId,
       tick: params.tick,
       botId: params.botId,
       action: params.action,
@@ -86,7 +89,7 @@ export class TrainingLogger {
       commanderGoal: params.commanderGoal ?? null,
       gameVersion: this.gameVersion,
       commanderVersion: COMMANDER_VERSION,
-    }).run();
+    });
   }
 
   logSnapshot(params: {
@@ -99,16 +102,17 @@ export class TrainingLogger {
     this.snapshotBuffer.push(params);
   }
 
-  logEpisode(params: {
+  async logEpisode(params: {
     botId: string; episodeType: string;
     startTick: number; endTick: number;
     startCredits: number; endCredits: number;
     route: string[]; itemsInvolved: Record<string, number>;
     fuelConsumed: number; risks: string[];
     commanderGoal?: string; success: boolean;
-  }): void {
+  }): Promise<void> {
     if (!this.enabled.episodes) return;
-    this.db.insert(episodes).values({
+    await this.db.insert(episodes).values({
+      tenantId: this.tenantId,
       botId: params.botId,
       episodeType: params.episodeType,
       startTick: params.startTick,
@@ -125,34 +129,38 @@ export class TrainingLogger {
       success: params.success ? 1 : 0,
       gameVersion: this.gameVersion,
       commanderVersion: COMMANDER_VERSION,
-    }).run();
+    });
   }
 
-  logMarketPrices(
+  async logMarketPrices(
     tick: number, stationId: string,
     prices: Array<{
       itemId: string; buyPrice: number | null; sellPrice: number | null;
       buyVolume: number; sellVolume: number;
     }>
-  ): void {
+  ): Promise<void> {
     if (!this.enabled.marketHistory) return;
-    for (const p of prices) {
-      this.db.insert(marketHistory).values({
-        tick, stationId, itemId: p.itemId,
-        buyPrice: p.buyPrice, sellPrice: p.sellPrice,
-        buyVolume: p.buyVolume, sellVolume: p.sellVolume,
-      }).run();
-    }
+    if (prices.length === 0) return;
+
+    const rows = prices.map((p) => ({
+      tenantId: this.tenantId,
+      tick, stationId, itemId: p.itemId,
+      buyPrice: p.buyPrice, sellPrice: p.sellPrice,
+      buyVolume: p.buyVolume, sellVolume: p.sellVolume,
+    }));
+
+    await this.db.insert(marketHistory).values(rows);
   }
 
-  logCommanderDecision(params: {
+  async logCommanderDecision(params: {
     tick: number; goal: string;
     fleetState: Record<string, unknown>;
     assignments: Record<string, unknown>[];
     reasoning: string;
     economyState?: Record<string, unknown>;
-  }): void {
-    this.db.insert(commanderLog).values({
+  }): Promise<void> {
+    await this.db.insert(commanderLog).values({
+      tenantId: this.tenantId,
       tick: params.tick,
       goal: params.goal,
       fleetState: JSON.stringify(params.fleetState),
@@ -161,11 +169,11 @@ export class TrainingLogger {
       economyState: params.economyState ? JSON.stringify(params.economyState) : null,
       gameVersion: this.gameVersion,
       commanderVersion: COMMANDER_VERSION,
-    }).run();
+    });
   }
 
-  logShipUpgrade(botId: string, fromShip: string, toShip: string, cost: number, role: string): void {
-    this.logCommanderDecision({
+  async logShipUpgrade(botId: string, fromShip: string, toShip: string, cost: number, role: string): Promise<void> {
+    await this.logCommanderDecision({
       tick: Math.floor(Date.now() / 1000),
       goal: "ship_upgrade",
       fleetState: { botId, fromShip, toShip, cost, role },
@@ -174,33 +182,35 @@ export class TrainingLogger {
     });
   }
 
-  logFinancialEvent(type: "revenue" | "cost", amount: number, botId?: string, source?: string): void {
+  async logFinancialEvent(type: "revenue" | "cost", amount: number, botId?: string, source?: string): Promise<void> {
     if (amount <= 0) return;
-    this.db.insert(financialEvents).values({
+    await this.db.insert(financialEvents).values({
+      tenantId: this.tenantId,
       timestamp: Date.now(), eventType: type, amount, botId: botId ?? null, source: source ?? null,
-    }).run();
+    });
   }
 
-  logFactionCreditTx(type: "credit_deposit" | "credit_withdraw", botId: string, amount: number, details?: string): void {
-    this.db.insert(factionTransactions).values({
+  async logFactionCreditTx(type: "credit_deposit" | "credit_withdraw", botId: string, amount: number, details?: string): Promise<void> {
+    await this.db.insert(factionTransactions).values({
+      tenantId: this.tenantId,
       timestamp: Date.now(), botId, type, credits: amount, details: details ?? null,
-    }).run();
+    });
   }
 
-  getFinancialHistory(sinceMs: number, bucketMs: number): Array<{
+  async getFinancialHistory(sinceMs: number, bucketMs: number): Promise<Array<{
     timestamp: number; revenue: number; cost: number; profit: number;
-  }> {
+  }>> {
     const since = Date.now() - sinceMs;
-    // Fall back to raw SQL for the bucket aggregation — Drizzle doesn't support this well
-    const rows = this.db.all(sql`
+    const rows = await this.db.execute(sql`
       SELECT
         (${financialEvents.timestamp} / ${bucketMs} * ${bucketMs}) as bucket,
         SUM(CASE WHEN ${financialEvents.eventType} = 'revenue' THEN ${financialEvents.amount} ELSE 0 END) as revenue,
         SUM(CASE WHEN ${financialEvents.eventType} = 'cost' THEN ${financialEvents.amount} ELSE 0 END) as cost
       FROM ${financialEvents}
-      WHERE ${financialEvents.timestamp} >= ${since}
+      WHERE ${financialEvents.tenantId} = ${this.tenantId}
+        AND ${financialEvents.timestamp} >= ${since}
       GROUP BY bucket ORDER BY bucket ASC
-    `) as Array<{ bucket: number; revenue: number; cost: number }>;
+    `) as unknown as Array<{ bucket: number; revenue: number; cost: number }>;
 
     return rows.map((r) => ({
       timestamp: r.bucket, revenue: r.revenue, cost: r.cost,
@@ -208,56 +218,61 @@ export class TrainingLogger {
     }));
   }
 
-  logTrade(params: {
+  async logTrade(params: {
     botId: string; action: "buy" | "sell" | "craft"; itemId: string;
     quantity: number; priceEach: number; total: number; stationId?: string;
-  }): void {
-    this.db.insert(tradeLog).values({
+  }): Promise<void> {
+    await this.db.insert(tradeLog).values({
+      tenantId: this.tenantId,
       timestamp: Date.now(), botId: params.botId, action: params.action,
       itemId: params.itemId, quantity: params.quantity, priceEach: params.priceEach,
       total: params.total, stationId: params.stationId ?? null,
-    }).run();
+    });
   }
 
   /** Get 24h revenue/cost/profit totals from persisted financial events */
-  get24hFinancialTotals(): { revenue: number; cost: number; profit: number } {
+  async get24hFinancialTotals(): Promise<{ revenue: number; cost: number; profit: number }> {
     const since = Date.now() - 24 * 60 * 60 * 1000;
-    const rows = this.db.all(sql`
+    const rows = await this.db.execute(sql`
       SELECT
         SUM(CASE WHEN ${financialEvents.eventType} = 'revenue' THEN ${financialEvents.amount} ELSE 0 END) as revenue,
         SUM(CASE WHEN ${financialEvents.eventType} = 'cost' THEN ${financialEvents.amount} ELSE 0 END) as cost
       FROM ${financialEvents}
-      WHERE ${financialEvents.timestamp} >= ${since}
-    `) as Array<{ revenue: number | null; cost: number | null }>;
+      WHERE ${financialEvents.tenantId} = ${this.tenantId}
+        AND ${financialEvents.timestamp} >= ${since}
+    `) as unknown as Array<{ revenue: number | null; cost: number | null }>;
     const r = rows[0] ?? { revenue: 0, cost: 0 };
     const revenue = r.revenue ?? 0;
     const cost = r.cost ?? 0;
     return { revenue, cost, profit: revenue - cost };
   }
 
-  getRecentTrades(sinceMs: number, limit = 100): Array<{
+  async getRecentTrades(sinceMs: number, limit = 100): Promise<Array<{
     timestamp: number; botId: string; action: string; itemId: string;
     quantity: number; priceEach: number; total: number; stationId: string | null;
-  }> {
+  }>> {
     const since = Date.now() - sinceMs;
-    return this.db.select().from(tradeLog)
-      .where(gte(tradeLog.timestamp, since))
+    const rows = await this.db.select().from(tradeLog)
+      .where(and(
+        eq(tradeLog.tenantId, this.tenantId),
+        gte(tradeLog.timestamp, since),
+      ))
       .orderBy(desc(tradeLog.timestamp))
-      .limit(limit)
-      .all()
-      .map((r) => ({
-        timestamp: r.timestamp, botId: r.botId, action: r.action,
-        itemId: r.itemId, quantity: r.quantity, priceEach: r.priceEach,
-        total: r.total, stationId: r.stationId,
-      }));
+      .limit(limit);
+
+    return rows.map((r) => ({
+      timestamp: r.timestamp, botId: r.botId, action: r.action,
+      itemId: r.itemId, quantity: r.quantity, priceEach: r.priceEach,
+      total: r.total, stationId: r.stationId,
+    }));
   }
 
-  logShadowComparison(params: {
+  async logShadowComparison(params: {
     tick: number;
     primary: { brainName: string; latencyMs: number; confidence: number; tokenUsage?: { input: number; output: number }; assignments: Array<{ botId: string; routine: string }>; reasoning: string };
     shadow: { brainName: string; assignments: Array<{ botId: string; routine: string }>; reasoning: string };
     fleetInput: Record<string, unknown>;
-  }): void {
+  }): Promise<void> {
     const pAssign = params.primary.assignments;
     const sAssign = params.shadow.assignments;
 
@@ -270,7 +285,8 @@ export class TrainingLogger {
     const totalBots = Math.max(pAssign.length, sAssign.length, 1);
     const agreementRate = matches / totalBots;
 
-    this.db.insert(llmDecisions).values({
+    await this.db.insert(llmDecisions).values({
+      tenantId: this.tenantId,
       tick: params.tick,
       brainName: params.primary.brainName,
       latencyMs: params.primary.latencyMs,
@@ -283,26 +299,36 @@ export class TrainingLogger {
       reasoning: params.primary.reasoning,
       scoringBrainAssignments: JSON.stringify(sAssign),
       agreementRate,
-    }).run();
+    });
   }
 
-  getShadowStats(): {
+  async getShadowStats(): Promise<{
     totalComparisons: number;
     avgAgreementRate: number;
     byBrain: Array<{ brainName: string; count: number; avgAgreement: number; avgLatency: number }>;
-  } {
-    const total = (this.db.all(sql`SELECT COUNT(*) as count FROM ${llmDecisions}`) as Array<{ count: number }>)[0]?.count ?? 0;
-    const avgRate = (this.db.all(sql`SELECT AVG(${llmDecisions.agreementRate}) as avg FROM ${llmDecisions}`) as Array<{ avg: number | null }>)[0]?.avg ?? 0;
+  }> {
+    const totalRows = await this.db.execute(sql`
+      SELECT COUNT(*) as count FROM ${llmDecisions}
+      WHERE ${llmDecisions.tenantId} = ${this.tenantId}
+    `) as unknown as Array<{ count: number }>;
+    const total = totalRows[0]?.count ?? 0;
 
-    const byBrain = this.db.all(sql`
+    const avgRows = await this.db.execute(sql`
+      SELECT AVG(${llmDecisions.agreementRate}) as avg FROM ${llmDecisions}
+      WHERE ${llmDecisions.tenantId} = ${this.tenantId}
+    `) as unknown as Array<{ avg: number | null }>;
+    const avgRate = avgRows[0]?.avg ?? 0;
+
+    const byBrain = await this.db.execute(sql`
       SELECT
         ${llmDecisions.brainName} as brain_name,
         COUNT(*) as count,
         AVG(${llmDecisions.agreementRate}) as avg_agreement,
         AVG(${llmDecisions.latencyMs}) as avg_latency
       FROM ${llmDecisions}
+      WHERE ${llmDecisions.tenantId} = ${this.tenantId}
       GROUP BY ${llmDecisions.brainName}
-    `) as Array<{ brain_name: string; count: number; avg_agreement: number; avg_latency: number }>;
+    `) as unknown as Array<{ brain_name: string; count: number; avg_agreement: number; avg_latency: number }>;
 
     return {
       totalComparisons: total,
@@ -316,49 +342,60 @@ export class TrainingLogger {
     };
   }
 
-  getStats(): {
+  async getStats(): Promise<{
     decisions: number; snapshots: number; episodes: number;
     marketRecords: number; commanderDecisions: number; dbSizeBytes: number;
-  } {
-    const count = (table: Parameters<typeof this.db.select>[0] extends undefined ? never : never) => 0;
-    // Use raw SQL for efficient COUNT(*)
-    const decisions = (this.db.all(sql`SELECT COUNT(*) as count FROM ${decisionLog}`) as Array<{ count: number }>)[0]?.count ?? 0;
-    const snapshots = (this.db.all(sql`SELECT COUNT(*) as count FROM ${stateSnapshots}`) as Array<{ count: number }>)[0]?.count ?? 0;
-    const episodeCount = (this.db.all(sql`SELECT COUNT(*) as count FROM ${episodes}`) as Array<{ count: number }>)[0]?.count ?? 0;
-    const marketRecords = (this.db.all(sql`SELECT COUNT(*) as count FROM ${marketHistory}`) as Array<{ count: number }>)[0]?.count ?? 0;
-    const commanderDecisions = (this.db.all(sql`SELECT COUNT(*) as count FROM ${commanderLog}`) as Array<{ count: number }>)[0]?.count ?? 0;
+  }> {
+    const [decisionsR, snapshotsR, episodesR, marketR, commanderR, sizeR] = await Promise.all([
+      this.db.execute(sql`SELECT COUNT(*) as count FROM ${decisionLog} WHERE ${decisionLog.tenantId} = ${this.tenantId}`) as unknown as Promise<Array<{ count: number }>>,
+      this.db.execute(sql`SELECT COUNT(*) as count FROM ${stateSnapshots} WHERE ${stateSnapshots.tenantId} = ${this.tenantId}`) as unknown as Promise<Array<{ count: number }>>,
+      this.db.execute(sql`SELECT COUNT(*) as count FROM ${episodes} WHERE ${episodes.tenantId} = ${this.tenantId}`) as unknown as Promise<Array<{ count: number }>>,
+      this.db.execute(sql`SELECT COUNT(*) as count FROM ${marketHistory} WHERE ${marketHistory.tenantId} = ${this.tenantId}`) as unknown as Promise<Array<{ count: number }>>,
+      this.db.execute(sql`SELECT COUNT(*) as count FROM ${commanderLog} WHERE ${commanderLog.tenantId} = ${this.tenantId}`) as unknown as Promise<Array<{ count: number }>>,
+      this.db.execute(sql`SELECT pg_database_size(current_database()) as size`) as unknown as Promise<Array<{ size: number }>>,
+    ]);
 
-    const file = Bun.file("commander.db");
-    const dbSizeBytes = file.size;
-
-    return { decisions, snapshots, episodes: episodeCount, marketRecords, commanderDecisions, dbSizeBytes };
+    return {
+      decisions: decisionsR[0]?.count ?? 0,
+      snapshots: snapshotsR[0]?.count ?? 0,
+      episodes: episodesR[0]?.count ?? 0,
+      marketRecords: marketR[0]?.count ?? 0,
+      commanderDecisions: commanderR[0]?.count ?? 0,
+      dbSizeBytes: sizeR[0]?.size ?? 0,
+    };
   }
 
   /** Get per-brain decision breakdown for dashboard */
-  getBrainDecisionStats(): {
+  async getBrainDecisionStats(): Promise<{
     total: number;
     byBrain: Array<{ brainName: string; count: number; avgLatency: number; avgConfidence: number }>;
     recentBrainName: string | null;
-  } {
-    const total = (this.db.all(sql`SELECT COUNT(*) as count FROM ${llmDecisions}`) as Array<{ count: number }>)[0]?.count ?? 0;
+  }> {
+    const totalRows = await this.db.execute(sql`
+      SELECT COUNT(*) as count FROM ${llmDecisions}
+      WHERE ${llmDecisions.tenantId} = ${this.tenantId}
+    `) as unknown as Array<{ count: number }>;
+    const total = totalRows[0]?.count ?? 0;
 
-    const byBrain = this.db.all(sql`
+    const byBrain = await this.db.execute(sql`
       SELECT
         ${llmDecisions.brainName} as brain_name,
         COUNT(*) as count,
         AVG(${llmDecisions.latencyMs}) as avg_latency,
         AVG(${llmDecisions.confidence}) as avg_confidence
       FROM ${llmDecisions}
+      WHERE ${llmDecisions.tenantId} = ${this.tenantId}
       GROUP BY ${llmDecisions.brainName}
-    `) as Array<{ brain_name: string; count: number; avg_latency: number; avg_confidence: number }>;
+    `) as unknown as Array<{ brain_name: string; count: number; avg_latency: number; avg_confidence: number }>;
 
     // Most recent brain used
-    const recent = this.db.all(sql`
+    const recent = await this.db.execute(sql`
       SELECT ${llmDecisions.brainName} as brain_name
       FROM ${llmDecisions}
+      WHERE ${llmDecisions.tenantId} = ${this.tenantId}
       ORDER BY ${llmDecisions.tick} DESC
       LIMIT 1
-    `) as Array<{ brain_name: string }>;
+    `) as unknown as Array<{ brain_name: string }>;
 
     return {
       total,

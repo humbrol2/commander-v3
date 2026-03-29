@@ -1,10 +1,11 @@
 /**
  * Game data cache with version-gated static data and TTL-based timed data.
- * Refactored from v2 to use Drizzle ORM.
+ * Supports async PostgreSQL + Redis caching with tenant scoping.
  */
 
 import { eq, and, like, sql, gt } from "drizzle-orm";
 import type { DB } from "./db";
+import type { RedisCache } from "./cache-redis";
 import type { TrainingLogger } from "./training-logger";
 import type { ApiClient, MarketInsight } from "../core/api-client";
 import { normalizeRecipe, normalizeCatalogItem, normalizeShipClass } from "../core/api-client";
@@ -49,7 +50,7 @@ export class GameCache {
     // Check freshness — skip API entirely if recently fetched
     const fetchedAt = this.marketFetchedAt.get(stationId) ?? 0;
     if (fetchedAt > 0 && (Date.now() - fetchedAt) < GameCache.MARKET_DEDUP_MS) {
-      const cached = this.getMarketPrices(stationId);
+      const cached = await this.getMarketPrices(stationId);
       if (cached) return []; // Signal: data is fresh in cache, caller should use cache
     }
 
@@ -71,11 +72,13 @@ export class GameCache {
     fetcher: () => Promise<StarSystem>,
   ): Promise<StarSystem | null> {
     // Check timed cache freshness
-    const cached = this.getTimed(`system:${systemId}`);
+    const cached = await this.getTimed(`system:${systemId}`);
     if (cached) {
       // System is in timed cache (still within TTL) — check dedup window
-      const row = this.db.select({ fetchedAt: timedCache.fetchedAt }).from(timedCache)
-        .where(eq(timedCache.key, `system:${systemId}`)).get();
+      const rows = await this.db.select({ fetchedAt: timedCache.fetchedAt }).from(timedCache)
+        .where(and(eq(timedCache.key, `system:${systemId}`), eq(timedCache.tenantId, this.tenantId)))
+        .limit(1);
+      const row = rows[0];
       if (row && (Date.now() - row.fetchedAt) < GameCache.SYSTEM_DEDUP_MS) {
         return JSON.parse(cached); // Fresh enough — skip API
       }
@@ -174,8 +177,8 @@ export class GameCache {
     if (inflight) return inflight;
 
     const promise = fetcher()
-      .then((ships) => {
-        this.setShipyardData(stationId, ships);
+      .then(async (ships) => {
+        await this.setShipyardData(stationId, ships);
         return ships;
       })
       .finally(() => this.inflightShipyard.delete(stationId));
@@ -226,7 +229,11 @@ export class GameCache {
   private static readonly NO_DEMAND_TTL = 180_000; // 3 min before retrying a failed recipe
 
   /** Mark a recipe as having no demand (called by crafter after sell failure) */
-  markRecipeNoDemand(recipeId: string): void {
+  async markRecipeNoDemand(recipeId: string): Promise<void> {
+    if (this.redis) {
+      await this.redis.markRecipeNoDemand(recipeId);
+      return;
+    }
     const existing = this.noDemandRecipes.get(recipeId);
     this.noDemandRecipes.set(recipeId, {
       failedAt: Date.now(),
@@ -235,7 +242,10 @@ export class GameCache {
   }
 
   /** Check if a recipe has been globally flagged as no-demand */
-  isRecipeNoDemand(recipeId: string): boolean {
+  async isRecipeNoDemand(recipeId: string): Promise<boolean> {
+    if (this.redis) {
+      return this.redis.isRecipeNoDemand(recipeId);
+    }
     const entry = this.noDemandRecipes.get(recipeId);
     if (!entry) return false;
     if (Date.now() - entry.failedAt > GameCache.NO_DEMAND_TTL) {
@@ -246,12 +256,19 @@ export class GameCache {
   }
 
   /** Clear no-demand flag for a recipe (called when a sale succeeds) */
-  clearRecipeNoDemand(recipeId: string): void {
+  async clearRecipeNoDemand(recipeId: string): Promise<void> {
+    if (this.redis) {
+      await this.redis.clearRecipeNoDemand(recipeId);
+      return;
+    }
     this.noDemandRecipes.delete(recipeId);
   }
 
   /** Claim an arbitrage route (item@buyStation→sellStation). Returns false if already claimed. */
-  claimArbitrageRoute(itemId: string, buyStationId: string, sellStationId: string, botId: string): boolean {
+  async claimArbitrageRoute(itemId: string, buyStationId: string, sellStationId: string, botId: string): Promise<boolean> {
+    if (this.redis) {
+      return this.redis.claimArbitrageRoute(itemId, buyStationId, sellStationId, botId);
+    }
     const key = `${itemId}:${buyStationId}:${sellStationId}`;
     const existing = this.arbitrageClaims.get(key);
     // Allow re-claim by same bot, or if claim is stale
@@ -263,12 +280,21 @@ export class GameCache {
   }
 
   /** Release an arbitrage route claim (call after trade completes or fails) */
-  releaseArbitrageRoute(itemId: string, buyStationId: string, sellStationId: string): void {
+  async releaseArbitrageRoute(itemId: string, buyStationId: string, sellStationId: string): Promise<void> {
+    if (this.redis) {
+      await this.redis.releaseArbitrageRoute(itemId, buyStationId, sellStationId);
+      return;
+    }
     this.arbitrageClaims.delete(`${itemId}:${buyStationId}:${sellStationId}`);
   }
 
   /** Check if a route is already claimed by another bot */
-  isArbitrageRouteClaimed(itemId: string, buyStationId: string, sellStationId: string, botId: string): boolean {
+  async isArbitrageRouteClaimed(itemId: string, buyStationId: string, sellStationId: string, botId: string): Promise<boolean> {
+    if (this.redis) {
+      const holder = await this.redis.isArbitrageRouteClaimed(itemId, buyStationId, sellStationId);
+      if (!holder) return false;
+      return holder !== botId; // Claimed by someone else
+    }
     const key = `${itemId}:${buyStationId}:${sellStationId}`;
     const existing = this.arbitrageClaims.get(key);
     if (!existing) return false;
@@ -279,6 +305,8 @@ export class GameCache {
   constructor(
     private db: DB,
     private logger: TrainingLogger,
+    private redis: RedisCache | null,
+    private tenantId: string,
   ) {}
 
   async initialize(api: ApiClient): Promise<void> {
@@ -294,47 +322,59 @@ export class GameCache {
 
   // ── Static Cache Helpers ──
 
-  private getStatic(key: string, gameVersion?: string): string | null {
-    const row = gameVersion
-      ? this.db.select({ data: cache.data }).from(cache)
-          .where(and(eq(cache.key, key), eq(cache.gameVersion, gameVersion))).get()
-      : this.db.select({ data: cache.data }).from(cache)
-          .where(eq(cache.key, key)).get();
-    return row?.data ?? null;
+  private async getStatic(key: string, gameVersion?: string): Promise<string | null> {
+    const rows = gameVersion
+      ? await this.db.select({ data: cache.data }).from(cache)
+          .where(and(eq(cache.key, key), eq(cache.gameVersion, gameVersion), eq(cache.tenantId, this.tenantId)))
+          .limit(1)
+      : await this.db.select({ data: cache.data }).from(cache)
+          .where(and(eq(cache.key, key), eq(cache.tenantId, this.tenantId)))
+          .limit(1);
+    return rows[0]?.data ?? null;
   }
 
-  private setStatic(key: string, data: string, gameVersion: string): void {
-    this.db.insert(cache).values({ key, data, gameVersion, fetchedAt: Date.now() })
-      .onConflictDoUpdate({ target: cache.key, set: { data, gameVersion, fetchedAt: Date.now() } })
-      .run();
+  private async setStatic(key: string, data: string, gameVersion: string): Promise<void> {
+    await this.db.insert(cache).values({ tenantId: this.tenantId, key, data, gameVersion, fetchedAt: Date.now() })
+      .onConflictDoUpdate({ target: [cache.tenantId, cache.key], set: { data, gameVersion, fetchedAt: Date.now() } });
   }
 
-  private deleteStatic(key: string): void {
-    this.db.delete(cache).where(eq(cache.key, key)).run();
+  private async deleteStatic(key: string): Promise<void> {
+    await this.db.delete(cache).where(and(eq(cache.key, key), eq(cache.tenantId, this.tenantId)));
   }
 
-  private getAllByPrefix(prefix: string): Array<{ key: string; data: string }> {
-    return this.db.select({ key: cache.key, data: cache.data }).from(cache)
-      .where(like(cache.key, `${prefix}%`)).all();
+  private async getAllByPrefix(prefix: string): Promise<Array<{ key: string; data: string }>> {
+    return await this.db.select({ key: cache.key, data: cache.data }).from(cache)
+      .where(and(like(cache.key, `${prefix}%`), eq(cache.tenantId, this.tenantId)));
   }
 
   // ── Timed Cache Helpers ──
 
-  private getTimed(key: string): string | null {
-    const row = this.db.select().from(timedCache).where(eq(timedCache.key, key)).get();
+  private async getTimed(key: string): Promise<string | null> {
+    // Check Redis first when available
+    if (this.redis) {
+      const redisVal = await this.redis.getTimed(key);
+      if (redisVal !== null) return redisVal;
+    }
+    const rows = await this.db.select().from(timedCache)
+      .where(and(eq(timedCache.key, key), eq(timedCache.tenantId, this.tenantId)))
+      .limit(1);
+    const row = rows[0];
     if (!row) return null;
     if (Date.now() - row.fetchedAt > row.ttlMs) return null;
     return row.data;
   }
 
-  private setTimed(key: string, data: string, ttlMs: number): void {
-    this.db.insert(timedCache).values({ key, data, fetchedAt: Date.now(), ttlMs })
-      .onConflictDoUpdate({ target: timedCache.key, set: { data, fetchedAt: Date.now(), ttlMs } })
-      .run();
+  private async setTimed(key: string, data: string, ttlMs: number): Promise<void> {
+    // Write-through: Redis + DB
+    if (this.redis) {
+      await this.redis.setTimed(key, data, ttlMs);
+    }
+    await this.db.insert(timedCache).values({ tenantId: this.tenantId, key, data, fetchedAt: Date.now(), ttlMs })
+      .onConflictDoUpdate({ target: [timedCache.tenantId, timedCache.key], set: { data, fetchedAt: Date.now(), ttlMs } });
   }
 
-  private clearTimedByPattern(pattern: string): void {
-    this.db.delete(timedCache).where(like(timedCache.key, pattern)).run();
+  private async clearTimedByPattern(pattern: string): Promise<void> {
+    await this.db.delete(timedCache).where(and(like(timedCache.key, pattern), eq(timedCache.tenantId, this.tenantId)));
   }
 
   // ── Galaxy Map (static, version-gated) ──
@@ -346,7 +386,7 @@ export class GameCache {
     }
 
     // Version-gated: only refetch galaxy when game version changes
-    const cachedRaw = this.getStatic("galaxy_map", this.gameVersion);
+    const cachedRaw = await this.getStatic("galaxy_map", this.gameVersion);
     let cachedCount = 0;
     if (cachedRaw) {
       const systems = JSON.parse(cachedRaw) as StarSystem[];
@@ -357,16 +397,16 @@ export class GameCache {
         return systems;
       }
       console.log(`[Cache] Galaxy cache empty — deleting`);
-      this.deleteStatic("galaxy_map");
+      await this.deleteStatic("galaxy_map");
     }
 
     // Check for old version cache (migrate to current version without re-fetching)
-    const anyVersionRaw = this.getStatic("galaxy_map");
+    const anyVersionRaw = await this.getStatic("galaxy_map");
     if (anyVersionRaw) {
       const oldSystems = JSON.parse(anyVersionRaw) as StarSystem[];
       if (oldSystems.length > 0) {
         console.log(`[Cache] Galaxy from old version cache: ${oldSystems.length} systems — migrating to ${this.gameVersion}`);
-        this.setStatic("galaxy_map", anyVersionRaw, this.gameVersion);
+        await this.setStatic("galaxy_map", anyVersionRaw, this.gameVersion);
         return oldSystems;
       }
     }
@@ -375,7 +415,7 @@ export class GameCache {
     const systems = await api.getMap();
     console.log(`[Cache] API returned ${systems.length} systems`);
     if (systems.length > 0 && systems.length >= cachedCount) {
-      this.setStatic("galaxy_map", JSON.stringify(systems), this.gameVersion);
+      await this.setStatic("galaxy_map", JSON.stringify(systems), this.gameVersion);
     }
     return systems;
   }
@@ -383,7 +423,7 @@ export class GameCache {
   // ── Catalogs ──
 
   async getItemCatalog(api: ApiClient): Promise<CatalogItem[]> {
-    const cached = this.getStatic("item_catalog", this.gameVersion);
+    const cached = await this.getStatic("item_catalog", this.gameVersion);
     if (cached) {
       const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
       // Re-fetch if cache is missing cpuCost field (added later for module fit checks)
@@ -411,44 +451,44 @@ export class GameCache {
     }
 
     const normalized = allItems.map(normalizeCatalogItem);
-    this.setStatic("item_catalog", JSON.stringify(normalized), this.gameVersion);
+    await this.setStatic("item_catalog", JSON.stringify(normalized), this.gameVersion);
     console.log(`[Cache] Cached ${normalized.length} items`);
     return normalized;
   }
 
   /** Read ship catalog from cache without fetching (no API needed) */
-  getCachedShipCatalog(): ShipClass[] | null {
-    const cached = this.getStatic("ship_catalog");
+  async getCachedShipCatalog(): Promise<ShipClass[] | null> {
+    const cached = await this.getStatic("ship_catalog");
     if (!cached) return null;
     const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
     return raw.length > 0 ? raw.map(normalizeShipClass) : null;
   }
 
   /** Read item catalog from cache without fetching (no API needed) */
-  getCachedItemCatalog(): CatalogItem[] | null {
-    const cached = this.getStatic("item_catalog");
+  async getCachedItemCatalog(): Promise<CatalogItem[] | null> {
+    const cached = await this.getStatic("item_catalog");
     if (!cached) return null;
     const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
     return raw.length > 0 ? raw.map(normalizeCatalogItem) : null;
   }
 
   /** Read skill tree from cache without fetching (no API needed) */
-  getCachedSkillTree(): Skill[] | null {
-    const cached = this.getStatic("skill_tree");
+  async getCachedSkillTree(): Promise<Skill[] | null> {
+    const cached = await this.getStatic("skill_tree");
     if (!cached) return null;
     return JSON.parse(cached) as Skill[];
   }
 
   /** Read recipe catalog from cache without fetching (no API needed) */
-  getCachedRecipes(): Recipe[] | null {
-    const cached = this.getStatic("recipe_catalog");
+  async getCachedRecipes(): Promise<Recipe[] | null> {
+    const cached = await this.getStatic("recipe_catalog");
     if (!cached) return null;
     const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
     return raw.length > 0 ? raw.map(normalizeRecipe) : null;
   }
 
   async getShipCatalog(api: ApiClient): Promise<ShipClass[]> {
-    const cached = this.getStatic("ship_catalog", this.gameVersion);
+    const cached = await this.getStatic("ship_catalog", this.gameVersion);
     if (cached) {
       const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
       // Re-fetch if cache is missing region field (added later)
@@ -458,22 +498,22 @@ export class GameCache {
 
     const raw = await this.fetchAllCatalogPages(api, "ships");
     const normalized = raw.map(normalizeShipClass);
-    this.setStatic("ship_catalog", JSON.stringify(normalized), this.gameVersion);
+    await this.setStatic("ship_catalog", JSON.stringify(normalized), this.gameVersion);
     console.log(`[Cache] Cached ${normalized.length} ships`);
     return normalized;
   }
 
   async getSkillTree(api: ApiClient): Promise<Skill[]> {
-    const cached = this.getStatic("skill_tree", this.gameVersion);
+    const cached = await this.getStatic("skill_tree", this.gameVersion);
     if (cached) return JSON.parse(cached);
     const items = await this.fetchAllCatalogPages(api, "skills");
-    this.setStatic("skill_tree", JSON.stringify(items), this.gameVersion);
+    await this.setStatic("skill_tree", JSON.stringify(items), this.gameVersion);
     console.log(`[Cache] Cached ${items.length} skills`);
     return items as unknown as Skill[];
   }
 
   async getRecipes(api: ApiClient): Promise<Recipe[]> {
-    const cached = this.getStatic("recipe_catalog", this.gameVersion);
+    const cached = await this.getStatic("recipe_catalog", this.gameVersion);
     if (cached) {
       const raw = JSON.parse(cached) as Array<Record<string, unknown>>;
       if (raw.length >= 50) return raw.map(normalizeRecipe);
@@ -502,7 +542,7 @@ export class GameCache {
     }
 
     const normalized = allItems.map(normalizeRecipe);
-    this.setStatic("recipe_catalog", JSON.stringify(normalized), this.gameVersion);
+    await this.setStatic("recipe_catalog", JSON.stringify(normalized), this.gameVersion);
     console.log(`[Cache] Cached ${normalized.length} recipes`);
     return normalized;
   }
@@ -522,14 +562,14 @@ export class GameCache {
 
   // ── Market Prices (timed cache) ──
 
-  getMarketPrices(stationId: string): MarketPrice[] | null {
-    const cached = this.getTimed(`market:${stationId}`);
+  async getMarketPrices(stationId: string): Promise<MarketPrice[] | null> {
+    const cached = await this.getTimed(`market:${stationId}`);
     if (!cached) return null;
     return JSON.parse(cached);
   }
 
-  setMarketPrices(stationId: string, prices: MarketPrice[], tick: number, ttlMs = 1_800_000): void {
-    this.setTimed(`market:${stationId}`, JSON.stringify(prices), ttlMs);
+  async setMarketPrices(stationId: string, prices: MarketPrice[], tick: number, ttlMs = 1_800_000): Promise<void> {
+    await this.setTimed(`market:${stationId}`, JSON.stringify(prices), ttlMs);
     this.marketFetchedAt.set(stationId, Date.now());
     this.marketDirty = true;
     this.logger.logMarketPrices(tick, stationId, prices.map((p) => ({
@@ -540,21 +580,21 @@ export class GameCache {
 
   // ── Market Insights ──
 
-  getMarketInsights(stationId: string): MarketInsight[] | null {
-    const cached = this.getTimed(`insights:${stationId}`);
+  async getMarketInsights(stationId: string): Promise<MarketInsight[] | null> {
+    const cached = await this.getTimed(`insights:${stationId}`);
     if (!cached) return null;
     return JSON.parse(cached);
   }
 
-  setMarketInsights(stationId: string, insights: MarketInsight[], ttlMs = 1_800_000): void {
-    this.setTimed(`insights:${stationId}`, JSON.stringify(insights), ttlMs);
+  async setMarketInsights(stationId: string, insights: MarketInsight[], ttlMs = 1_800_000): Promise<void> {
+    await this.setTimed(`insights:${stationId}`, JSON.stringify(insights), ttlMs);
     this.insightFetchedAt.set(stationId, Date.now());
   }
 
-  getAllCachedInsights(): MarketInsight[] {
+  async getAllCachedInsights(): Promise<MarketInsight[]> {
     const all: MarketInsight[] = [];
     for (const stationId of this.insightFetchedAt.keys()) {
-      const insights = this.getMarketInsights(stationId);
+      const insights = await this.getMarketInsights(stationId);
       if (insights) all.push(...insights);
     }
     return all;
@@ -567,19 +607,19 @@ export class GameCache {
 
   // ── System Details ──
 
-  getSystemDetail(systemId: string): StarSystem | null {
-    const cached = this.getTimed(`system:${systemId}`);
+  async getSystemDetail(systemId: string): Promise<StarSystem | null> {
+    const cached = await this.getTimed(`system:${systemId}`);
     if (!cached) return null;
     return JSON.parse(cached);
   }
 
-  setSystemDetail(systemId: string, system: StarSystem, ttlMs = 3_600_000): void {
-    this.setTimed(`system:${systemId}`, JSON.stringify(system), ttlMs);
-    this.setStatic(`system_detail:${systemId}`, JSON.stringify(system), "persistent");
+  async setSystemDetail(systemId: string, system: StarSystem, ttlMs = 3_600_000): Promise<void> {
+    await this.setTimed(`system:${systemId}`, JSON.stringify(system), ttlMs);
+    await this.setStatic(`system_detail:${systemId}`, JSON.stringify(system), "persistent");
   }
 
-  loadPersistedSystemDetails(): StarSystem[] {
-    const entries = this.getAllByPrefix("system_detail:");
+  async loadPersistedSystemDetails(): Promise<StarSystem[]> {
+    const entries = await this.getAllByPrefix("system_detail:");
     return entries.map((e) => JSON.parse(e.data) as StarSystem);
   }
 
@@ -599,10 +639,10 @@ export class GameCache {
     return this.getAllMarketFreshness(ttlMs).filter((f) => f.fresh).map((f) => f.stationId);
   }
 
-  getAllCachedMarketPrices(): Array<{ stationId: string; prices: MarketPrice[]; fetchedAt: number }> {
+  async getAllCachedMarketPrices(): Promise<Array<{ stationId: string; prices: MarketPrice[]; fetchedAt: number }>> {
     const results: Array<{ stationId: string; prices: MarketPrice[]; fetchedAt: number }> = [];
     for (const [stationId, fetchedAt] of this.marketFetchedAt.entries()) {
-      const prices = this.getMarketPrices(stationId);
+      const prices = await this.getMarketPrices(stationId);
       if (prices) results.push({ stationId, prices, fetchedAt });
     }
     return results;
@@ -617,11 +657,11 @@ export class GameCache {
   private static SHIPYARD_TTL = 24 * 3_600_000; // 24h persistence
   private static SHIPYARD_FRESH = 1_800_000;     // 30min "fresh" window
 
-  setShipyardData(stationId: string, ships: Array<{ id: string; name: string; classId: string; price: number }>): void {
+  async setShipyardData(stationId: string, ships: Array<{ id: string; name: string; classId: string; price: number }>): Promise<void> {
     const fetchedAt = Date.now();
     this.shipyardCache.set(stationId, { ships, fetchedAt });
-    // Persist to SQLite
-    this.setTimed(`shipyard:${stationId}`, JSON.stringify(ships), GameCache.SHIPYARD_TTL);
+    // Persist to DB
+    await this.setTimed(`shipyard:${stationId}`, JSON.stringify(ships), GameCache.SHIPYARD_TTL);
   }
 
   getShipyardData(stationId: string): Array<{ id: string; name: string; classId: string; price: number }> | null {
@@ -643,10 +683,10 @@ export class GameCache {
     return result;
   }
 
-  /** Load persisted shipyard data from SQLite into memory (call on startup) */
-  loadShipyardData(): number {
-    const rows = this.db.select().from(timedCache)
-      .where(like(timedCache.key, "shipyard:%")).all();
+  /** Load persisted shipyard data from DB into memory (call on startup) */
+  async loadShipyardData(): Promise<number> {
+    const rows = await this.db.select().from(timedCache)
+      .where(and(like(timedCache.key, "shipyard:%"), eq(timedCache.tenantId, this.tenantId)));
     let count = 0;
     const now = Date.now();
     for (const row of rows) {
@@ -662,19 +702,19 @@ export class GameCache {
   }
 
   /** Get a catalog item by ID (from cached item catalog) */
-  getCatalogItem(itemId: string): CatalogItem | null {
-    const cached = this.getStatic("item_catalog", this.gameVersion);
+  async getCatalogItem(itemId: string): Promise<CatalogItem | null> {
+    const cached = await this.getStatic("item_catalog", this.gameVersion);
     if (!cached) return null;
     const items = JSON.parse(cached) as CatalogItem[];
     return items.find(i => i.id === itemId) ?? null;
   }
 
   /** Find a station that sells a specific item (from cached market scans) */
-  findItemSeller(itemPattern: string, maxPrice: number): { stationId: string; itemId: string; price: number } | null {
+  async findItemSeller(itemPattern: string, maxPrice: number): Promise<{ stationId: string; itemId: string; price: number } | null> {
     let best: { stationId: string; itemId: string; price: number } | null = null;
     for (const [key] of this.marketFetchedAt) {
       const stationId = key;
-      const prices = this.getMarketPrices(stationId);
+      const prices = await this.getMarketPrices(stationId);
       if (!prices) continue;
       for (const p of prices) {
         if (!p.itemId.includes(itemPattern)) continue;
@@ -699,37 +739,45 @@ export class GameCache {
     return null;
   }
 
-  // ── Market Data Recovery (from SQLite history) ──
+  // ── Market Data Recovery (from DB history) ──
 
-  loadRecentMarketData(sqlite: import("bun:sqlite").Database): void {
+  async loadRecentMarketData(): Promise<void> {
     try {
       const cutoff = Math.floor(Date.now() / 1000) - 86_400;
-      const rows = sqlite.query(`
-        SELECT station_id, item_id, buy_price, sell_price, buy_volume, sell_volume, MAX(tick) as latest_tick
-        FROM market_history WHERE tick > ?
-        GROUP BY station_id, item_id ORDER BY station_id, item_id
-      `).all(cutoff) as Array<{
-        station_id: string; item_id: string; buy_price: number | null;
-        sell_price: number | null; buy_volume: number; sell_volume: number; latest_tick: number;
-      }>;
+      const rows = await this.db.select({
+        stationId: marketHistory.stationId,
+        itemId: marketHistory.itemId,
+        buyPrice: marketHistory.buyPrice,
+        sellPrice: marketHistory.sellPrice,
+        buyVolume: marketHistory.buyVolume,
+        sellVolume: marketHistory.sellVolume,
+        latestTick: sql<number>`MAX(${marketHistory.tick})`.as("latest_tick"),
+      })
+        .from(marketHistory)
+        .where(and(
+          gt(marketHistory.tick, cutoff),
+          eq(marketHistory.tenantId, this.tenantId),
+        ))
+        .groupBy(marketHistory.stationId, marketHistory.itemId)
+        .orderBy(marketHistory.stationId, marketHistory.itemId);
 
       if (rows.length === 0) return;
 
       const byStation = new Map<string, { prices: MarketPrice[]; latestTick: number }>();
       for (const row of rows) {
-        let entry = byStation.get(row.station_id);
-        if (!entry) { entry = { prices: [], latestTick: 0 }; byStation.set(row.station_id, entry); }
+        let entry = byStation.get(row.stationId);
+        if (!entry) { entry = { prices: [], latestTick: 0 }; byStation.set(row.stationId, entry); }
         entry.prices.push({
-          itemId: row.item_id,
-          itemName: row.item_id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-          buyPrice: row.buy_price, sellPrice: row.sell_price,
-          buyVolume: row.buy_volume, sellVolume: row.sell_volume,
+          itemId: row.itemId,
+          itemName: row.itemId.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+          buyPrice: row.buyPrice, sellPrice: row.sellPrice,
+          buyVolume: row.buyVolume ?? 0, sellVolume: row.sellVolume ?? 0,
         });
-        if (row.latest_tick > entry.latestTick) entry.latestTick = row.latest_tick;
+        if (row.latestTick > entry.latestTick) entry.latestTick = row.latestTick;
       }
 
       for (const [stationId, entry] of byStation) {
-        this.setTimed(`market:${stationId}`, JSON.stringify(entry.prices), 14_400_000);
+        await this.setTimed(`market:${stationId}`, JSON.stringify(entry.prices), 14_400_000);
         this.marketFetchedAt.set(stationId, entry.latestTick * 1000);
       }
 
@@ -741,18 +789,18 @@ export class GameCache {
 
   // ── Cache Management ──
 
-  setMapCache(systems: StarSystem[]): void {
-    this.setStatic("galaxy_map", JSON.stringify(systems), this.gameVersion);
+  async setMapCache(systems: StarSystem[]): Promise<void> {
+    await this.setStatic("galaxy_map", JSON.stringify(systems), this.gameVersion);
   }
 
   async refreshMap(api: ApiClient): Promise<StarSystem[]> {
     console.log("[Cache] Force-refreshing galaxy map...");
     const systems = await api.getMap();
     if (systems.length > 0) {
-      const cachedRaw = this.getStatic("galaxy_map");
+      const cachedRaw = await this.getStatic("galaxy_map");
       const cachedCount = cachedRaw ? (JSON.parse(cachedRaw) as StarSystem[]).length : 0;
       if (systems.length >= cachedCount) {
-        this.setStatic("galaxy_map", JSON.stringify(systems), this.gameVersion);
+        await this.setStatic("galaxy_map", JSON.stringify(systems), this.gameVersion);
       }
     }
     return systems;
@@ -761,19 +809,19 @@ export class GameCache {
   // ── Fleet-wide Unsellable Items (prevents all traders from repeatedly trying failed items) ──
 
   /** Mark an item as unsellable fleet-wide (30 min TTL) */
-  markUnsellable(itemId: string): void {
-    this.setTimed(`unsellable:${itemId}`, "1", 1_800_000); // 30 minutes
+  async markUnsellable(itemId: string): Promise<void> {
+    await this.setTimed(`unsellable:${itemId}`, "1", 1_800_000); // 30 minutes
   }
 
   /** Check if an item is fleet-wide blacklisted as unsellable */
-  isUnsellable(itemId: string): boolean {
-    return this.getTimed(`unsellable:${itemId}`) !== null;
+  async isUnsellable(itemId: string): Promise<boolean> {
+    return (await this.getTimed(`unsellable:${itemId}`)) !== null;
   }
 
   /** Get all currently unsellable item IDs */
-  getUnsellableItems(): string[] {
-    const rows = this.db.select({ key: timedCache.key, data: timedCache.data, fetchedAt: timedCache.fetchedAt, ttlMs: timedCache.ttlMs })
-      .from(timedCache).where(like(timedCache.key, "unsellable:%")).all();
+  async getUnsellableItems(): Promise<string[]> {
+    const rows = await this.db.select({ key: timedCache.key, data: timedCache.data, fetchedAt: timedCache.fetchedAt, ttlMs: timedCache.ttlMs })
+      .from(timedCache).where(and(like(timedCache.key, "unsellable:%"), eq(timedCache.tenantId, this.tenantId)));
     const now = Date.now();
     return rows
       .filter((r) => now - r.fetchedAt <= r.ttlMs)
@@ -781,54 +829,54 @@ export class GameCache {
   }
 
   /** Clear unsellable status for an item (e.g., when market conditions change) */
-  clearUnsellable(itemId: string): void {
-    this.db.delete(timedCache).where(eq(timedCache.key, `unsellable:${itemId}`)).run();
+  async clearUnsellable(itemId: string): Promise<void> {
+    await this.db.delete(timedCache).where(and(eq(timedCache.key, `unsellable:${itemId}`), eq(timedCache.tenantId, this.tenantId)));
   }
 
   // ── Facility-only Recipes (prevents crafters from retrying known facility-only recipes) ──
 
   /** Mark a recipe as facility-only (persists for game version lifetime) */
-  markFacilityOnly(recipeId: string): void {
-    this.setStatic(`facility_only:${recipeId}`, "1", this.gameVersion);
+  async markFacilityOnly(recipeId: string): Promise<void> {
+    await this.setStatic(`facility_only:${recipeId}`, "1", this.gameVersion);
   }
 
   /** Check if a recipe is known to be facility-only */
-  isFacilityOnly(recipeId: string): boolean {
-    return this.getStatic(`facility_only:${recipeId}`) !== null;
+  async isFacilityOnly(recipeId: string): Promise<boolean> {
+    return (await this.getStatic(`facility_only:${recipeId}`)) !== null;
   }
 
   /** Get all known facility-only recipe IDs */
-  getFacilityOnlyRecipes(): string[] {
-    return this.getAllByPrefix("facility_only:").map((r) => r.key.replace("facility_only:", ""));
+  async getFacilityOnlyRecipes(): Promise<string[]> {
+    return (await this.getAllByPrefix("facility_only:")).map((r) => r.key.replace("facility_only:", ""));
   }
 
   /** Temporarily blacklist a recipe that failed to craft (10 min TTL) */
-  markRecipeFailed(recipeId: string): void {
-    this.setTimed(`recipe_failed:${recipeId}`, "1", 600_000); // 10 minutes
+  async markRecipeFailed(recipeId: string): Promise<void> {
+    await this.setTimed(`recipe_failed:${recipeId}`, "1", 600_000); // 10 minutes
   }
 
   /** Check if a recipe is temporarily blacklisted */
-  isRecipeFailed(recipeId: string): boolean {
-    return this.getTimed(`recipe_failed:${recipeId}`) !== null;
+  async isRecipeFailed(recipeId: string): Promise<boolean> {
+    return (await this.getTimed(`recipe_failed:${recipeId}`)) !== null;
   }
 
   // ── Material Unavailability (per-bot, persists across routine restarts) ──
 
   /** Mark a material as unavailable for a specific bot (10 min TTL) */
-  markMaterialUnavailable(botId: string, itemId: string): void {
-    this.setTimed(`material_unavail:${botId}:${itemId}`, "1", 600_000); // 10 minutes
+  async markMaterialUnavailable(botId: string, itemId: string): Promise<void> {
+    await this.setTimed(`material_unavail:${botId}:${itemId}`, "1", 600_000); // 10 minutes
   }
 
   /** Check if a material is unavailable for a specific bot */
-  isMaterialUnavailable(botId: string, itemId: string): boolean {
-    return this.getTimed(`material_unavail:${botId}:${itemId}`) !== null;
+  async isMaterialUnavailable(botId: string, itemId: string): Promise<boolean> {
+    return (await this.getTimed(`material_unavail:${botId}:${itemId}`)) !== null;
   }
 
   /** Get all unavailable material IDs for a specific bot */
-  getUnavailableMaterials(botId: string): string[] {
+  async getUnavailableMaterials(botId: string): Promise<string[]> {
     const prefix = `material_unavail:${botId}:`;
-    const rows = this.db.select({ key: timedCache.key, fetchedAt: timedCache.fetchedAt, ttlMs: timedCache.ttlMs })
-      .from(timedCache).where(like(timedCache.key, `${prefix}%`)).all();
+    const rows = await this.db.select({ key: timedCache.key, fetchedAt: timedCache.fetchedAt, ttlMs: timedCache.ttlMs })
+      .from(timedCache).where(and(like(timedCache.key, `${prefix}%`), eq(timedCache.tenantId, this.tenantId)));
     const now = Date.now();
     return rows
       .filter((r) => now - r.fetchedAt <= r.ttlMs)
@@ -852,37 +900,40 @@ export class GameCache {
     return (this._facilityMaterialNeeds.get(itemId) ?? 0) > 0;
   }
 
-  clearGalaxyCache(): void { this.deleteStatic("galaxy_map"); }
-  clearMarketCache(): void { this.clearTimedByPattern("market:%"); }
+  async clearGalaxyCache(): Promise<void> { await this.deleteStatic("galaxy_map"); }
+  async clearMarketCache(): Promise<void> { await this.clearTimedByPattern("market:%"); }
 
-  clearAllCache(): void {
-    this.db.delete(cache).run();
-    this.db.delete(timedCache).run();
+  async clearAllCache(): Promise<void> {
+    await this.db.delete(cache).where(eq(cache.tenantId, this.tenantId));
+    await this.db.delete(timedCache).where(eq(timedCache.tenantId, this.tenantId));
   }
 
   // ── POI Persistence (institutional memory across restarts) ──
 
   /** Persist a POI discovery (survives restarts, no TTL) */
-  persistPoi(poiId: string, systemId: string, poi: PoiSummary): void {
-    this.db.insert(poiCache).values({
+  async persistPoi(poiId: string, systemId: string, poi: PoiSummary): Promise<void> {
+    await this.db.insert(poiCache).values({
+      tenantId: this.tenantId,
       poiId,
       systemId,
       data: JSON.stringify(poi),
       updatedAt: new Date().toISOString(),
     }).onConflictDoUpdate({
-      target: poiCache.poiId,
+      target: [poiCache.tenantId, poiCache.poiId],
       set: { systemId, data: JSON.stringify(poi), updatedAt: new Date().toISOString() },
-    }).run();
+    });
   }
 
   /** Persist multiple POIs from a system scan (preserves existing resource data) */
-  persistSystemPois(systemId: string, pois: PoiSummary[]): void {
+  async persistSystemPois(systemId: string, pois: PoiSummary[]): Promise<void> {
     for (const poi of pois) {
       // Don't overwrite existing POIs that have resource data with empty-resource versions
       // (get_system returns POIs with resources: [], get_poi fills in the real data)
       if (poi.resources.length === 0) {
-        const existing = this.db.select({ data: poiCache.data }).from(poiCache)
-          .where(eq(poiCache.poiId, poi.id)).get();
+        const existingRows = await this.db.select({ data: poiCache.data }).from(poiCache)
+          .where(and(eq(poiCache.poiId, poi.id), eq(poiCache.tenantId, this.tenantId)))
+          .limit(1);
+        const existing = existingRows[0];
         if (existing) {
           try {
             const prev = JSON.parse(existing.data) as PoiSummary;
@@ -890,13 +941,13 @@ export class GameCache {
           } catch { /* corrupt — overwrite */ }
         }
       }
-      this.persistPoi(poi.id, systemId, poi);
+      await this.persistPoi(poi.id, systemId, poi);
     }
   }
 
   /** Load all persisted POIs (for galaxy hydration on startup) */
-  loadPersistedPois(): Array<{ poiId: string; systemId: string; poi: PoiSummary }> {
-    const rows = this.db.select().from(poiCache).all();
+  async loadPersistedPois(): Promise<Array<{ poiId: string; systemId: string; poi: PoiSummary }>> {
+    const rows = await this.db.select().from(poiCache).where(eq(poiCache.tenantId, this.tenantId));
     const results: Array<{ poiId: string; systemId: string; poi: PoiSummary }> = [];
     for (const row of rows) {
       try {
@@ -907,8 +958,9 @@ export class GameCache {
   }
 
   /** Load persisted POIs for a specific system */
-  loadPersistedSystemPois(systemId: string): PoiSummary[] {
-    const rows = this.db.select().from(poiCache).where(eq(poiCache.systemId, systemId)).all();
+  async loadPersistedSystemPois(systemId: string): Promise<PoiSummary[]> {
+    const rows = await this.db.select().from(poiCache)
+      .where(and(eq(poiCache.systemId, systemId), eq(poiCache.tenantId, this.tenantId)));
     const results: PoiSummary[] = [];
     for (const row of rows) {
       try { results.push(JSON.parse(row.data)); } catch { /* skip */ }
@@ -917,8 +969,8 @@ export class GameCache {
   }
 
   /** Find all belts containing a specific resource (searches persisted POI data) */
-  findBeltsWithResource(resourceId: string): Array<{ poiId: string; systemId: string; name: string; richness: number; remaining: number }> {
-    const rows = this.db.select().from(poiCache).all();
+  async findBeltsWithResource(resourceId: string): Promise<Array<{ poiId: string; systemId: string; name: string; richness: number; remaining: number }>> {
+    const rows = await this.db.select().from(poiCache).where(eq(poiCache.tenantId, this.tenantId));
     const results: Array<{ poiId: string; systemId: string; name: string; richness: number; remaining: number }> = [];
     for (const row of rows) {
       try {
@@ -940,35 +992,36 @@ export class GameCache {
   }
 
   /** Count persisted POIs */
-  getPersistedPoiCount(): number {
-    const result = this.db.select({ count: sql<number>`count(*)` }).from(poiCache).get();
-    return result?.count ?? 0;
+  async getPersistedPoiCount(): Promise<number> {
+    const rows = await this.db.select({ count: sql<number>`count(*)` }).from(poiCache)
+      .where(eq(poiCache.tenantId, this.tenantId));
+    return rows[0]?.count ?? 0;
   }
 
   // ── Routine Checkpoints (Phase 6: crash recovery) ──
 
   /** Save a routine checkpoint so it can resume after crash/restart */
-  saveCheckpoint(botId: string, routine: string, data: Record<string, unknown>): void {
-    this.setTimed(`checkpoint:${botId}`, JSON.stringify({ routine, data, savedAt: Date.now() }), 3_600_000); // 1h TTL
+  async saveCheckpoint(botId: string, routine: string, data: Record<string, unknown>): Promise<void> {
+    await this.setTimed(`checkpoint:${botId}`, JSON.stringify({ routine, data, savedAt: Date.now() }), 3_600_000); // 1h TTL
   }
 
   /** Load a routine checkpoint for a bot (returns null if expired/missing) */
-  loadCheckpoint(botId: string): { routine: string; data: Record<string, unknown>; savedAt: number } | null {
-    const raw = this.getTimed(`checkpoint:${botId}`);
+  async loadCheckpoint(botId: string): Promise<{ routine: string; data: Record<string, unknown>; savedAt: number } | null> {
+    const raw = await this.getTimed(`checkpoint:${botId}`);
     if (!raw) return null;
     try { return JSON.parse(raw); } catch { return null; }
   }
 
   /** Clear a bot's checkpoint (call on clean routine completion) */
-  clearCheckpoint(botId: string): void {
-    this.db.delete(timedCache).where(eq(timedCache.key, `checkpoint:${botId}`)).run();
+  async clearCheckpoint(botId: string): Promise<void> {
+    await this.db.delete(timedCache).where(and(eq(timedCache.key, `checkpoint:${botId}`), eq(timedCache.tenantId, this.tenantId)));
   }
 
-  getCacheStatus(): Record<string, { cached: boolean; version: string | null }> {
+  async getCacheStatus(): Promise<Record<string, { cached: boolean; version: string | null }>> {
     const keys = ["galaxy_map", "item_catalog", "ship_catalog", "skill_tree", "recipe_catalog"];
     const status: Record<string, { cached: boolean; version: string | null }> = {};
     for (const key of keys) {
-      const cached = this.getStatic(key, this.gameVersion);
+      const cached = await this.getStatic(key, this.gameVersion);
       status[key] = { cached: cached !== null, version: cached ? this.gameVersion : null };
     }
     return status;

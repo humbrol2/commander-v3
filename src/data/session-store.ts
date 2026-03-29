@@ -1,9 +1,9 @@
 /**
  * Bot credential and session management — Drizzle ORM version.
+ * Async PostgreSQL with tenant scoping.
  */
 
-import { eq } from "drizzle-orm";
-import { sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DB } from "./db";
 import { botSessions } from "./schema";
 
@@ -17,10 +17,17 @@ export interface BotCredentials {
 }
 
 export class SessionStore {
-  constructor(private db: DB) {}
+  constructor(
+    private db: DB,
+    private tenantId: string,
+  ) {}
 
-  listBots(): BotCredentials[] {
-    return this.db.select().from(botSessions).all().map((r) => ({
+  async listBots(): Promise<BotCredentials[]> {
+    const rows = await this.db
+      .select()
+      .from(botSessions)
+      .where(eq(botSessions.tenantId, this.tenantId));
+    return rows.map((r) => ({
       username: r.username,
       password: r.password,
       empire: r.empire,
@@ -30,8 +37,18 @@ export class SessionStore {
     }));
   }
 
-  getBot(username: string): BotCredentials | null {
-    const row = this.db.select().from(botSessions).where(eq(botSessions.username, username)).get();
+  async getBot(username: string): Promise<BotCredentials | null> {
+    const rows = await this.db
+      .select()
+      .from(botSessions)
+      .where(
+        and(
+          eq(botSessions.tenantId, this.tenantId),
+          eq(botSessions.username, username),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
     if (!row) return null;
     return {
       username: row.username,
@@ -43,44 +60,65 @@ export class SessionStore {
     };
   }
 
-  upsertBot(creds: Omit<BotCredentials, "sessionId" | "sessionExpiresAt">): void {
-    this.db.insert(botSessions).values({
-      username: creds.username,
-      password: creds.password,
-      empire: creds.empire,
-      playerId: creds.playerId,
-    }).onConflictDoUpdate({
-      target: botSessions.username,
-      set: {
+  async upsertBot(creds: Omit<BotCredentials, "sessionId" | "sessionExpiresAt">): Promise<void> {
+    await this.db
+      .insert(botSessions)
+      .values({
+        tenantId: this.tenantId,
+        username: creds.username,
         password: creds.password,
         empire: creds.empire,
         playerId: creds.playerId,
-        updatedAt: sql`datetime('now')`,
-      },
-    }).run();
+      })
+      .onConflictDoUpdate({
+        target: [botSessions.tenantId, botSessions.username],
+        set: {
+          password: creds.password,
+          empire: creds.empire,
+          playerId: creds.playerId,
+          updatedAt: new Date(),
+        },
+      });
   }
 
-  updateSession(username: string, sessionId: string, expiresAt: string): void {
-    this.db.update(botSessions)
-      .set({ sessionId, sessionExpiresAt: expiresAt, updatedAt: sql`datetime('now')` })
-      .where(eq(botSessions.username, username))
-      .run();
+  async updateSession(username: string, sessionId: string, expiresAt: string): Promise<void> {
+    await this.db
+      .update(botSessions)
+      .set({ sessionId, sessionExpiresAt: expiresAt, updatedAt: new Date() })
+      .where(
+        and(
+          eq(botSessions.tenantId, this.tenantId),
+          eq(botSessions.username, username),
+        ),
+      );
   }
 
-  clearSession(username: string): void {
-    this.db.update(botSessions)
-      .set({ sessionId: null, sessionExpiresAt: null, updatedAt: sql`datetime('now')` })
-      .where(eq(botSessions.username, username))
-      .run();
+  async clearSession(username: string): Promise<void> {
+    await this.db
+      .update(botSessions)
+      .set({ sessionId: null, sessionExpiresAt: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(botSessions.tenantId, this.tenantId),
+          eq(botSessions.username, username),
+        ),
+      );
   }
 
-  removeBot(username: string): boolean {
-    const result = this.db.delete(botSessions).where(eq(botSessions.username, username)).run();
-    return (result as unknown as { changes: number }).changes > 0;
+  async removeBot(username: string): Promise<boolean> {
+    const result = await this.db
+      .delete(botSessions)
+      .where(
+        and(
+          eq(botSessions.tenantId, this.tenantId),
+          eq(botSessions.username, username),
+        ),
+      );
+    return (result as unknown as { rowCount: number }).rowCount > 0;
   }
 
-  isSessionValid(username: string): boolean {
-    const bot = this.getBot(username);
+  async isSessionValid(username: string): Promise<boolean> {
+    const bot = await this.getBot(username);
     if (!bot?.sessionId || !bot.sessionExpiresAt) return false;
     return new Date(bot.sessionExpiresAt) > new Date();
   }

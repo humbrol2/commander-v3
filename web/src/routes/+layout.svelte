@@ -13,6 +13,7 @@
 		clearNotifications,
 		dismissNotification,
 	} from "$stores/websocket";
+	import { isAuthenticated, auth } from "$stores/auth";
 	import ShortcutsOverlay from "$lib/components/ShortcutsOverlay.svelte";
 	import CommandPalette from "$lib/components/CommandPalette.svelte";
 
@@ -90,7 +91,17 @@
 	}
 
 	onMount(() => {
-		connect();
+		// Only connect WebSocket if authenticated (or if on login/register page, skip)
+		const path = window.location.pathname;
+		const isAuthPage = path === "/login" || path === "/register";
+		if (!isAuthPage) {
+			if ($isAuthenticated) {
+				connect();
+			} else {
+				// Redirect to login if not authenticated
+				goto("/login");
+			}
+		}
 		window.addEventListener("keydown", handleKeydown);
 	});
 
@@ -212,6 +223,19 @@
 				/>
 			</svg>
 		</a>
+
+		<!-- Logout -->
+		{#if $isAuthenticated}
+			<button
+				onclick={() => { auth.logout(); goto("/login"); }}
+				class="p-2 text-chrome-silver hover:text-claw-red transition-colors"
+				title="Logout"
+			>
+				<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+				</svg>
+			</button>
+		{/if}
 	</div>
 </nav>
 

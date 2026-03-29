@@ -1,14 +1,16 @@
 /**
  * Bun HTTP + WebSocket server — v3.
  * Serves the Svelte frontend and provides a WebSocket API for real-time dashboard updates.
+ * JWT authentication on WebSocket upgrade and REST API routes.
  */
 
 import type { ServerWebSocket } from "bun";
 import type { ServerMessage, ClientMessage } from "../types/protocol";
 import type { DB } from "../data/db";
 import type { TrainingLogger } from "../data/training-logger";
-import { gt, desc, sql } from "drizzle-orm";
+import { gt, desc, sql, eq, and } from "drizzle-orm";
 import { creditHistory, marketHistory, activityLog, commanderLog as commanderLogTable, factionTransactions, financialEvents } from "../data/schema";
+import { verifyToken, extractToken, type TokenPayload } from "../auth/jwt";
 
 const RANGE_MS: Record<string, number> = {
   "1h": 60 * 60 * 1000,
@@ -23,7 +25,10 @@ export interface ServerOptions {
   host: string;
   staticDir: string;
   db?: DB;
+  tenantId?: string;
   trainingLogger?: TrainingLogger;
+  /** If true, require JWT auth on WS and API (multi-tenant mode). If false, open access (legacy). */
+  requireAuth?: boolean;
   onClientMessage?: (ws: ServerWebSocket<WsData>, msg: ClientMessage) => void;
   onClientConnect?: (ws: ServerWebSocket<WsData>) => void;
 }
@@ -31,6 +36,8 @@ export interface ServerOptions {
 interface WsData {
   id: string;
   connectedAt: number;
+  tenantId?: string;
+  username?: string;
 }
 
 const clients = new Set<ServerWebSocket<WsData>>();
@@ -43,17 +50,52 @@ export function createServer(opts: ServerOptions) {
     async fetch(req, server) {
       const url = new URL(req.url);
 
+      // CORS preflight
+      if (req.method === "OPTIONS") {
+        return new Response(null, {
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type",
+          },
+        });
+      }
+
       // WebSocket upgrade
       if (url.pathname === "/ws") {
-        const upgraded = server.upgrade(req, {
-          data: { id: crypto.randomUUID(), connectedAt: Date.now() },
-        });
+        let wsData: WsData = { id: crypto.randomUUID(), connectedAt: Date.now() };
+
+        // Authenticate if auth is required
+        if (opts.requireAuth) {
+          const token = url.searchParams.get("token");
+          if (!token) return new Response("Unauthorized: token required", { status: 401 });
+          const payload = await verifyToken(token);
+          if (!payload) return new Response("Unauthorized: invalid token", { status: 401 });
+          wsData.tenantId = payload.tenantId ?? payload.sub;
+          wsData.username = payload.username;
+        }
+
+        const upgraded = server.upgrade(req, { data: wsData });
         if (upgraded) return undefined;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
 
       // API routes
       if (url.pathname.startsWith("/api/")) {
+        // Health endpoint is always public
+        if (url.pathname === "/api/health") {
+          return Response.json({ status: "ok", clients: clients.size });
+        }
+
+        // Authenticate REST API if required
+        if (opts.requireAuth) {
+          const authHeader = req.headers.get("Authorization");
+          const token = extractToken(authHeader) ?? url.searchParams.get("token");
+          if (!token) return Response.json({ error: "Unauthorized" }, { status: 401 });
+          const payload = await verifyToken(token);
+          if (!payload) return Response.json({ error: "Invalid token" }, { status: 401 });
+        }
+
         return handleApiRoute(url, opts);
       }
 
@@ -123,7 +165,7 @@ export function getClientCount(): number {
   return clients.size;
 }
 
-// REST API routes
+// REST API routes — all queries are now async
 async function handleApiRoute(url: URL, opts: ServerOptions): Promise<Response> {
   const path = url.pathname.replace("/api/", "");
 
@@ -136,12 +178,12 @@ async function handleApiRoute(url: URL, opts: ServerOptions): Promise<Response> 
   }
 
   if (path === "training/shadow-stats" && opts.trainingLogger) {
-    const stats = opts.trainingLogger.getShadowStats();
+    const stats = await opts.trainingLogger.getShadowStats();
     return Response.json(stats);
   }
 
   if (path === "training/stats" && opts.trainingLogger) {
-    const stats = opts.trainingLogger.getStats();
+    const stats = await opts.trainingLogger.getStats();
     return Response.json({
       decisions: { count: stats.decisions, byAction: {}, byBot: {} },
       snapshots: { count: stats.snapshots },
@@ -188,39 +230,35 @@ async function handleApiRoute(url: URL, opts: ServerOptions): Promise<Response> 
 }
 
 /** GET /api/economy/history?range=1h|1d|1w|1m — bucketed revenue/cost/profit */
-function handleEconomyHistory(url: URL, logger: TrainingLogger): Response {
+async function handleEconomyHistory(url: URL, logger: TrainingLogger): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
-  // Bucket size: 1min for 1h, 5min for 1d, 1hr for 1w, 6hr for 1m
   const bucketMs = range === "1h" ? 60_000 : range === "1d" ? 300_000 : range === "1w" ? 3_600_000 : 21_600_000;
-  const history = logger.getFinancialHistory(ms, bucketMs);
+  const history = await logger.getFinancialHistory(ms, bucketMs);
   return Response.json(history);
 }
 
 /** GET /api/economy/trades?range=1d&limit=200 — recent buy/sell trades */
-function handleEconomyTrades(url: URL, logger: TrainingLogger): Response {
+async function handleEconomyTrades(url: URL, logger: TrainingLogger): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "100") || 100, 500);
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
-  const trades = logger.getRecentTrades(ms, limit);
+  const trades = await logger.getRecentTrades(ms, limit);
   return Response.json(trades);
 }
 
 /** GET /api/economy/market — aggregated market price data from DB */
-function handleMarketData(url: URL, db: DB): Response {
+async function handleMarketData(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
-  // tick is stored as Unix timestamp in seconds, not milliseconds
   const since = Math.floor((Date.now() - ms) / 1000);
 
-  const rows = db.select().from(marketHistory)
-    .where(gt(marketHistory.tick, since))
-    .all();
+  const rows = await db.select().from(marketHistory)
+    .where(gt(marketHistory.tick, since));
 
   // Group by station, keeping only latest price per item
   const stationMap = new Map<string, {
     stationId: string;
-    /** Map<itemId, price> — keeps latest (highest tick) per item */
     priceMap: Map<string, { itemId: string; itemName: string; buyPrice: number; sellPrice: number; buyVolume: number; sellVolume: number; tick: number }>;
     fetchedAt: number;
   }>();
@@ -256,14 +294,13 @@ function handleMarketData(url: URL, db: DB): Response {
 }
 
 /** GET /api/credits?range=1h|1d|1w|1m */
-function handleCreditsRoute(url: URL, db: DB): Response {
+async function handleCreditsRoute(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1h";
   const ms = RANGE_MS[range] ?? RANGE_MS["1h"];
   const since = Date.now() - ms;
 
-  const rows = db.select().from(creditHistory)
-    .where(gt(creditHistory.timestamp, since))
-    .all();
+  const rows = await db.select().from(creditHistory)
+    .where(gt(creditHistory.timestamp, since));
 
   return Response.json(
     rows.map(r => ({
@@ -275,17 +312,16 @@ function handleCreditsRoute(url: URL, db: DB): Response {
 }
 
 /** GET /api/logs?range=1h&limit=500 — persisted bot activity log */
-function handleLogsRoute(url: URL, db: DB): Response {
+async function handleLogsRoute(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1h";
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "500") || 500, 2000);
   const ms = RANGE_MS[range] ?? RANGE_MS["1h"];
   const since = Date.now() - ms;
 
-  const rows = db.select().from(activityLog)
+  const rows = await db.select().from(activityLog)
     .where(gt(activityLog.timestamp, since))
     .orderBy(desc(activityLog.timestamp))
-    .limit(limit)
-    .all();
+    .limit(limit);
 
   return Response.json(
     rows.map(r => ({
@@ -299,16 +335,15 @@ function handleLogsRoute(url: URL, db: DB): Response {
 }
 
 /** GET /api/decisions?range=1h&limit=100 — persisted commander decisions */
-function handleDecisionsRoute(url: URL, db: DB): Response {
+async function handleDecisionsRoute(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "100") || 100, 500);
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
 
-  const rows = db.select().from(commanderLogTable)
+  const rows = await db.select().from(commanderLogTable)
     .where(gt(commanderLogTable.tick, Math.floor((Date.now() - ms) / 1000)))
     .orderBy(desc(commanderLogTable.tick))
-    .limit(limit)
-    .all();
+    .limit(limit);
 
   return Response.json(
     rows.map(r => ({
@@ -322,18 +357,17 @@ function handleDecisionsRoute(url: URL, db: DB): Response {
   );
 }
 
-/** GET /api/faction/transactions?range=1d&limit=200 — faction storage + credit transactions */
-function handleFactionTransactionsRoute(url: URL, db: DB): Response {
+/** GET /api/faction/transactions?range=1d&limit=200 */
+async function handleFactionTransactionsRoute(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "200") || 200, 1000);
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
   const since = Date.now() - ms;
 
-  const rows = db.select().from(factionTransactions)
+  const rows = await db.select().from(factionTransactions)
     .where(gt(factionTransactions.timestamp, since))
     .orderBy(desc(factionTransactions.timestamp))
-    .limit(limit)
-    .all();
+    .limit(limit);
 
   return Response.json(
     rows.map(r => ({
@@ -350,12 +384,12 @@ function handleFactionTransactionsRoute(url: URL, db: DB): Response {
 }
 
 /** GET /api/economy/bot-breakdown?range=1d — revenue/cost per bot */
-function handleBotBreakdownRoute(url: URL, db: DB): Response {
+async function handleBotBreakdownRoute(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
   const since = Date.now() - ms;
 
-  const rows = db.all(sql`
+  const rows = await (db as any).execute(sql`
     SELECT
       ${financialEvents.botId} as bot_id,
       SUM(CASE WHEN ${financialEvents.eventType} = 'revenue' THEN ${financialEvents.amount} ELSE 0 END) as revenue,
@@ -367,7 +401,7 @@ function handleBotBreakdownRoute(url: URL, db: DB): Response {
   `) as Array<{ bot_id: string | null; revenue: number; cost: number }>;
 
   return Response.json(
-    rows.filter(r => r.bot_id).map(r => ({
+    (rows ?? []).filter((r: any) => r.bot_id).map((r: any) => ({
       botId: r.bot_id,
       revenue: r.revenue ?? 0,
       cost: r.cost ?? 0,
@@ -375,32 +409,30 @@ function handleBotBreakdownRoute(url: URL, db: DB): Response {
   );
 }
 
-/** GET /api/economy/mining-rate?range=1d — ore mined per hour, by ore type and by bot */
-function handleMiningRateRoute(url: URL, db: DB): Response {
+/** GET /api/economy/mining-rate?range=1d — ore mined per hour */
+async function handleMiningRateRoute(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
   const since = Date.now() - ms;
 
-  const rows = db.select({
+  const allRows = await db.select({
     timestamp: activityLog.timestamp,
     botId: activityLog.botId,
     message: activityLog.message,
   }).from(activityLog)
-    .where(gt(activityLog.timestamp, since))
-    .all()
-    .filter(r => r.message?.includes("miner: mined") || r.message?.includes("harvester: harvested"));
+    .where(gt(activityLog.timestamp, since));
 
-  // Parse quantities and bucket by hour — now tracks by ore type too
-  const bucketMs = 3_600_000; // 1 hour
+  const rows = allRows.filter(r => r.message?.includes("miner: mined") || r.message?.includes("harvester: harvested"));
+
+  const bucketMs = 3_600_000;
   const buckets = new Map<number, { total: number; byBot: Record<string, number>; byOre: Record<string, number> }>();
 
   for (const r of rows) {
-    // Match patterns like "miner: mined 5 carbon_ore" or "harvester: harvested 3 hydrogen"
     const match = r.message?.match(/(?:mined|harvested)\s+(\d+)\s+(\S+)/);
     if (!match) continue;
     const qty = parseInt(match[1], 10);
     if (isNaN(qty)) continue;
-    const oreType = match[2]; // e.g. "iron_ore", "carbon_ore", "hydrogen"
+    const oreType = match[2];
 
     const hour = Math.floor(r.timestamp / bucketMs) * bucketMs;
     let bucket = buckets.get(hour);

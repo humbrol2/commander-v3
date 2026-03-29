@@ -2,11 +2,13 @@
  * Persistent commander memory store (inspired by CHAPERON).
  * Stores strategic facts that persist across evaluation cycles.
  * Examples: "System X has best iron prices", "Bot Y performs well as miner"
+ *
+ * Async PostgreSQL with tenant scoping.
  */
 
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { DB } from "./db";
-import { commanderMemory } from "./schema";
-import { eq, desc, sql } from "drizzle-orm";
+import { commanderMemory } from "./schema-pg";
 
 export interface MemoryFact {
   key: string;
@@ -16,68 +18,108 @@ export interface MemoryFact {
 }
 
 export class MemoryStore {
-  constructor(private db: DB) {}
+  constructor(
+    private db: DB,
+    private tenantId: string,
+  ) {}
 
   /** Record or update a memory fact */
-  set(key: string, fact: string, importance: number = 5): void {
-    this.db
+  async set(key: string, fact: string, importance: number = 5): Promise<void> {
+    const clampedImportance = Math.max(0, Math.min(10, importance));
+    const now = new Date().toISOString();
+
+    await this.db
       .insert(commanderMemory)
       .values({
+        tenantId: this.tenantId,
         key,
         fact,
-        importance: Math.max(0, Math.min(10, importance)),
-        updatedAt: new Date().toISOString(),
+        importance: clampedImportance,
+        updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: commanderMemory.key,
+        target: [commanderMemory.tenantId, commanderMemory.key],
         set: {
           fact,
-          importance: Math.max(0, Math.min(10, importance)),
-          updatedAt: new Date().toISOString(),
+          importance: clampedImportance,
+          updatedAt: now,
         },
-      })
-      .run();
+      });
   }
 
   /** Get a specific memory */
-  get(key: string): MemoryFact | null {
-    const row = this.db
+  async get(key: string): Promise<MemoryFact | null> {
+    const rows = await this.db
       .select()
       .from(commanderMemory)
-      .where(eq(commanderMemory.key, key))
-      .get();
-    return row ? { ...row, updatedAt: row.updatedAt ?? new Date().toISOString() } : null;
+      .where(
+        and(
+          eq(commanderMemory.tenantId, this.tenantId),
+          eq(commanderMemory.key, key),
+        ),
+      )
+      .limit(1);
+
+    const row = rows[0];
+    return row
+      ? { ...row, updatedAt: row.updatedAt?.toISOString() ?? new Date().toISOString() }
+      : null;
   }
 
   /** Get all memories, sorted by importance desc */
-  getAll(): MemoryFact[] {
-    return this.db
+  async getAll(): Promise<MemoryFact[]> {
+    const rows = await this.db
       .select()
       .from(commanderMemory)
-      .orderBy(desc(commanderMemory.importance))
-      .all()
-      .map((r) => ({ ...r, updatedAt: r.updatedAt ?? new Date().toISOString() }));
+      .where(eq(commanderMemory.tenantId, this.tenantId))
+      .orderBy(desc(commanderMemory.importance));
+
+    return rows.map((r) => ({
+      ...r,
+      updatedAt: r.updatedAt?.toISOString() ?? new Date().toISOString(),
+    }));
   }
 
   /** Get top N memories by importance (for LLM context injection) */
-  getTop(n: number): MemoryFact[] {
-    return this.getAll().slice(0, n);
+  async getTop(n: number): Promise<MemoryFact[]> {
+    const rows = await this.db
+      .select()
+      .from(commanderMemory)
+      .where(eq(commanderMemory.tenantId, this.tenantId))
+      .orderBy(desc(commanderMemory.importance))
+      .limit(n);
+
+    return rows.map((r) => ({
+      ...r,
+      updatedAt: r.updatedAt?.toISOString() ?? new Date().toISOString(),
+    }));
   }
 
   /** Delete a memory */
-  delete(key: string): void {
-    this.db.delete(commanderMemory).where(eq(commanderMemory.key, key)).run();
+  async delete(key: string): Promise<void> {
+    await this.db
+      .delete(commanderMemory)
+      .where(
+        and(
+          eq(commanderMemory.tenantId, this.tenantId),
+          eq(commanderMemory.key, key),
+        ),
+      );
   }
 
   /** Get memory count */
-  count(): number {
-    const result = this.db.select({ count: sql<number>`count(*)` }).from(commanderMemory).get();
-    return result?.count ?? 0;
+  async count(): Promise<number> {
+    const rows = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(commanderMemory)
+      .where(eq(commanderMemory.tenantId, this.tenantId));
+
+    return rows[0]?.count ?? 0;
   }
 
   /** Build a text block for LLM context injection */
-  buildContextBlock(): string {
-    const memories = this.getTop(20);
+  async buildContextBlock(): Promise<string> {
+    const memories = await this.getTop(20);
     if (memories.length === 0) return "";
 
     const lines = memories.map(

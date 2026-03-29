@@ -112,7 +112,16 @@ const MAX_COMMANDER_LOG = 100;
 
 function getWsUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/ws`;
+  const base = `${protocol}//${window.location.host}/ws`;
+  // Attach JWT token if available (for authenticated multi-tenant mode)
+  try {
+    const stored = localStorage.getItem("commander_auth");
+    if (stored) {
+      const { token } = JSON.parse(stored);
+      if (token) return `${base}?token=${token}`;
+    }
+  } catch { /* no auth token — connect without */ }
+  return base;
 }
 
 function handleMessage(event: MessageEvent) {
@@ -273,12 +282,25 @@ function handleMessage(event: MessageEvent) {
   }
 }
 
+/** Get auth headers for REST API calls */
+export function getAuthHeaders(): HeadersInit {
+  try {
+    const stored = localStorage.getItem("commander_auth");
+    if (stored) {
+      const { token } = JSON.parse(stored);
+      if (token) return { Authorization: `Bearer ${token}` };
+    }
+  } catch { /* no auth */ }
+  return {};
+}
+
 /** Fetch persisted logs and decisions from REST API on connect/reconnect */
 async function fetchHistory() {
   try {
+    const headers = getAuthHeaders();
     const [logsRes, decisionsRes] = await Promise.allSettled([
-      fetch("/api/logs?range=1h&limit=500"),
-      fetch("/api/decisions?range=1d&limit=100"),
+      fetch("/api/logs?range=1h&limit=500", { headers }),
+      fetch("/api/decisions?range=1d&limit=100", { headers }),
     ]);
 
     if (logsRes.status === "fulfilled" && logsRes.value.ok) {

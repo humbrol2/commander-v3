@@ -1,13 +1,20 @@
 /**
  * Startup wiring — creates and connects all services for SpaceMolt Commander v3.
  * Called by app.ts with loaded config.
+ *
+ * Supports PostgreSQL + Redis + multi-tenant scoping (v4).
+ * SQLite remains as legacy fallback when database URL is a file path.
  */
 
+import crypto from "crypto";
 import type { AppConfig } from "./config/schema";
-import { createDatabase, type DB } from "./data/db";
+import { createDatabase, type DB, type DatabaseConnection } from "./data/db";
+import { createRedisClient } from "./data/redis";
+import { RedisCache } from "./data/cache-redis";
 import { GameCache } from "./data/game-cache";
 import { TrainingLogger } from "./data/training-logger";
 import { SessionStore } from "./data/session-store";
+import { RetentionManager } from "./data/retention";
 import { Galaxy } from "./core/galaxy";
 import { Navigation } from "./core/navigation";
 import { Market } from "./core/market";
@@ -44,36 +51,59 @@ import type { CommanderBrain } from "./commander/types";
 import { MemoryStore } from "./data/memory-store";
 import { EmbeddingStore } from "./commander/embedding-store";
 import { parseBotRole, type RolePoolConfig } from "./commander/roles";
+import type Redis from "ioredis";
 
 export interface AppServices {
   db: DB;
-  close: () => void;
+  close: () => Promise<void>;
   galaxy: Galaxy;
   botManager: BotManager;
   commander: Commander;
   economy: EconomyEngine;
   sessionStore: SessionStore;
   stopBroadcast: () => void;
+  tenantId: string;
+  redis: Redis | null;
 }
 
 /**
  * Wire all services together and start the application.
  */
 export async function startup(config: AppConfig): Promise<AppServices> {
+  // ── Tenant ID ──
+  const tenantId = config._tenantId ?? crypto.randomUUID();
+  console.log(`[Startup] Tenant ID: ${tenantId}`);
+
+  // ── Database ──
+  const dbUrl = config._dbPath ?? config.database?.url ?? "commander.db";
+  const connection: DatabaseConnection = createDatabase(dbUrl);
+  const { db, driver } = connection;
+  console.log(`[Startup] Database driver: ${driver} (${driver === "postgresql" ? "managed by drizzle-kit" : dbUrl})`);
+
+  // ── Redis (optional) ──
+  const redisUrl = config._redisUrl ?? (config.redis?.enabled ? config.redis.url : undefined);
+  const redisClient: Redis | null = redisUrl ? createRedisClient(redisUrl) : null;
+  const redisCache: RedisCache | null = redisClient ? new RedisCache(redisClient, tenantId) : null;
+  if (redisClient) {
+    console.log(`[Startup] Redis enabled (tenant-scoped)`);
+  }
+
   // ── Data Layer ──
-  const { db, sqlite } = createDatabase(config._dbPath ?? "commander.db");
-  const trainingLogger = new TrainingLogger(db);
+  const trainingLogger = new TrainingLogger(db, tenantId);
   const gameCache = new GameCache(db, trainingLogger);
-  const shipyardCount = gameCache.loadShipyardData();
+  const shipyardCount = await gameCache.loadShipyardData();
   if (shipyardCount > 0) console.log(`[Cache] Loaded ${shipyardCount} shipyard scans from disk`);
-  gameCache.loadRecentMarketData(sqlite);
-  const sessionStore = new SessionStore(db);
+  await gameCache.loadRecentMarketData();
+  const sessionStore = new SessionStore(db, tenantId);
   const eventBus = new EventBus();
+
+  // ── Retention Manager ──
+  const retentionManager = new RetentionManager(db, tenantId);
 
   // ── Cleanup stale data ──
   try {
     const cutoff = Date.now() - 48 * 3_600_000; // 48 hours
-    db.delete(activityLog).where(lt(activityLog.timestamp, cutoff)).run();
+    await db.delete(activityLog).where(lt(activityLog.timestamp, cutoff));
     console.log(`[Cleanup] Trimmed activity log entries older than 48h`);
   } catch { /* non-critical */ }
 
@@ -127,7 +157,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   };
 
   // Load saved fleet settings
-  const savedFleetSettings = loadFleetSettings(db);
+  const savedFleetSettings = await loadFleetSettings(db);
   if (savedFleetSettings) {
     botManager.fleetConfig.factionTaxPercent = savedFleetSettings.factionTaxPercent;
     botManager.fleetConfig.minBotCredits = savedFleetSettings.minBotCredits;
@@ -148,23 +178,41 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   let logBatch: Array<{ timestamp: number; level: string; botId: string | null; message: string }> = [];
   let logFlushTimer: ReturnType<typeof setInterval> | null = null;
 
-  const flushLogs = () => {
+  const flushLogs = async () => {
     if (logBatch.length === 0) return;
     const batch = logBatch.splice(0, MAX_LOG_BATCH);
     try {
-      // Wrap in transaction for ~10x faster batch insert (single fsync)
-      sqlite.exec("BEGIN");
-      for (const entry of batch) {
-        db.insert(activityLog).values({
-          timestamp: entry.timestamp,
-          level: entry.level,
-          botId: entry.botId,
-          message: entry.message,
-        }).run();
+      // For SQLite we can use raw transactions for performance.
+      // For PostgreSQL, Drizzle handles batching efficiently.
+      if (driver === "sqlite") {
+        const sqlite = connection.raw as import("bun:sqlite").Database;
+        sqlite.exec("BEGIN");
+        try {
+          for (const entry of batch) {
+            await db.insert(activityLog).values({
+              timestamp: entry.timestamp,
+              level: entry.level,
+              botId: entry.botId,
+              message: entry.message,
+            });
+          }
+          sqlite.exec("COMMIT");
+        } catch (err) {
+          try { sqlite.exec("ROLLBACK"); } catch { /* ignore */ }
+          throw err;
+        }
+      } else {
+        // PostgreSQL — insert all entries (Drizzle handles async)
+        for (const entry of batch) {
+          await db.insert(activityLog).values({
+            timestamp: entry.timestamp,
+            level: entry.level,
+            botId: entry.botId,
+            message: entry.message,
+          });
+        }
       }
-      sqlite.exec("COMMIT");
     } catch (err) {
-      try { sqlite.exec("ROLLBACK"); } catch { /* ignore */ }
       console.error(`[Log] Failed to flush ${batch.length} log entries:`, err);
     }
   };
@@ -200,7 +248,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   economy.crafting = crafting;
 
   // ── Persistent Memory Store (inspired by CHAPERON) ──
-  const memoryStore = new MemoryStore(db);
+  const memoryStore = new MemoryStore(db, tenantId);
 
   // ── Contextual Bandit (learns per-role routine weights from outcomes) ──
   const { BanditBrain } = await import("./commander/bandit-brain");
@@ -286,25 +334,25 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   }
 
   // Load saved goals
-  const savedGoals = loadGoals(db);
+  const savedGoals = await loadGoals(db);
   if (savedGoals.length > 0) {
     commander.setGoals(savedGoals);
     console.log(`[Config] Loaded ${savedGoals.length} saved goals`);
   }
 
   // ── Load Bot Credentials ──
-  const savedBots = sessionStore.listBots();
+  const savedBots = await sessionStore.listBots();
   const manualBotIds = new Set<string>();
   for (const creds of savedBots) {
     const bot = botManager.addBot(creds.username);
-    const settings = loadBotSettings(db, creds.username);
+    const settings = await loadBotSettings(db, creds.username);
     if (settings) {
       bot.settings = settings;
       if (settings.role) bot.role = settings.role;
       if (settings.manualControl) manualBotIds.add(bot.id);
     }
     // Seed cached skills from DB (available immediately without API call)
-    const cachedSkills = loadBotSkills(db, creds.username);
+    const cachedSkills = await loadBotSkills(db, creds.username);
     if (cachedSkills) bot.seedSkills(cachedSkills);
     // Persist skills to DB whenever refreshed from API
     bot.onSkillsRefreshed = (username, skills) => {
@@ -401,6 +449,8 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     host: config.server.host,
     staticDir: "web/build",
     db,
+    tenantId,
+    requireAuth: config._requireAuth,
     trainingLogger,
     onClientMessage: (ws, msg) => handleClientMessage(ws, msg, routerDeps),
     onClientConnect: (ws) => {
@@ -420,27 +470,28 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       } as any);
 
       // Send recent log entries from DB so dashboard has history
-      try {
-        const since = Date.now() - 3_600_000; // Last hour
-        const recentLogs = db.select().from(activityLog)
-          .where(gt(activityLog.timestamp, since))
-          .orderBy(activityLog.timestamp)
-          .limit(200)
-          .all();
-        for (const row of recentLogs) {
-          sendTo(ws, {
-            type: "log_entry",
-            entry: {
-              timestamp: new Date(row.timestamp).toISOString(),
-              level: row.level as any,
-              botId: row.botId,
-              message: row.message,
-            },
-          });
+      (async () => {
+        try {
+          const since = Date.now() - 3_600_000; // Last hour
+          const recentLogs = await db.select().from(activityLog)
+            .where(gt(activityLog.timestamp, since))
+            .orderBy(activityLog.timestamp)
+            .limit(200);
+          for (const row of recentLogs) {
+            sendTo(ws, {
+              type: "log_entry",
+              entry: {
+                timestamp: new Date(row.timestamp).toISOString(),
+                level: row.level as any,
+                botId: row.botId,
+                message: row.message,
+              },
+            });
+          }
+        } catch {
+          // Non-critical — dashboard will fill from live events
         }
-      } catch {
-        // Non-critical — dashboard will fill from live events
-      }
+      })();
 
       // Send last commander decision
       const lastDecision = commander.getLastDecision();
@@ -492,15 +543,21 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 
   return {
     db,
-    close: () => {
+    close: async () => {
       commander.stop();
       stopBroadcast();
       if (discoveryTimer) { clearInterval(discoveryTimer); discoveryTimer = null; }
       if (logFlushTimer) clearInterval(logFlushTimer);
-      flushLogs(); // Flush remaining logs before close
-      sqlite.close();
+      await flushLogs(); // Flush remaining logs before close
+      await connection.close(); // Close PG pool or SQLite file
+      // Disconnect Redis if connected
+      if (redisClient) {
+        try { redisClient.disconnect(); } catch { /* ignore */ }
+      }
     },
     galaxy, botManager, commander, economy, sessionStore, stopBroadcast,
+    tenantId,
+    redis: redisClient,
   };
 }
 

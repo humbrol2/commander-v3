@@ -1,11 +1,10 @@
 /**
- * Data retention manager — Drizzle ORM version.
+ * Data retention manager — PostgreSQL + SQLite compatible.
  * Downsampling: 7d full → 30d 33% → 90d 10% → purge.
  */
 
 import { sql } from "drizzle-orm";
 import type { DB } from "./db";
-import { decisionLog, stateSnapshots, marketHistory, commanderLog } from "./schema";
 
 export interface RetentionConfig {
   fullResolutionDays: number;
@@ -31,13 +30,13 @@ export class RetentionManager {
 
   constructor(
     private db: DB,
-    private sqlite: import("bun:sqlite").Database,
+    private tenantId: string,
     config?: Partial<RetentionConfig>,
   ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  run(): RetentionResult {
+  async run(): Promise<RetentionResult> {
     const now = Date.now();
     const msPerDay = 86_400_000;
     const fullCutoff = new Date(now - this.config.fullResolutionDays * msPerDay).toISOString();
@@ -51,50 +50,46 @@ export class RetentionManager {
       commanderLogDeleted: 0,
     };
 
-    // Use raw SQLite for complex retention logic (mod arithmetic + date ranges)
-    const tx = this.sqlite.transaction(() => {
-      // 33% sample zone (7-30 days)
-      result.decisionLogDeleted += this.downsample("decision_log", fullCutoff, thirdCutoff, 3);
-      result.snapshotsDeleted += this.downsample("state_snapshots", fullCutoff, thirdCutoff, 3);
-      result.marketHistoryDeleted += this.downsample("market_history", fullCutoff, thirdCutoff, 3);
+    // 33% sample zone (7-30 days)
+    result.decisionLogDeleted += await this.downsample("decision_log", fullCutoff, thirdCutoff, 3);
+    result.snapshotsDeleted += await this.downsample("state_snapshots", fullCutoff, thirdCutoff, 3);
+    result.marketHistoryDeleted += await this.downsample("market_history", fullCutoff, thirdCutoff, 3);
 
-      // 10% sample zone (30-90 days)
-      result.decisionLogDeleted += this.downsample("decision_log", thirdCutoff, tenthCutoff, 10);
-      result.snapshotsDeleted += this.downsample("state_snapshots", thirdCutoff, tenthCutoff, 10);
-      result.marketHistoryDeleted += this.downsample("market_history", thirdCutoff, tenthCutoff, 10);
+    // 10% sample zone (30-90 days)
+    result.decisionLogDeleted += await this.downsample("decision_log", thirdCutoff, tenthCutoff, 10);
+    result.snapshotsDeleted += await this.downsample("state_snapshots", thirdCutoff, tenthCutoff, 10);
+    result.marketHistoryDeleted += await this.downsample("market_history", thirdCutoff, tenthCutoff, 10);
 
-      // Older than 90 days: purge high-volume tables
-      result.decisionLogDeleted += this.deleteOlderThan("decision_log", tenthCutoff);
-      result.snapshotsDeleted += this.deleteOlderThan("state_snapshots", tenthCutoff);
-      result.marketHistoryDeleted += this.deleteOlderThan("market_history", tenthCutoff);
+    // Older than 90 days: purge high-volume tables
+    result.decisionLogDeleted += await this.deleteOlderThan("decision_log", tenthCutoff);
+    result.snapshotsDeleted += await this.deleteOlderThan("state_snapshots", tenthCutoff);
+    result.marketHistoryDeleted += await this.deleteOlderThan("market_history", tenthCutoff);
 
-      // Commander log: keep hourly for old data
-      result.commanderLogDeleted += this.downsample("commander_log", tenthCutoff, "1970-01-01T00:00:00Z", 360);
-    });
+    // Commander log: keep hourly for old data
+    result.commanderLogDeleted += await this.downsample("commander_log", tenthCutoff, "1970-01-01T00:00:00Z", 360);
 
-    tx();
     return result;
   }
 
-  private downsample(table: string, newerThan: string, olderThan: string, keepEveryN: number): number {
-    const result = this.sqlite.run(
-      `DELETE FROM ${table} WHERE created_at < ? AND created_at >= ? AND (id % ?) != 0`,
-      [newerThan, olderThan, keepEveryN],
+  private async downsample(table: string, newerThan: string, olderThan: string, keepEveryN: number): Promise<number> {
+    const result = await (this.db as any).execute(
+      sql.raw(`DELETE FROM ${table} WHERE tenant_id = '${this.tenantId}' AND created_at < '${newerThan}' AND created_at >= '${olderThan}' AND (id % ${keepEveryN}) != 0`),
     );
-    return result.changes;
+    return (result as any)?.rowCount ?? (result as any)?.changes ?? 0;
   }
 
-  private deleteOlderThan(table: string, olderThan: string): number {
-    const result = this.sqlite.run(
-      `DELETE FROM ${table} WHERE created_at < ?`,
-      [olderThan],
+  private async deleteOlderThan(table: string, olderThan: string): Promise<number> {
+    const result = await (this.db as any).execute(
+      sql.raw(`DELETE FROM ${table} WHERE tenant_id = '${this.tenantId}' AND created_at < '${olderThan}'`),
     );
-    return result.changes;
+    return (result as any)?.rowCount ?? (result as any)?.changes ?? 0;
   }
 
-  getDataRange(table: string): { oldest: string | null; newest: string | null; count: number } {
-    return this.sqlite
-      .query(`SELECT MIN(created_at) as oldest, MAX(created_at) as newest, COUNT(*) as count FROM ${table}`)
-      .get() as { oldest: string | null; newest: string | null; count: number };
+  async getDataRange(table: string): Promise<{ oldest: string | null; newest: string | null; count: number }> {
+    const rows = await (this.db as any).execute(
+      sql.raw(`SELECT MIN(created_at) as oldest, MAX(created_at) as newest, COUNT(*) as count FROM ${table} WHERE tenant_id = '${this.tenantId}'`),
+    );
+    const row = (rows as any)?.[0] ?? { oldest: null, newest: null, count: 0 };
+    return { oldest: row.oldest, newest: row.newest, count: Number(row.count) };
   }
 }
