@@ -4,12 +4,14 @@
  * a concise text prompt with JSON output format instructions.
  */
 
-import type { EvaluationInput, WorldContext, EconomySnapshot } from "./types";
+import type { EvaluationInput, WorldContext, EconomySnapshot, FleetAdvisorResult } from "./types";
 import type { FleetBotInfo, FleetStatus } from "../bot/types";
 import type { Goal } from "../config/schema";
 import type { RoutineName } from "../types/protocol";
 import type { StrategicTrigger } from "./strategic-triggers";
 import type { RetrievedMemory } from "./embedding-store";
+import type { DangerMap } from "./danger-map";
+import type { MarketRotation } from "./market-rotation";
 
 const VALID_ROUTINES: RoutineName[] = [
   "miner", "crafter", "trader", "quartermaster", "explorer",
@@ -126,8 +128,15 @@ Return empty assignments array if no changes needed.
 CRITICAL: Respond with ONLY the JSON object. No explanation, no thinking, no markdown. Just raw JSON.`;
 }
 
+/** Additional context from new modules (danger map, market rotation, fleet advisor) */
+export interface PromptEnrichment {
+  dangerMap?: DangerMap;
+  marketRotation?: MarketRotation;
+  advisorResult?: FleetAdvisorResult | null;
+}
+
 /** Build user prompt with current fleet state */
-export function buildUserPrompt(input: EvaluationInput, extraContext?: string): string {
+export function buildUserPrompt(input: EvaluationInput, extraContext?: string, enrichment?: PromptEnrichment): string {
   const sections: string[] = [];
 
   // Performance outcomes + persistent memory (injected by Commander)
@@ -151,6 +160,12 @@ export function buildUserPrompt(input: EvaluationInput, extraContext?: string): 
   // World context
   if (input.world) {
     sections.push(formatWorld(input.world));
+  }
+
+  // Danger map, market rotation, fleet advisor enrichment
+  if (enrichment) {
+    const enrichmentText = formatEnrichment(enrichment);
+    if (enrichmentText) sections.push(enrichmentText);
   }
 
   sections.push(`Tick: ${input.tick}`);
@@ -285,6 +300,7 @@ export function buildStrategicUserPrompt(
   fleet: FleetStatus,
   economy: EconomySnapshot,
   goals: Array<{ type: string; priority: number }>,
+  enrichment?: PromptEnrichment,
 ): string {
   const sections: string[] = [];
 
@@ -325,9 +341,62 @@ export function buildStrategicUserPrompt(
     sections.push(`DEFICITS:\n${defs.map(d => `  - ${d}`).join("\n")}`);
   }
 
+  // 6. Enrichment (danger map, market coverage, advisor bottlenecks)
+  if (enrichment) {
+    const enrichmentText = formatEnrichment(enrichment);
+    if (enrichmentText) sections.push(enrichmentText);
+  }
+
   return sections.join("\n\n");
 }
 
+
+/** Format enrichment context (danger map, market rotation, fleet advisor) for LLM prompt */
+function formatEnrichment(enrichment: PromptEnrichment): string | null {
+  const parts: string[] = [];
+
+  // Dangerous systems
+  if (enrichment.dangerMap) {
+    const dangerous = enrichment.dangerMap.getAllDangerous();
+    if (dangerous.length > 0) {
+      parts.push("DANGEROUS SYSTEMS:");
+      for (const d of dangerous.slice(0, 10)) {
+        parts.push(`  - ${d.systemId}: danger=${(d.score * 100).toFixed(0)}% (${d.attacks} attacks)`);
+      }
+      parts.push("  → Avoid routing traders through these systems. Consider hunter patrol.");
+    }
+  }
+
+  // Market coverage
+  if (enrichment.marketRotation) {
+    const total = enrichment.marketRotation.getTotalStations();
+    if (total > 0) {
+      const coverage = enrichment.marketRotation.getCoverage();
+      const stale = enrichment.marketRotation.getStaleCount();
+      parts.push(`MARKET COVERAGE: ${Math.round(coverage * 100)}% fresh (${stale}/${total} stations stale)`);
+      const targets = enrichment.marketRotation.getTopTargets(3);
+      if (targets.length > 0) {
+        parts.push("  Top scan targets: " + targets.map(t => `${t.stationId} (${Math.round(t.ageMs / 60_000)}min old)`).join(", "));
+      }
+    }
+  }
+
+  // Fleet advisor summary
+  if (enrichment.advisorResult) {
+    const adv = enrichment.advisorResult;
+    if (adv.bottlenecks.length > 0) {
+      parts.push("FLEET ADVISOR BOTTLENECKS:");
+      for (const b of adv.bottlenecks) {
+        parts.push(`  - ${b}`);
+      }
+      if (adv.estimatedProfitIncreasePct > 0) {
+        parts.push(`  → Addressing these could increase profit by ~${adv.estimatedProfitIncreasePct}%`);
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join("\n") : null;
+}
 
 function extractJson(raw: string): Record<string, unknown> {
   const text = raw.trim();

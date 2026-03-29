@@ -29,6 +29,11 @@ import { extractContext } from "./bandit-brain";
 import { computeReward, emptySignals } from "./reward-function";
 import { StrategicTriggerEngine, type StrategicTrigger } from "./strategic-triggers";
 import { buildStrategicSystemPrompt, buildStrategicUserPrompt, parseLlmResponse } from "./prompt-builder";
+import { DangerMap } from "./danger-map";
+import { MarketRotation } from "./market-rotation";
+import { FleetAdvisor } from "./fleet-advisor";
+import { ROIAnalyzer } from "./roi-analyzer";
+import type { FleetAdvisorResult } from "./types";
 
 export interface CommanderConfig {
   /** Evaluation interval in seconds */
@@ -108,6 +113,22 @@ export class Commander {
   private triggerEngine = new StrategicTriggerEngine();
   /** Last strategic trigger (for dashboard) */
   private lastTrigger: StrategicTrigger | null = null;
+  /** Danger map — tracks per-system attack risk */
+  private dangerMap: DangerMap;
+  /** Market rotation scheduler — prioritizes station scans */
+  private marketRotation: MarketRotation;
+  /** Fleet advisor — recommends fleet composition changes */
+  private fleetAdvisor = new FleetAdvisor();
+  /** ROI analyzer — compares action profitability */
+  private roiAnalyzer: ROIAnalyzer;
+  /** Last fleet advisor computation timestamp */
+  private lastAdvisorCompute = 0;
+  /** Cached fleet advisor result */
+  private lastAdvisorResult: FleetAdvisorResult | null = null;
+  /** Hull snapshots for danger detection (botId → last hullPct) */
+  private _hullSnapshots = new Map<string, number>();
+  /** Fleet advisor recompute interval */
+  private static readonly ADVISOR_INTERVAL_MS = 900_000; // 15 min
 
   constructor(
     private config: CommanderConfig,
@@ -126,6 +147,13 @@ export class Commander {
     scoringBrain.minBotCredits = deps.minBotCredits ?? 0;
     this.brain = brain ?? scoringBrain;
     this.economy = new EconomyEngine();
+    this.dangerMap = new DangerMap({ decayHalfLifeMs: 1_800_000, maxScore: 1.0 });
+    this.marketRotation = new MarketRotation({ hubSystemId: deps.homeSystem ?? "" });
+    this.roiAnalyzer = new ROIAnalyzer({
+      fuelCostPerJump: 50,
+      ticksPerJump: 5,
+      dangerCostMultiplier: 200,
+    });
   }
 
   /** Get current commander config */
@@ -343,6 +371,31 @@ export class Commander {
     return [...this._poolConfig];
   }
 
+  /** Record an attack event in the danger map (e.g., bot hull drop detected) */
+  recordDangerEvent(systemId: string): void {
+    this.dangerMap.recordAttack(systemId, Date.now());
+  }
+
+  /** Get the danger map (for dashboard / external consumers) */
+  getDangerMap(): DangerMap {
+    return this.dangerMap;
+  }
+
+  /** Get the market rotation scheduler */
+  getMarketRotation(): MarketRotation {
+    return this.marketRotation;
+  }
+
+  /** Get the ROI analyzer */
+  getROIAnalyzer(): ROIAnalyzer {
+    return this.roiAnalyzer;
+  }
+
+  /** Get the last fleet advisor result */
+  getAdvisorResult(): FleetAdvisorResult | null {
+    return this.lastAdvisorResult;
+  }
+
   /**
    * Evaluate pool sizing — assigns roles to unassigned bots to fill minimums.
    * Called during each evaluation cycle. Only assigns roles to bots with role=null.
@@ -534,6 +587,52 @@ export class Commander {
 
     // Step 3.5: Track performance outcomes (for LLM feedback)
     this.performanceTracker.update(fleet);
+
+    // Step 3.6: Danger map — detect hull drops as attack events
+    for (const bot of fleet.bots) {
+      const prevHull = this._hullSnapshots.get(bot.botId);
+      if (prevHull !== undefined && bot.hullPct < prevHull - 5 && bot.systemId) {
+        this.recordDangerEvent(bot.systemId);
+        console.log(`[Commander] Danger event: ${bot.username} hull dropped ${prevHull}→${bot.hullPct}% in ${bot.systemId}`);
+      }
+      this._hullSnapshots.set(bot.botId, bot.hullPct);
+    }
+
+    // Step 3.6b: Update market rotation with all known stations
+    for (const [, info] of world.systemPois) {
+      for (const sid of info.stationIds) {
+        const freshness = this.deps.cache.getMarketFreshness(sid);
+        const systemId = this.deps.galaxy.getSystemForBase(sid) ?? "";
+        const dist = this.deps.homeSystem
+          ? this.deps.galaxy.getDistance(this.deps.homeSystem, systemId)
+          : 0;
+        this.marketRotation.updateStation(sid, systemId, freshness.ageMs, Math.max(0, dist));
+      }
+    }
+
+    // Step 3.6c: Fleet advisor — recompute every 15 minutes
+    {
+      const now = Date.now();
+      if (now - this.lastAdvisorCompute > Commander.ADVISOR_INTERVAL_MS) {
+        this.lastAdvisorResult = this.fleetAdvisor.compute({
+          currentBots: fleet.bots.length,
+          currentRoles: this.countRoles(fleet),
+          totalStations: this.marketRotation.getTotalStations(),
+          freshStations: world.freshStationIds.length,
+          staleStations: this.marketRotation.getStaleCount(),
+          knownSystems: this.deps.galaxy.systemCount,
+          unknownSystems: 0,
+          dangerousSystems: this.dangerMap.getAllDangerous().length,
+          avgJumpsBetweenStations: 4,
+          avgScanCycleMinutes: this.marketRotation.getTotalStations() * 5,
+          profitableRoutes: world.tradeRouteCount,
+          currentProfitPerHour: economySnapshot.netProfit,
+          tradeCapacityUsed: this.estimateTradeCapacity(fleet, world),
+        });
+        this.lastAdvisorCompute = now;
+        console.log(`[Commander] Fleet advisor: ${this.lastAdvisorResult.bottlenecks.length} bottleneck(s), +${this.lastAdvisorResult.estimatedProfitIncreasePct}% profit potential`);
+      }
+    }
 
     // Step 3.7: Stuck detection (inspired by CHAPERON)
     this.lastStuckBots = this.stuckDetector.update(fleet);
@@ -955,6 +1054,28 @@ export class Commander {
     }
   }
 
+  /** Count current fleet role distribution (for fleet advisor) */
+  private countRoles(fleet: FleetStatus): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const bot of fleet.bots) {
+      if (bot.status !== "ready" && bot.status !== "running") continue;
+      const role = bot.role ?? bot.routine ?? "idle";
+      counts[role] = (counts[role] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  /** Estimate what fraction of trade capacity is being used (0-1) */
+  private estimateTradeCapacity(fleet: FleetStatus, world: WorldContext): number {
+    const traderCount = fleet.bots.filter(
+      b => b.routine === "trader" && (b.status === "running" || b.status === "ready")
+    ).length;
+    if (world.tradeRouteCount === 0) return traderCount > 0 ? 1 : 0;
+    // ~2.5 routes per trader per hour is capacity; ratio of traders to routes
+    const capacity = traderCount * 2.5;
+    return Math.min(1, capacity / world.tradeRouteCount);
+  }
+
   /** Build world context from galaxy/cache/market for brain evaluation */
   private buildWorldContext(fleet: FleetStatus): WorldContext {
     const { galaxy, cache, market } = this.deps;
@@ -1114,6 +1235,25 @@ export class Commander {
       }
     } else if (this.deps.defaultStorageMode === "faction_deposit") {
       thoughts.push("Faction storage empty — miners should deposit raw materials for crafters.");
+    }
+
+    // Danger map awareness
+    const dangerousSystems = this.dangerMap.getAllDangerous();
+    if (dangerousSystems.length > 0) {
+      const top = dangerousSystems.slice(0, 3).map(d => `${d.systemId} (${(d.score * 100).toFixed(0)}%)`).join(", ");
+      thoughts.push(`Danger zones: ${dangerousSystems.length} system(s) flagged — ${top}.`);
+    }
+
+    // Market coverage awareness
+    const marketCoverage = this.marketRotation.getCoverage();
+    const totalStations = this.marketRotation.getTotalStations();
+    if (totalStations > 0 && marketCoverage < 0.6) {
+      thoughts.push(`Market coverage: ${Math.round(marketCoverage * 100)}% of ${totalStations} stations have fresh data.`);
+    }
+
+    // Fleet advisor awareness
+    if (this.lastAdvisorResult && this.lastAdvisorResult.bottlenecks.length > 0) {
+      thoughts.push(`Fleet advisor: ${this.lastAdvisorResult.bottlenecks[0]}`);
     }
 
     // Stuck bot awareness
@@ -1304,9 +1444,14 @@ export class Commander {
       memories = await embeddingStore.retrieve(query, { limit: 5 });
     }
 
-    // Build the focused strategic prompt
+    // Build the focused strategic prompt (with enrichment from new modules)
     const userPrompt = buildStrategicUserPrompt(
       trigger, memories, fleet, economy, this.goals,
+      {
+        dangerMap: this.dangerMap,
+        marketRotation: this.marketRotation,
+        advisorResult: this.lastAdvisorResult,
+      },
     );
 
     // Call Ollama directly with strategic prompt
