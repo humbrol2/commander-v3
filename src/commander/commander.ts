@@ -115,6 +115,10 @@ export class Commander {
   private lastTrigger: StrategicTrigger | null = null;
   /** Danger map — tracks per-system attack risk */
   private dangerMap: DangerMap;
+  /** Whether danger map has unsaved changes */
+  private dangerMapDirty = false;
+  /** Whether danger map has been loaded from Redis (first eval only) */
+  private dangerMapLoaded = false;
   /** Market rotation scheduler — prioritizes station scans */
   private marketRotation: MarketRotation;
   /** Fleet advisor — recommends fleet composition changes */
@@ -374,6 +378,7 @@ export class Commander {
   /** Record an attack event in the danger map (e.g., bot hull drop detected) */
   recordDangerEvent(systemId: string): void {
     this.dangerMap.recordAttack(systemId, Date.now());
+    this.dangerMapDirty = true;
   }
 
   /** Get the danger map (for dashboard / external consumers) */
@@ -504,6 +509,24 @@ export class Commander {
 
   private async _doEvaluateAndAssign(): Promise<CommanderDecision> {
     this.tick = Math.floor(Date.now() / 1000);
+
+    // Restore danger map from Redis (first eval only)
+    if (!this.dangerMapLoaded && this.deps.cache) {
+      this.dangerMapLoaded = true;
+      try {
+        const saved = await this.deps.cache.loadDangerMap();
+        if (saved) {
+          this.dangerMap = DangerMap.deserialize(
+            typeof saved === "string" ? saved : JSON.stringify(saved),
+            { decayHalfLifeMs: 1_800_000, maxScore: 1.0 },
+          );
+          const count = this.dangerMap.getAllDangerous(0).length;
+          console.log(`[DangerMap] Restored ${count} system(s) from Redis`);
+        }
+      } catch (err) {
+        console.log(`[DangerMap] Redis load failed, starting fresh: ${err instanceof Error ? err.message : err}`);
+      }
+    }
 
     // Step 0: Sync homeBase/homeSystem from live fleet config (discovery may have updated it)
     this.syncFleetConfig();
@@ -841,6 +864,14 @@ export class Commander {
 
     // Step 8: Record strategic memories (persistent knowledge)
     this.recordMemories(fleet, world, decision);
+
+    // Persist danger map if changed
+    if (this.dangerMapDirty && this.deps.cache) {
+      this.deps.cache.saveDangerMap(this.dangerMap.serialize()).catch(err =>
+        console.log(`[DangerMap] Redis save failed: ${err instanceof Error ? err.message : err}`)
+      );
+      this.dangerMapDirty = false;
+    }
 
     return decision;
   }

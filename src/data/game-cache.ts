@@ -1062,6 +1062,24 @@ export class GameCache {
     await this.db.delete(timedCache).where(and(eq(timedCache.key, `checkpoint:${botId}`), eq(timedCache.tenantId, this.tenantId)));
   }
 
+  // ── Danger Map Persistence ──
+
+  private static readonly DANGER_MAP_TTL = 7200; // 2 hours
+
+  async saveDangerMap(json: string): Promise<void> {
+    if (!this.redis) return;
+    await this.redis.setJson(
+      this.redis.key("dangermap"),
+      json,
+      GameCache.DANGER_MAP_TTL,
+    );
+  }
+
+  async loadDangerMap(): Promise<string | null> {
+    if (!this.redis) return null;
+    return this.redis.getJson<string>(this.redis.key("dangermap"));
+  }
+
   async getCacheStatus(): Promise<Record<string, { cached: boolean; version: string | null }>> {
     const keys = ["galaxy_map", "item_catalog", "ship_catalog", "skill_tree", "recipe_catalog"];
     const status: Record<string, { cached: boolean; version: string | null }> = {};

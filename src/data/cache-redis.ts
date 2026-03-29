@@ -27,7 +27,7 @@ export class RedisCache {
   ) {}
 
   /** Build a tenant-scoped key */
-  private key(suffix: string): string {
+  public key(suffix: string): string {
     return `t:${this.tenantId}:${suffix}`;
   }
 
@@ -35,7 +35,7 @@ export class RedisCache {
   // Helpers
   // ---------------------------------------------------------------------------
 
-  private async getJson<T = any>(key: string): Promise<T | null> {
+  public async getJson<T = any>(key: string): Promise<T | null> {
     const raw = await this.redis.get(key);
     if (raw === null) return null;
     try {
@@ -45,7 +45,7 @@ export class RedisCache {
     }
   }
 
-  private async setJson(key: string, data: unknown, ttlSeconds: number): Promise<void> {
+  public async setJson(key: string, data: unknown, ttlSeconds: number): Promise<void> {
     await this.redis.setex(key, ttlSeconds, JSON.stringify(data));
   }
 
