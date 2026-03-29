@@ -109,7 +109,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 
   // ── Event Handlers ──
   registerTradeTracker(eventBus, trainingLogger);
-  registerFactionTracker(eventBus, db);
+  registerFactionTracker(eventBus, db, tenantId);
   const productionStats = createProductionStats();
   registerProductionTracker(eventBus, productionStats);
 
@@ -254,12 +254,14 @@ export async function startup(config: AppConfig): Promise<AppServices> {
 
   // ── Contextual Bandit (learns per-role routine weights from outcomes) ──
   const { BanditBrain } = await import("./commander/bandit-brain");
-  const banditBrain = new BanditBrain(db, { alpha: 0.5 });
+  const banditBrain = new BanditBrain(db, tenantId, { alpha: 0.5 });
+  await banditBrain.init();
   console.log(`[Startup] Bandit brain loaded: ${banditBrain.getTotalEpisodes()} historical episodes`);
 
   // ── Embedding Store (semantic memory for strategic decisions) ──
   const embeddingStore = new EmbeddingStore(db, {
     ollamaUrl: config.ai.ollama_base_url,
+    tenantId,
   });
   // Check embedding model availability (non-blocking)
   embeddingStore.checkHealth().then(available => {
@@ -420,7 +422,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   let discoveryTimer: ReturnType<typeof setInterval> | null = null;
   const runDiscovery = async () => {
     if (botManager.fleetConfig.homeBase && botManager.fleetConfig.factionStorageStation) return; // Already found
-    const result = await discoverFactionStorage(botManager, galaxy, db);
+    const result = await discoverFactionStorage(botManager, galaxy, db, tenantId);
     if (result) {
       propagateFleetHome(botManager, result.stationId, result.systemId);
       if (discoveryTimer) {

@@ -1425,7 +1425,7 @@ export class Commander {
    * Compares bot state now vs snapshot from last eval to compute credit delta.
    * Only feeds when a bot has changed routine (indicating cycle completion).
    */
-  private feedBanditRewards(fleet: FleetStatus, economy: import("./types").EconomySnapshot): void {
+  private async feedBanditRewards(fleet: FleetStatus, economy: import("./types").EconomySnapshot): Promise<void> {
     const scoringBrain = this.getScoringBrain();
     const bandit = scoringBrain?.banditBrain;
     if (!bandit) return;
@@ -1450,7 +1450,7 @@ export class Commander {
         const context = extractContext(bot, economy, this.goals, fleet.bots.length, this.deps.homeSystem);
 
         const role = prev.role ?? "generalist";
-        bandit.recordOutcome(role, prev.routine as any, context, reward, {
+        await bandit.recordOutcome(role, prev.routine as any, context, reward, {
           botId: bot.botId,
           durationSec,
           goalType: this.goals[0]?.type,

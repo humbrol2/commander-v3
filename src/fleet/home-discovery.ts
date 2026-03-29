@@ -6,7 +6,7 @@
 import type { BotManager } from "../bot/bot-manager";
 import type { Galaxy } from "../core/galaxy";
 import type { DB } from "../data/db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { cache } from "../data/schema";
 
 const CACHE_KEY_FACTION_STORAGE = "faction_storage_station_v2";
@@ -26,9 +26,10 @@ export async function discoverFactionStorage(
   botManager: BotManager,
   galaxy: Galaxy,
   db: DB,
+  tenantId: string = "",
 ): Promise<DiscoveryResult | null> {
   // Method 1: Persistent cache
-  const cached = tryPersistentCache(db);
+  const cached = await tryPersistentCache(db, tenantId);
   if (cached) {
     const systemId = galaxy.getSystemForBase(cached.stationId);
     if (systemId) {
@@ -36,7 +37,7 @@ export async function discoverFactionStorage(
       return cached;
     }
     console.log("[Discovery] Method 1: Cache invalid (base not in galaxy), clearing...");
-    clearCache(db);
+    await clearCache(db, tenantId);
   }
 
   // Get a bot with API access
@@ -55,7 +56,7 @@ export async function discoverFactionStorage(
           const systemId = String(base.system_id || base.systemId || "");
           if (baseId && systemId) {
             const result: DiscoveryResult = { stationId: baseId, systemId, method: "faction_api" };
-            persistCache(db, result);
+            await persistCache(db, result, tenantId);
             console.log(`[Discovery] Method 2: Found via faction API — ${baseId} in ${systemId}`);
             return result;
           }
@@ -82,7 +83,7 @@ export async function discoverFactionStorage(
           const systemId = String(storage.system_id || storage.systemId || "");
           if (baseId) {
             const result: DiscoveryResult = { stationId: baseId, systemId, method: "faction_facilities" };
-            persistCache(db, result);
+            await persistCache(db, result, tenantId);
             console.log(`[Discovery] Method 2b: Found via facilities — ${baseId}`);
             return result;
           }
@@ -99,7 +100,7 @@ export async function discoverFactionStorage(
     const stationPoi = solSystem.pois?.find(p => p.baseId);
     if (stationPoi?.baseId) {
       const result: DiscoveryResult = { stationId: stationPoi.baseId, systemId: "sol", method: "cached_system" };
-      persistCache(db, result);
+      await persistCache(db, result, tenantId);
       console.log(`[Discovery] Method 3: Found in cached galaxy data — ${stationPoi.baseId}`);
       return result;
     }
@@ -118,7 +119,7 @@ export async function discoverFactionStorage(
             if (baseId) {
               const sysId = String(sys.id || "");
               const result: DiscoveryResult = { stationId: baseId, systemId: sysId, method: "system_search" };
-              persistCache(db, result);
+              await persistCache(db, result, tenantId);
               console.log(`[Discovery] Method 4: Found via system search — ${baseId} in ${sysId}`);
               return result;
             }
@@ -134,7 +135,7 @@ export async function discoverFactionStorage(
   if (botManager.fleetConfig.homeBase) {
     const systemId = galaxy.getSystemForBase(botManager.fleetConfig.homeBase) || "";
     const result: DiscoveryResult = { stationId: botManager.fleetConfig.homeBase, systemId, method: "config" };
-    persistCache(db, result);
+    await persistCache(db, result, tenantId);
     console.log(`[Discovery] Method 5: Using configured homeBase — ${result.stationId}`);
     return result;
   }
@@ -144,7 +145,7 @@ export async function discoverFactionStorage(
     if (bot.player?.homeBase) {
       const systemId = bot.player.currentSystem || "";
       const result: DiscoveryResult = { stationId: bot.player.homeBase, systemId, method: "player_home" };
-      persistCache(db, result);
+      await persistCache(db, result, tenantId);
       console.log(`[Discovery] Method 6: Using player.homeBase from ${bot.username} — ${result.stationId}`);
       return result;
     }
@@ -154,7 +155,7 @@ export async function discoverFactionStorage(
   if (dockedBot?.player?.dockedAtBase) {
     const systemId = dockedBot.player.currentSystem || "";
     const result: DiscoveryResult = { stationId: dockedBot.player.dockedAtBase, systemId, method: "docked_bot" };
-    persistCache(db, result);
+    await persistCache(db, result, tenantId);
     console.log(`[Discovery] Method 7: Using docked bot ${dockedBot.username}'s station — ${result.stationId}`);
     return result;
   }
@@ -166,7 +167,7 @@ export async function discoverFactionStorage(
       for (const poi of sys.pois) {
         if (poi.baseId) {
           const result: DiscoveryResult = { stationId: poi.baseId, systemId: sys.id, method: "galaxy_fallback" };
-          persistCache(db, result);
+          await persistCache(db, result, tenantId);
           console.log(`[Discovery] Method 8: Using first known station — ${result.stationId} in ${sys.id}`);
           return result;
         }
@@ -201,9 +202,9 @@ export function propagateFleetHome(
 
 // ── Cache Helpers ──
 
-function tryPersistentCache(db: DB): DiscoveryResult | null {
-  const stationRow = db.select().from(cache).where(eq(cache.key, CACHE_KEY_FACTION_STORAGE)).get();
-  const systemRow = db.select().from(cache).where(eq(cache.key, CACHE_KEY_HOME_SYSTEM)).get();
+async function tryPersistentCache(db: DB, tenantId: string): Promise<DiscoveryResult | null> {
+  const [stationRow] = await db.select().from(cache).where(and(eq(cache.tenantId, tenantId), eq(cache.key, CACHE_KEY_FACTION_STORAGE))).limit(1);
+  const [systemRow] = await db.select().from(cache).where(and(eq(cache.tenantId, tenantId), eq(cache.key, CACHE_KEY_HOME_SYSTEM))).limit(1);
   if (!stationRow) return null;
 
   return {
@@ -213,22 +214,21 @@ function tryPersistentCache(db: DB): DiscoveryResult | null {
   };
 }
 
-function persistCache(db: DB, result: DiscoveryResult): void {
+async function persistCache(db: DB, result: DiscoveryResult, tenantId: string): Promise<void> {
   const now = Date.now();
   for (const [key, value] of [
     [CACHE_KEY_FACTION_STORAGE, result.stationId],
     [CACHE_KEY_HOME_SYSTEM, result.systemId],
     [CACHE_KEY_HOME_BASE, result.stationId],
   ] as const) {
-    db.insert(cache)
-      .values({ key, data: value, fetchedAt: now })
-      .onConflictDoUpdate({ target: cache.key, set: { data: value, fetchedAt: now } })
-      .run();
+    await db.insert(cache)
+      .values({ tenantId, key, data: value, fetchedAt: now })
+      .onConflictDoUpdate({ target: [cache.tenantId, cache.key], set: { data: value, fetchedAt: now } });
   }
 }
 
-function clearCache(db: DB): void {
+async function clearCache(db: DB, tenantId: string): Promise<void> {
   for (const key of [CACHE_KEY_FACTION_STORAGE, CACHE_KEY_HOME_SYSTEM, CACHE_KEY_HOME_BASE]) {
-    db.delete(cache).where(eq(cache.key, key)).run();
+    await db.delete(cache).where(and(eq(cache.tenantId, tenantId), eq(cache.key, key)));
   }
 }

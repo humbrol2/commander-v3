@@ -1,9 +1,9 @@
 /**
  * Fleet persistence — Drizzle-based save/load for bot settings,
- * fleet settings, and goals. Replaces raw SQL from v2 index.ts.
+ * fleet settings, and goals. Async PostgreSQL with tenant scoping.
  */
 
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import type { DB } from "../data/db";
 import { botSettings, botSkills, fleetSettings, goals } from "../data/schema";
 import type { Goal } from "../config/schema";
@@ -20,9 +20,10 @@ export interface BotSettingsData {
   manualControl: boolean;
 }
 
-export function saveBotSettings(db: DB, username: string, settings: BotSettingsData): void {
-  db.insert(botSettings)
+export async function saveBotSettings(db: DB, tenantId: string, username: string, settings: BotSettingsData): Promise<void> {
+  await db.insert(botSettings)
     .values({
+      tenantId,
       username,
       fuelEmergencyThreshold: settings.fuelEmergencyThreshold,
       autoRepair: settings.autoRepair ? 1 : 0,
@@ -33,7 +34,7 @@ export function saveBotSettings(db: DB, username: string, settings: BotSettingsD
       manualControl: settings.manualControl ? 1 : 0,
     })
     .onConflictDoUpdate({
-      target: botSettings.username,
+      target: [botSettings.tenantId, botSettings.username],
       set: {
         fuelEmergencyThreshold: settings.fuelEmergencyThreshold,
         autoRepair: settings.autoRepair ? 1 : 0,
@@ -43,12 +44,14 @@ export function saveBotSettings(db: DB, username: string, settings: BotSettingsD
         role: settings.role ?? null,
         manualControl: settings.manualControl ? 1 : 0,
       },
-    })
-    .run();
+    });
 }
 
-export function loadBotSettings(db: DB, username: string): BotSettingsData | null {
-  const row = db.select().from(botSettings).where(eq(botSettings.username, username)).get();
+export async function loadBotSettings(db: DB, tenantId: string, username: string): Promise<BotSettingsData | null> {
+  const rows = await db.select().from(botSettings)
+    .where(and(eq(botSettings.tenantId, tenantId), eq(botSettings.username, username)))
+    .limit(1);
+  const row = rows[0];
   if (!row) return null;
 
   return {
@@ -66,24 +69,27 @@ export function loadBotSettings(db: DB, username: string): BotSettingsData | nul
 
 export type BotSkillsData = Record<string, { level: number; xp: number; xpNext: number }>;
 
-export function saveBotSkills(db: DB, username: string, skills: BotSkillsData): void {
-  db.insert(botSkills)
+export async function saveBotSkills(db: DB, tenantId: string, username: string, skills: BotSkillsData): Promise<void> {
+  await db.insert(botSkills)
     .values({
+      tenantId,
       username,
       skills: JSON.stringify(skills),
     })
     .onConflictDoUpdate({
-      target: botSkills.username,
+      target: [botSkills.tenantId, botSkills.username],
       set: {
         skills: JSON.stringify(skills),
         updatedAt: new Date().toISOString().replace("T", " ").slice(0, 19),
       },
-    })
-    .run();
+    });
 }
 
-export function loadBotSkills(db: DB, username: string): BotSkillsData | null {
-  const row = db.select().from(botSkills).where(eq(botSkills.username, username)).get();
+export async function loadBotSkills(db: DB, tenantId: string, username: string): Promise<BotSkillsData | null> {
+  const rows = await db.select().from(botSkills)
+    .where(and(eq(botSkills.tenantId, tenantId), eq(botSkills.username, username)))
+    .limit(1);
+  const row = rows[0];
   if (!row) return null;
   try {
     return JSON.parse(row.skills) as BotSkillsData;
@@ -106,20 +112,20 @@ export interface FleetSettingsData {
   reassignmentThreshold?: number;
 }
 
-export function saveFleetSettings(db: DB, settings: FleetSettingsData): void {
+export async function saveFleetSettings(db: DB, tenantId: string, settings: FleetSettingsData): Promise<void> {
   for (const [key, value] of Object.entries(settings)) {
-    db.insert(fleetSettings)
-      .values({ key, value: String(value) })
+    await db.insert(fleetSettings)
+      .values({ tenantId, key, value: String(value) })
       .onConflictDoUpdate({
-        target: fleetSettings.key,
+        target: [fleetSettings.tenantId, fleetSettings.key],
         set: { value: String(value) },
-      })
-      .run();
+      });
   }
 }
 
-export function loadFleetSettings(db: DB): FleetSettingsData | null {
-  const rows = db.select().from(fleetSettings).all();
+export async function loadFleetSettings(db: DB, tenantId: string): Promise<FleetSettingsData | null> {
+  const rows = await db.select().from(fleetSettings)
+    .where(eq(fleetSettings.tenantId, tenantId));
   if (rows.length === 0) return null;
 
   const map = new Map(rows.map(r => [r.key, r.value]));
@@ -138,23 +144,24 @@ export function loadFleetSettings(db: DB): FleetSettingsData | null {
 
 // ── Goals ──
 
-export function saveGoals(db: DB, goalList: Goal[]): void {
-  // Delete all, re-insert (transactional)
-  db.delete(goals).run();
+export async function saveGoals(db: DB, tenantId: string, goalList: Goal[]): Promise<void> {
+  // Delete all for this tenant, re-insert
+  await db.delete(goals).where(eq(goals.tenantId, tenantId));
   for (const g of goalList) {
-    db.insert(goals)
+    await db.insert(goals)
       .values({
+        tenantId,
         type: g.type,
         priority: g.priority,
         params: JSON.stringify(g.params ?? {}),
         constraints: g.constraints ? JSON.stringify(g.constraints) : null,
-      })
-      .run();
+      });
   }
 }
 
-export function loadGoals(db: DB): Goal[] {
-  const rows = db.select().from(goals).all();
+export async function loadGoals(db: DB, tenantId: string): Promise<Goal[]> {
+  const rows = await db.select().from(goals)
+    .where(eq(goals.tenantId, tenantId));
   return rows
     .map(r => ({
       type: r.type as Goal["type"],

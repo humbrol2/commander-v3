@@ -16,7 +16,7 @@ import * as pgSchema from "./schema-pg";
 // ── SQLite (legacy) ──
 import { Database } from "bun:sqlite";
 import { drizzle as drizzleSqlite } from "drizzle-orm/bun-sqlite";
-import * as sqliteSchema from "./schema";
+import * as sqliteSchema from "./schema-sqlite";
 
 /** Unified DB type — both drivers expose the same Drizzle API surface */
 export type DB = ReturnType<typeof drizzlePg> | ReturnType<typeof drizzleSqlite>;

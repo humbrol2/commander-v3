@@ -7,7 +7,7 @@
  *   outcome → embed → store → retrieve similar → inject into LLM context
  */
 
-import { desc, sql, eq } from "drizzle-orm";
+import { desc, sql, eq, and } from "drizzle-orm";
 import type { DB } from "../data/db";
 import { outcomeEmbeddings } from "../data/schema";
 
@@ -47,10 +47,13 @@ export class EmbeddingStore {
   private lastHealthCheck = 0;
   private healthCheckIntervalMs = 60_000;
 
+  private tenantId: string;
+
   constructor(
     private db: DB,
-    config?: { ollamaUrl?: string; model?: string },
+    config?: { ollamaUrl?: string; model?: string; tenantId?: string },
   ) {
+    this.tenantId = config?.tenantId ?? "";
     this.ollamaUrl = config?.ollamaUrl ?? "http://localhost:11434";
     this.model = config?.model ?? "nomic-embed-text";
   }
@@ -121,15 +124,16 @@ export class EmbeddingStore {
     const vec = await this.embed(entry.text);
     if (!vec) return false;
 
-    this.db.insert(outcomeEmbeddings).values({
+    await this.db.insert(outcomeEmbeddings).values({
+      tenantId: this.tenantId,
       text: entry.text,
       embedding: JSON.stringify(vec),
       category: entry.category,
       metadata: JSON.stringify(entry.metadata),
       profitImpact: entry.profitImpact ?? null,
-    }).run();
+    });
 
-    this.pruneIfNeeded();
+    await this.pruneIfNeeded();
     return true;
   }
 
@@ -162,12 +166,12 @@ export class EmbeddingStore {
     }>;
 
     if (options?.category) {
-      rows = this.db.select()
+      rows = await this.db.select()
         .from(outcomeEmbeddings)
-        .where(eq(outcomeEmbeddings.category, options.category))
-        .all();
+        .where(and(eq(outcomeEmbeddings.tenantId, this.tenantId), eq(outcomeEmbeddings.category, options.category)));
     } else {
-      rows = this.db.select().from(outcomeEmbeddings).all();
+      rows = await this.db.select().from(outcomeEmbeddings)
+        .where(eq(outcomeEmbeddings.tenantId, this.tenantId));
     }
 
     // Score and rank by cosine similarity
@@ -199,16 +203,18 @@ export class EmbeddingStore {
   }
 
   /** Fallback retrieval when embeddings unavailable — recent entries by category */
-  private retrieveRecent(limit: number, category?: string): RetrievedMemory[] {
-    let query = this.db.select().from(outcomeEmbeddings);
+  private async retrieveRecent(limit: number, category?: string): Promise<RetrievedMemory[]> {
     let rows;
     if (category) {
-      rows = query.where(eq(outcomeEmbeddings.category, category))
+      rows = await this.db.select().from(outcomeEmbeddings)
+        .where(and(eq(outcomeEmbeddings.tenantId, this.tenantId), eq(outcomeEmbeddings.category, category)))
         .orderBy(desc(outcomeEmbeddings.id))
-        .limit(limit)
-        .all();
+        .limit(limit);
     } else {
-      rows = query.orderBy(desc(outcomeEmbeddings.id)).limit(limit).all();
+      rows = await this.db.select().from(outcomeEmbeddings)
+        .where(eq(outcomeEmbeddings.tenantId, this.tenantId))
+        .orderBy(desc(outcomeEmbeddings.id))
+        .limit(limit);
     }
 
     return rows.map(r => {
@@ -258,16 +264,17 @@ export class EmbeddingStore {
   }
 
   /** Prune old low-value entries when over cap */
-  private pruneIfNeeded(): void {
-    const count = (this.db.all(sql`SELECT COUNT(*) as count FROM outcome_embeddings`) as Array<{ count: number }>)[0]?.count ?? 0;
+  private async pruneIfNeeded(): Promise<void> {
+    const rows = await (this.db as any).execute(sql`SELECT COUNT(*) as count FROM outcome_embeddings WHERE tenant_id = ${this.tenantId}`);
+    const count = Number((rows as any)?.[0]?.count ?? 0);
     if (count <= MAX_ENTRIES) return;
 
     const deleteCount = count - PRUNE_TO;
-    // Delete oldest entries with lowest profit impact first
-    this.db.run(sql`
+    await (this.db as any).execute(sql`
       DELETE FROM outcome_embeddings
-      WHERE id IN (
+      WHERE tenant_id = ${this.tenantId} AND id IN (
         SELECT id FROM outcome_embeddings
+        WHERE tenant_id = ${this.tenantId}
         ORDER BY COALESCE(profit_impact, 0) ASC, id ASC
         LIMIT ${deleteCount}
       )

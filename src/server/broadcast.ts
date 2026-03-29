@@ -133,7 +133,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
   });
   deps.commander.setChatIntelligence(chatIntel);
 
-  const timer = setInterval(() => {
+  const timer = setInterval(async () => {
     tick++;
 
     const fleet = deps.botManager.getFleetStatus();
@@ -224,13 +224,12 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
 
     // Credit history to DB (every 30s)
     if (tick % cfg.creditHistoryIntervalTicks === 0) {
-      deps.db.insert(creditHistory)
+      await deps.db.insert(creditHistory)
         .values({
           timestamp: Date.now(),
           totalCredits: fleet.totalCredits,
           activeBots: fleet.activeBots,
-        })
-        .run();
+        });
     }
 
     // ── Maintenance Tasks ──
@@ -246,7 +245,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
     if (tick % 600 === 0) {
       try {
         const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-        deps.db.delete(activityLog).where(lt(activityLog.timestamp, cutoff)).run();
+        await deps.db.delete(activityLog).where(lt(activityLog.timestamp, cutoff));
       } catch { /* non-critical */ }
     }
 

@@ -9,11 +9,11 @@
  * Context includes ship stats, economy state, goal weights — so different ships
  * within the same role get different scores.
  *
- * Persists to SQLite (bandit_weights table) for crash recovery.
+ * Persists to PostgreSQL (bandit_weights table) with tenant scoping for crash recovery.
  * Falls back to scoring brain defaults when no data exists.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { DB } from "../data/db";
 import { banditWeights, banditEpisodes } from "../data/schema";
 import type { BotRole } from "./roles";
@@ -191,11 +191,16 @@ export class BanditBrain {
 
   constructor(
     private db: DB,
+    private tenantId: string,
     config?: { alpha?: number; persistIntervalMs?: number },
   ) {
     this.alpha = config?.alpha ?? 0.5; // Exploration coefficient (0.5 = moderate exploration)
     this.persistInterval = config?.persistIntervalMs ?? 300_000; // Persist every 5 min
-    this.loadFromDb();
+  }
+
+  /** Async initializer — call after construction to load persisted weights. */
+  async init(): Promise<void> {
+    await this.loadFromDb();
   }
 
   /**
@@ -235,7 +240,7 @@ export class BanditBrain {
   /**
    * Record an episode outcome — updates the arm model for the given role+routine.
    */
-  recordOutcome(
+  async recordOutcome(
     role: string,
     routine: RoutineName,
     context: number[],
@@ -246,13 +251,14 @@ export class BanditBrain {
       goalType?: string;
       rewardBreakdown?: Record<string, number>;
     },
-  ): void {
+  ): Promise<void> {
     const arm = this.getOrCreateArm(role, routine);
     updateArm(arm, context, reward);
     this.dirty = true;
 
     // Log to database for analysis
-    this.db.insert(banditEpisodes).values({
+    await (this.db as any).insert(banditEpisodes).values({
+      tenantId: this.tenantId,
       role,
       routine,
       context: JSON.stringify(context),
@@ -261,12 +267,12 @@ export class BanditBrain {
       durationSec: metadata?.durationSec ?? 0,
       goalType: metadata?.goalType ?? null,
       botId: metadata?.botId ?? "",
-    }).run();
+    });
 
     // Periodic persistence
     const now = Date.now();
     if (now - this.lastPersist > this.persistInterval) {
-      this.persistToDb();
+      await this.persistToDb();
       this.lastPersist = now;
     }
   }
@@ -314,8 +320,8 @@ export class BanditBrain {
   }
 
   /** Force persistence */
-  flush(): void {
-    if (this.dirty) this.persistToDb();
+  async flush(): Promise<void> {
+    if (this.dirty) await this.persistToDb();
   }
 
   // ── Private ──
@@ -345,8 +351,12 @@ export class BanditBrain {
     return arm;
   }
 
-  private loadFromDb(): void {
-    const rows = this.db.select().from(banditWeights).all();
+  private async loadFromDb(): Promise<void> {
+    const rows = await (this.db as any)
+      .select()
+      .from(banditWeights)
+      .where(eq(banditWeights.tenantId, this.tenantId));
+
     for (const row of rows) {
       try {
         const weights: Record<string, number[]> = JSON.parse(row.weights);
@@ -371,7 +381,7 @@ export class BanditBrain {
     }
   }
 
-  private persistToDb(): void {
+  private async persistToDb(): Promise<void> {
     for (const [role, roleModels] of this.models) {
       const weights: Record<string, number[]> = {};
       const covariance: Record<string, number[][]> = {};
@@ -383,20 +393,21 @@ export class BanditBrain {
         totalPulls += arm.pulls;
       }
 
-      this.db.insert(banditWeights).values({
+      await (this.db as any).insert(banditWeights).values({
+        tenantId: this.tenantId,
         role,
         weights: JSON.stringify(weights),
         covariance: JSON.stringify(covariance),
         episodeCount: totalPulls,
       }).onConflictDoUpdate({
-        target: banditWeights.role,
+        target: [banditWeights.tenantId, banditWeights.role],
         set: {
           weights: JSON.stringify(weights),
           covariance: JSON.stringify(covariance),
           episodeCount: totalPulls,
           updatedAt: new Date().toISOString(),
         },
-      }).run();
+      });
     }
 
     this.dirty = false;
