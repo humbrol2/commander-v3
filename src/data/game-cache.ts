@@ -3,7 +3,7 @@
  * Supports async PostgreSQL + Redis caching with tenant scoping.
  */
 
-import { eq, and, like, sql, gt } from "drizzle-orm";
+import { eq, and, like, sql, gt, desc } from "drizzle-orm";
 import type { DB } from "./db";
 import type { RedisCache } from "./cache-redis";
 import type { TrainingLogger } from "./training-logger";
@@ -781,24 +781,32 @@ export class GameCache {
   async loadRecentMarketData(): Promise<void> {
     try {
       const cutoff = Math.floor(Date.now() / 1000) - 86_400;
-      const rows = await this.db.select({
+      const allRows = await this.db.select({
         stationId: marketHistory.stationId,
         itemId: marketHistory.itemId,
         buyPrice: marketHistory.buyPrice,
         sellPrice: marketHistory.sellPrice,
         buyVolume: marketHistory.buyVolume,
         sellVolume: marketHistory.sellVolume,
-        latestTick: sql<number>`MAX(${marketHistory.tick})`.as("latest_tick"),
+        tick: marketHistory.tick,
       })
         .from(marketHistory)
         .where(and(
           gt(marketHistory.tick, cutoff),
           eq(marketHistory.tenantId, this.tenantId),
         ))
-        .groupBy(marketHistory.stationId, marketHistory.itemId)
-        .orderBy(marketHistory.stationId, marketHistory.itemId);
+        .orderBy(desc(marketHistory.tick));
 
-      if (rows.length === 0) return;
+      if (allRows.length === 0) return;
+
+      // Keep only the latest tick per (station, item)
+      const seen = new Set<string>();
+      const rows = allRows.filter((r) => {
+        const key = `${r.stationId}:${r.itemId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
       const byStation = new Map<string, { prices: MarketPrice[]; latestTick: number }>();
       for (const row of rows) {
@@ -810,7 +818,7 @@ export class GameCache {
           buyPrice: row.buyPrice, sellPrice: row.sellPrice,
           buyVolume: row.buyVolume ?? 0, sellVolume: row.sellVolume ?? 0,
         });
-        if (row.latestTick > entry.latestTick) entry.latestTick = row.latestTick;
+        if (row.tick > entry.latestTick) entry.latestTick = row.tick;
       }
 
       for (const [stationId, entry] of byStation) {
