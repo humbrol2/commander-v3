@@ -423,7 +423,10 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const savedGoals = await loadGoals(db, tenantId);
   if (savedGoals.length > 0) {
     commander.setGoals(savedGoals);
-    console.log(`[Config] Loaded ${savedGoals.length} saved goals`);
+    console.log(`[Config] Loaded ${savedGoals.length} saved goals from DB`);
+  } else if (config.goals.length > 0) {
+    commander.setGoals(config.goals);
+    console.log(`[Config] Loaded ${config.goals.length} goals from config.toml`);
   }
 
   // ── Load Bot Credentials ──
