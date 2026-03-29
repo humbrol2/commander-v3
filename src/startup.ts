@@ -132,7 +132,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const apiFactory: ApiClientFactory = (username: string) => {
     const client = new ApiClient({ username, sessionStore, logger: trainingLogger });
     // Restore session asynchronously (fire-and-forget, login will re-auth if needed)
-    client.restoreSession().catch((e) => trainingLogger.warn(`Failed to restore session for ${username}: ${e}`));
+    client.restoreSession().catch((e) => console.warn(`Failed to restore session for ${username}: ${e}`));
     return client;
   };
 
@@ -160,7 +160,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   };
 
   // Load saved fleet settings
-  const savedFleetSettings = await loadFleetSettings(db);
+  const savedFleetSettings = await loadFleetSettings(db, tenantId);
   if (savedFleetSettings) {
     botManager.fleetConfig.factionTaxPercent = savedFleetSettings.factionTaxPercent;
     botManager.fleetConfig.minBotCredits = savedFleetSettings.minBotCredits;
@@ -188,7 +188,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       // For SQLite we can use raw transactions for performance.
       // For PostgreSQL, Drizzle handles batching efficiently.
       if (driver === "sqlite") {
-        const sqlite = connection.raw as import("bun:sqlite").Database;
+        const sqlite = connection.raw as unknown as import("bun:sqlite").Database;
         sqlite.exec("BEGIN");
         try {
           for (const entry of batch) {

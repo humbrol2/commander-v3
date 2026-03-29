@@ -428,11 +428,13 @@ export function handleClientMessage(
             const api = botManager.getAllBots().find(b => b.api)?.api;
             if (!api) {
               // No bot connected — serve from persisted cache
-              const ships = deps.cache.getCachedShipCatalog() ?? [];
-              const items = deps.cache.getCachedItemCatalog() ?? [];
-              const skills = deps.cache.getCachedSkillTree() ?? [];
-              const recipes = deps.cache.getCachedRecipes() ?? [];
-              sendTo(ws, { type: "catalog_data", ships, items, skills, recipes });
+              const [ships, items, skills, recipes] = await Promise.all([
+                deps.cache.getCachedShipCatalog(),
+                deps.cache.getCachedItemCatalog(),
+                deps.cache.getCachedSkillTree(),
+                deps.cache.getCachedRecipes(),
+              ]);
+              sendTo(ws, { type: "catalog_data", ships: ships ?? [], items: items ?? [], skills: skills ?? [], recipes: recipes ?? [] });
               return;
             }
             const [ships, items, skills, recipes] = await Promise.all([
@@ -444,11 +446,13 @@ export function handleClientMessage(
             sendTo(ws, { type: "catalog_data", ships, items, skills, recipes });
           } catch (err) {
             // Fetch failed — try serving from cache before returning empty
-            const ships = deps.cache.getCachedShipCatalog() ?? [];
-            const items = deps.cache.getCachedItemCatalog() ?? [];
-            const skills = deps.cache.getCachedSkillTree() ?? [];
-            const recipes = deps.cache.getCachedRecipes() ?? [];
-            sendTo(ws, { type: "catalog_data", ships, items, skills, recipes });
+            const [ships, items, skills, recipes] = await Promise.all([
+              deps.cache.getCachedShipCatalog(),
+              deps.cache.getCachedItemCatalog(),
+              deps.cache.getCachedSkillTree(),
+              deps.cache.getCachedRecipes(),
+            ]);
+            sendTo(ws, { type: "catalog_data", ships: ships ?? [], items: items ?? [], skills: skills ?? [], recipes: recipes ?? [] });
           }
         })();
         break;

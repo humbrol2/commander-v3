@@ -1506,7 +1506,7 @@ export async function* equipModulesForRoutine(
           }
         } else {
           // Check other known stations for this module
-          const remote = ctx.cache.findItemSeller(modPattern, ctx.player.credits - 1000);
+          const remote = await ctx.cache.findItemSeller(modPattern, ctx.player.credits - 1000);
           if (remote && remote.stationId !== ctx.player.dockedAtBase && canFitModule(ctx, remote.itemId).fits) {
             yield `no ${modPattern} locally — traveling to buy at remote station`;
             try {

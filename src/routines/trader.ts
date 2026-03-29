@@ -147,7 +147,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
   const traderIndex = getParam(ctx, "traderIndex", 0);
 
   // Track items that failed to sell — seeded from fleet-wide cache, persists across sessions
-  const blacklistedItems = new Set<string>(ctx.cache.getUnsellableItems());
+  const blacklistedItems = new Set<string>(await ctx.cache.getUnsellableItems());
 
   // Commander-assigned route (from scoring brain's arbitrage analysis)
   const assignedItem = getParam(ctx, "assignedItem", "");
@@ -1079,14 +1079,14 @@ async function* insightGatedArbitrageTrip(
   // Pick first unclaimed route (prevents fleet stampede — multiple traders racing same route)
   let route = gatedRoutes[0];
   for (const candidate of gatedRoutes) {
-    if (ctx.cache.claimArbitrageRoute(candidate.itemId, candidate.buyStationId, candidate.sellStationId, ctx.botId)) {
+    if (await ctx.cache.claimArbitrageRoute(candidate.itemId, candidate.buyStationId, candidate.sellStationId, ctx.botId)) {
       route = candidate;
       break;
     }
     yield `arbitrage: ${candidate.itemName} @ ${candidate.buyStationId} → ${candidate.sellStationId} already claimed, trying next`;
   }
   // If all routes were claimed, the last candidate's claim attempt failed — skip
-  if (ctx.cache.isArbitrageRouteClaimed(route.itemId, route.buyStationId, route.sellStationId, ctx.botId)) {
+  if (await ctx.cache.isArbitrageRouteClaimed(route.itemId, route.buyStationId, route.sellStationId, ctx.botId)) {
     yield "arbitrage: all routes claimed by other traders";
     return;
   }

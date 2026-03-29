@@ -162,7 +162,7 @@ export class ApiClient {
       this.username,
       this.sessionId!,
       new Date(Date.now() + 30 * 60 * 1000).toISOString()
-    ).catch(() => {});
+    ).catch((e) => console.warn(`Failed to store session for ${this.username}: ${e}`));
 
     if (!data.player) {
       throw new ApiError("login_failed", `Login returned null player for ${this.username} — account may be deleted`);
@@ -1431,7 +1431,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function normalizePlayer(raw: Record<string, unknown>): PlayerState {
+function normalizePlayer(raw: Record<string, unknown> | null | undefined): PlayerState {
+  if (!raw || typeof raw !== "object") raw = {};
   return {
     id: str(raw.id),
     username: str(raw.username),
@@ -1505,7 +1506,8 @@ function normalizeShip(raw: Record<string, unknown> | null | undefined): ShipSta
   };
 }
 
-function normalizeSystem(raw: Record<string, unknown>): StarSystem {
+function normalizeSystem(raw: Record<string, unknown> | null | undefined): StarSystem {
+  if (!raw || typeof raw !== "object") raw = {};
   const id = str(raw.id) || str(raw.system_id);
 
   // Coordinates: try every conceivable format
@@ -1546,7 +1548,8 @@ function normalizeSystem(raw: Record<string, unknown>): StarSystem {
   };
 }
 
-function normalizePoi(raw: Record<string, unknown>): PoiDetail {
+function normalizePoi(raw: Record<string, unknown> | null | undefined): PoiDetail {
+  if (!raw || typeof raw !== "object") raw = {};
   return {
     id: str(raw.id),
     systemId: str(raw.system_id),

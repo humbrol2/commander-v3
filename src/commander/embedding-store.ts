@@ -166,12 +166,12 @@ export class EmbeddingStore {
     }>;
 
     if (options?.category) {
-      rows = await this.db.select()
+      rows = (await this.db.select()
         .from(outcomeEmbeddings)
-        .where(and(eq(outcomeEmbeddings.tenantId, this.tenantId), eq(outcomeEmbeddings.category, options.category)));
+        .where(and(eq(outcomeEmbeddings.tenantId, this.tenantId), eq(outcomeEmbeddings.category, options.category)))).map(r => ({ ...r, createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt }));
     } else {
-      rows = await this.db.select().from(outcomeEmbeddings)
-        .where(eq(outcomeEmbeddings.tenantId, this.tenantId));
+      rows = (await this.db.select().from(outcomeEmbeddings)
+        .where(eq(outcomeEmbeddings.tenantId, this.tenantId))).map(r => ({ ...r, createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt }));
     }
 
     // Score and rank by cosine similarity
@@ -227,7 +227,7 @@ export class EmbeddingStore {
         metadata,
         profitImpact: r.profitImpact,
         similarity: 1.0, // No similarity score available
-        createdAt: r.createdAt ?? new Date().toISOString(),
+        createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : (r.createdAt ?? new Date().toISOString()),
       };
     });
   }
@@ -283,16 +283,17 @@ export class EmbeddingStore {
   }
 
   /** Get store stats */
-  getStats(): { totalEntries: number; categories: Record<string, number>; available: boolean } {
-    const total = (this.db.all(sql`SELECT COUNT(*) as count FROM outcome_embeddings`) as Array<{ count: number }>)[0]?.count ?? 0;
-    const cats = this.db.all(sql`
-      SELECT category, COUNT(*) as count FROM outcome_embeddings GROUP BY category
-    `) as Array<{ category: string; count: number }>;
+  async getStats(): Promise<{ totalEntries: number; categories: Record<string, number>; available: boolean }> {
+    const totalRows = await this.db.execute(sql`SELECT COUNT(*) as count FROM outcome_embeddings WHERE tenant_id = ${this.tenantId}`);
+    const total = (totalRows as unknown as Array<{ count: number | string }>)[0]?.count ?? 0;
+    const cats = (await this.db.execute(sql`
+      SELECT category, COUNT(*) as count FROM outcome_embeddings WHERE tenant_id = ${this.tenantId} GROUP BY category
+    `)) as unknown as Array<{ category: string; count: number }>;
 
     const categories: Record<string, number> = {};
-    for (const c of cats) categories[c.category] = c.count;
+    for (const c of cats) categories[c.category] = Number(c.count);
 
-    return { totalEntries: total, categories, available: this.available };
+    return { totalEntries: Number(total), categories, available: this.available };
   }
 
   /** Whether the embedding model is available */

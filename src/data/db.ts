@@ -72,9 +72,9 @@ export function createSqliteDatabase(dbPath = "commander.db"): DatabaseConnectio
   const db = drizzleSqlite(sqlite, { schema: sqliteSchema });
 
   return {
-    db,
+    db: db as unknown as DB,
     driver: "sqlite",
-    raw: sqlite,
+    raw: sqlite as unknown as import("postgres").Sql,
     close: async () => { sqlite.close(); },
   };
 }
