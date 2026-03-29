@@ -4,6 +4,7 @@
  */
 
 import type { StarSystem, PoiSummary, PoiType, Empire } from "../types/game";
+import { findWeightedPath as dijkstra } from "./weighted-pathfinding";
 
 interface SystemNode {
   system: StarSystem;
@@ -482,6 +483,35 @@ export class Galaxy {
   getDistance(fromSystemId: string, toSystemId: string): number {
     const path = this.findPath(fromSystemId, toSystemId);
     return path ? path.length - 1 : -1;
+  }
+
+  /** Find lowest-cost path considering per-system cost (e.g., danger). */
+  findWeightedPath(
+    fromSystemId: string,
+    toSystemId: string,
+    costFn: (systemId: string) => number,
+  ): string[] | null {
+    return dijkstra(
+      fromSystemId,
+      toSystemId,
+      (id) => this.graph.get(id)?.neighbors ?? [],
+      costFn,
+    );
+  }
+
+  /** Get weighted distance (sum of costs along cheapest path). Returns -1 if unreachable. */
+  getWeightedDistance(
+    fromSystemId: string,
+    toSystemId: string,
+    costFn: (systemId: string) => number,
+  ): number {
+    const path = this.findWeightedPath(fromSystemId, toSystemId, costFn);
+    if (!path) return -1;
+    let cost = 0;
+    for (let i = 1; i < path.length; i++) {
+      cost += costFn(path[i]);
+    }
+    return cost;
   }
 
   /**
