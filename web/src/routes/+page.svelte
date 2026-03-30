@@ -198,8 +198,7 @@
 											{bot.credits.toLocaleString()}
 										</td>
 										<td class="py-2 pr-4 text-right mono {(botRevenue24h[bot.id] ?? 0) >= 0 ? 'text-bio-green' : 'text-claw-red'}">
-											{@const rev = botRevenue24h[bot.id] ?? 0}
-											{rev >= 0 ? "+" : ""}{rev.toLocaleString()}
+											{(botRevenue24h[bot.id] ?? 0) >= 0 ? "+" : ""}{(botRevenue24h[bot.id] ?? 0).toLocaleString()}
 										</td>
 										<td class="py-2 pr-4 text-right mono">
 											<span class={bot.fuelPct < 20 ? "text-claw-red" : bot.fuelPct < 50 ? "text-warning-yellow" : "text-star-white"}>
