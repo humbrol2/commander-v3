@@ -468,19 +468,20 @@ async function* manageFactionSales(
     }
   }
 
-  // ── Adjust slow sell orders (>20min unfilled) ──
+  // ── Adjust slow sell orders (>45min unfilled) ──
+  // Each modify costs a game tick — only adjust for meaningful price shifts
   let adjustActions = 0;
   for (const [orderId, tracked] of trackedSellOrders) {
-    if (ctx.shouldStop || adjustActions >= 2) break;
+    if (ctx.shouldStop || adjustActions >= 1) break; // Max 1 sell adjust per cycle
 
     const age = now - tracked.placedAt;
-    if (age < 1_200_000) continue; // < 20 min — too early to adjust
+    if (age < 2_700_000) continue; // < 45 min — let the order work first
 
     const priceResult = calculateSellPrice(ctx, tracked.itemId, tracked.costBasis, cachedStationIds, homeBase, undercutPct, priceIndex);
     if (!priceResult) continue;
 
     const priceDiff = Math.abs(priceResult.listPrice - tracked.priceEach) / tracked.priceEach;
-    if (priceDiff < 0.10) continue; // < 10% difference — not worth a tick
+    if (priceDiff < 0.20) continue; // < 20% difference — not worth burning a tick
 
     // Don't lower below 90% of cost basis (accept 10% loss max to clear inventory)
     const floorPrice = Math.max(1, Math.floor(tracked.costBasis * 0.90));
@@ -1026,12 +1027,13 @@ async function* manageMaterialBuyOrders(
     }
   }
 
-  // ── Adjust prices on slow orders (>30min without fills) ──
+  // ── Adjust prices on slow orders (>60min without fills) ──
+  // Each modify costs a game tick (10s) — only adjust for significant price shifts
   for (const [orderId, order] of tracked) {
     if (ctx.shouldStop || actionsThisCycle >= MAX_ACTIONS) break;
 
     const age = now - order.placedAt;
-    if (age < 1_200_000) continue; // < 20 min — too early to adjust
+    if (age < 3_600_000) continue; // < 60 min — let the order work before adjusting
 
     // Need a recipe context to recalculate price
     if (!order.forRecipeId) continue;
@@ -1042,7 +1044,7 @@ async function* manageMaterialBuyOrders(
     if (!priceInfo) continue;
 
     const priceDiff = Math.abs(priceInfo.recommendedPrice - order.priceEach) / order.priceEach;
-    if (priceDiff < 0.10) continue; // < 10% difference — not worth a tick
+    if (priceDiff < 0.25) continue; // < 25% difference — not worth burning a tick
 
     try {
       await ctx.api.modifyOrder(orderId, priceInfo.recommendedPrice);
