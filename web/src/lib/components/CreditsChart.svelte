@@ -6,7 +6,7 @@
 	 *   2. Simple mode (data prop): renders provided data directly (used in bot detail)
 	 */
 	import Chart from "./Chart.svelte";
-	import { fleetStats } from "$stores/websocket";
+	import { fleetStats, getAuthHeaders } from "$stores/websocket";
 
 	type Range = "1h" | "1d" | "1w" | "1m";
 
@@ -26,7 +26,7 @@
 
 	async function fetchHistory(r: Range) {
 		try {
-			const res = await fetch(`/api/credits?range=${r}`);
+			const res = await fetch(`/api/credits?range=${r}`, { headers: getAuthHeaders() });
 			if (res.ok) {
 				history = await res.json();
 			}

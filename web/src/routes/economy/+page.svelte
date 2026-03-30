@@ -50,7 +50,7 @@
 
 	async function fetchTrades(r: TradeRange) {
 		try {
-			const res = await fetch(`/api/economy/trades?range=${r}&limit=200`);
+			const res = await fetch(`/api/economy/trades?range=${r}&limit=200`, { headers: getAuthHeaders() });
 			if (res.ok) trades = await res.json();
 		} catch { /* silent */ }
 	}
@@ -64,21 +64,21 @@
 
 	async function fetchBotBreakdown() {
 		try {
-			const res = await fetch(`/api/economy/bot-breakdown?range=1d`);
+			const res = await fetch(`/api/economy/bot-breakdown?range=1d`, { headers: getAuthHeaders() });
 			if (res.ok) botBreakdown = await res.json();
 		} catch { /* silent */ }
 	}
 
 	async function fetchMiningRate() {
 		try {
-			const res = await fetch(`/api/economy/mining-rate?range=1d`);
+			const res = await fetch(`/api/economy/mining-rate?range=1d`, { headers: getAuthHeaders() });
 			if (res.ok) miningRate = await res.json();
 		} catch { /* silent */ }
 	}
 
 	async function fetchRevenueHistory(r: TradeRange) {
 		try {
-			const res = await fetch(`/api/economy/history?range=${r}`);
+			const res = await fetch(`/api/economy/history?range=${r}`, { headers: getAuthHeaders() });
 			if (res.ok) revenueHistory = await res.json();
 		} catch { /* silent */ }
 	}

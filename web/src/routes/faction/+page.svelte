@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { factionState, economy, send } from "$stores/websocket";
+	import { factionState, economy, send, getAuthHeaders } from "$stores/websocket";
 
 	type FactionTab = "overview" | "storage_tx" | "credits_tx";
 	type TxRange = "1h" | "1d" | "1w";
@@ -28,7 +28,7 @@
 
 	async function fetchTransactions(r: TxRange) {
 		try {
-			const res = await fetch(`/api/faction/transactions?range=${r}&limit=500`);
+			const res = await fetch(`/api/faction/transactions?range=${r}&limit=500`, { headers: getAuthHeaders() });
 			if (res.ok) transactions = await res.json();
 		} catch { /* silent */ }
 	}

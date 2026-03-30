@@ -441,7 +441,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
 
       // Refresh 24h financial totals from DB (persists across restarts)
       if (deps.trainingLogger) {
-        try { cached24hTotals = deps.trainingLogger.get24hFinancialTotals(); } catch { /* non-critical */ }
+        try { cached24hTotals = await deps.trainingLogger.get24hFinancialTotals(); } catch { /* non-critical */ }
       }
     }
 

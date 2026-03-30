@@ -4,6 +4,7 @@
 	 * Fetches data from /api/economy/history with time range filter.
 	 */
 	import Chart from "./Chart.svelte";
+	import { getAuthHeaders } from "$stores/websocket";
 
 	type Range = "1h" | "1d" | "1w" | "all";
 
@@ -12,7 +13,7 @@
 
 	async function fetchHistory(r: Range) {
 		try {
-			const res = await fetch(`/api/economy/history?range=${r}`);
+			const res = await fetch(`/api/economy/history?range=${r}`, { headers: getAuthHeaders() });
 			if (res.ok) {
 				history = await res.json();
 			}
