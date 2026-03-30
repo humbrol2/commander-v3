@@ -116,6 +116,18 @@ export async function* scout(ctx: BotContext): AsyncGenerator<RoutineYield, void
   const checkFaction = getParam(ctx, "checkFaction", true);
   const staleTtlMs = getParam(ctx, "staleTtlMs", 1_800_000); // 30 min
 
+  // ── Check for scan work orders ──
+  let activeWorkOrder: string | null = null;
+  try {
+    const { claimWorkOrder, startWorkOrder } = await import("./work-order-helper");
+    const order = await claimWorkOrder(ctx, ["scan"]);
+    if (order) {
+      activeWorkOrder = order.id;
+      startWorkOrder(ctx, order.id);
+      yield `work order: scan ${order.targetId?.replace(/_/g, " ") ?? "market"} (priority ${order.priority})`;
+    }
+  } catch { /* work orders optional */ }
+
   // Build system visit list — params override, otherwise use default trade hubs
   const targetSystemsParam = getParam<string[]>(ctx, "targetSystems", []);
   const singleTarget = getParam(ctx, "targetSystem", "");
@@ -255,6 +267,15 @@ export async function* scout(ctx: BotContext): AsyncGenerator<RoutineYield, void
       // Service ship between systems
       await refuelIfNeeded(ctx);
       await repairIfNeeded(ctx);
+    }
+
+    // Complete work order after first patrol loop
+    if (activeWorkOrder) {
+      try {
+        const { completeWorkOrder } = await import("./work-order-helper");
+        completeWorkOrder(ctx, activeWorkOrder);
+        activeWorkOrder = null;
+      } catch { /* non-critical */ }
     }
 
     yield `patrol loop ${loopCount} complete: ${systemsVisited} system(s) visited, ${totalScanned} station(s) scanned`;

@@ -38,9 +38,31 @@ import {
 export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void, void> {
   let targetBelt = getParam(ctx, "targetBelt", "");
   let sellStation = getParam(ctx, "sellStation", "");
-  const targetOre = getParam(ctx, "targetOre", "");
+  let targetOre = getParam(ctx, "targetOre", "");
   // Crystal miners always deposit to faction storage (crystals are strategic, not for sale)
   const depositToStorage = ctx.settings.role === "crystal_miner" ? true : getParam(ctx, "depositToStorage", false);
+
+  // ── Check for work orders (mine specific ore) ──
+  let activeWorkOrder: string | null = null;
+  try {
+    const { claimWorkOrder, startWorkOrder, completeWorkOrder } = await import("./work-order-helper");
+    const order = await claimWorkOrder(ctx, ["mine"]);
+    if (order) {
+      activeWorkOrder = order.id;
+      startWorkOrder(ctx, order.id);
+      // Override target ore with work order target
+      if (order.targetId && !targetOre) {
+        targetOre = order.targetId;
+        yield `work order: mine ${order.targetId.replace(/_/g, " ")} (priority ${order.priority})`;
+        // Try to find a belt with this specific ore
+        const oredPois = ctx.galaxy.findPoisWithResource(order.targetId);
+        if (oredPois.length > 0) {
+          targetBelt = oredPois[0].poi.id;
+          yield `targeting ${oredPois[0].poi.name} for ${order.targetId}`;
+        }
+      }
+    }
+  } catch { /* work orders optional */ }
   const equipModules = getParam<string[]>(ctx, "equipModules", []);
   const unequipModules = getParam<string[]>(ctx, "unequipModules", []);
 
@@ -582,6 +604,15 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
     // ── Service ship ──
     await refuelIfNeeded(ctx);
     await repairIfNeeded(ctx);
+
+    // Complete work order if one was claimed
+    if (activeWorkOrder) {
+      try {
+        const { completeWorkOrder } = await import("./work-order-helper");
+        completeWorkOrder(ctx, activeWorkOrder);
+        activeWorkOrder = null;
+      } catch { /* non-critical */ }
+    }
 
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "miner" });
   }

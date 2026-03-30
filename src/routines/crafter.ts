@@ -42,6 +42,21 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
   let recipeId = getParam(ctx, "recipeId", "");
   const count = getParam(ctx, "count", 1);
   const craftStation = getParam(ctx, "craftStation", "");
+
+  // ── Check for craft work orders ──
+  let activeWorkOrder: string | null = null;
+  try {
+    const { claimWorkOrder, startWorkOrder } = await import("./work-order-helper");
+    const order = await claimWorkOrder(ctx, ["craft"]);
+    if (order) {
+      activeWorkOrder = order.id;
+      startWorkOrder(ctx, order.id);
+      if (order.targetId && !recipeId) {
+        recipeId = order.targetId;
+        yield `work order: craft ${order.targetId.replace(/_/g, " ")} (priority ${order.priority})`;
+      }
+    }
+  } catch { /* work orders optional */ }
   // Default to "storage" so crafters pull from faction storage (not just cargo)
   const materialSource = getParam<string>(ctx, "materialSource", "storage");
   const sellOutput = getParam(ctx, "sellOutput", true);
@@ -472,6 +487,15 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
     // ── Service ──
     await refuelIfNeeded(ctx);
     await repairIfNeeded(ctx);
+
+    // Complete work order if one was claimed
+    if (activeWorkOrder) {
+      try {
+        const { completeWorkOrder } = await import("./work-order-helper");
+        completeWorkOrder(ctx, activeWorkOrder);
+        activeWorkOrder = null;
+      } catch { /* non-critical */ }
+    }
 
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
   }

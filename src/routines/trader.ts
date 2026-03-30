@@ -140,6 +140,23 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
   let item = getParam(ctx, "item", "");
   let maxBuyPrice = getParam(ctx, "maxBuyPrice", Infinity);
   let minSellPrice = getParam(ctx, "minSellPrice", 0);
+
+  // ── Check for work orders (sell/buy/deliver) ──
+  let activeWorkOrder: string | null = null;
+  try {
+    const { claimWorkOrder, startWorkOrder } = await import("./work-order-helper");
+    const order = await claimWorkOrder(ctx, ["sell", "trade", "deliver"]);
+    if (order) {
+      activeWorkOrder = order.id;
+      startWorkOrder(ctx, order.id);
+      yield `work order: ${order.type} ${order.targetId.replace(/_/g, " ")} (priority ${order.priority})`;
+      // Override params based on work order type
+      if (order.type === "sell" && order.targetId) {
+        item = order.targetId;
+        if (order.stationId) sellStation = order.stationId;
+      }
+    }
+  } catch { /* work orders optional */ }
   const maxRoundTrips = getParam(ctx, "maxRoundTrips", Infinity);
   const useOrders = getParam(ctx, "useOrders", false);
   let sellFromFaction = getParam(ctx, "sellFromFaction", false);
@@ -1022,6 +1039,15 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
     // ── Service ──
     await refuelIfNeeded(ctx);
     await repairIfNeeded(ctx);
+
+    // Complete work order if one was claimed
+    if (activeWorkOrder) {
+      try {
+        const { completeWorkOrder } = await import("./work-order-helper");
+        completeWorkOrder(ctx, activeWorkOrder);
+        activeWorkOrder = null;
+      } catch { /* non-critical */ }
+    }
 
     tripCount++;
     yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "trader" });
