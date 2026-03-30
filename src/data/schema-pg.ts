@@ -10,7 +10,6 @@ import {
   serial,
   doublePrecision,
   bigint,
-  timestamp,
   index,
   primaryKey,
 } from "drizzle-orm/pg-core";
@@ -25,7 +24,7 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   role: text("role").notNull().default("owner"),
   tier: text("tier").notNull().default("free"),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 });
 
 // ── Tenants (gateway) ──
@@ -36,8 +35,8 @@ export const tenants = pgTable("tenants", {
   port: integer("port"),
   status: text("status").notNull().default("stopped"),
   maxBots: integer("max_bots").notNull().default(5),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
+  updatedAt: text("updated_at").default(sql`now()`),
 });
 
 // ── Static Data Cache (version-gated) ──
@@ -79,7 +78,7 @@ export const decisionLog = pgTable("decision_log", {
   gameVersion: text("game_version").notNull(),
   commanderVersion: text("commander_version").notNull(),
   schemaVersion: integer("schema_version").notNull().default(1),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_decision_log_tenant").on(table.tenantId),
   index("idx_decision_log_bot").on(table.botId),
@@ -100,7 +99,7 @@ export const stateSnapshots = pgTable("state_snapshots", {
   gameVersion: text("game_version").notNull(),
   commanderVersion: text("commander_version").notNull(),
   schemaVersion: integer("schema_version").notNull().default(1),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_snapshots_tenant").on(table.tenantId),
   index("idx_snapshots_bot").on(table.botId),
@@ -129,7 +128,7 @@ export const episodes = pgTable("episodes", {
   gameVersion: text("game_version").notNull(),
   commanderVersion: text("commander_version").notNull(),
   schemaVersion: integer("schema_version").notNull().default(1),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_episodes_tenant").on(table.tenantId),
   index("idx_episodes_bot").on(table.botId),
@@ -148,7 +147,7 @@ export const marketHistory = pgTable("market_history", {
   sellPrice: doublePrecision("sell_price"),
   buyVolume: integer("buy_volume"),
   sellVolume: integer("sell_volume"),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_market_tenant").on(table.tenantId),
   index("idx_market_station_item").on(table.stationId, table.itemId),
@@ -169,7 +168,7 @@ export const commanderLog = pgTable("commander_log", {
   gameVersion: text("game_version").notNull(),
   commanderVersion: text("commander_version").notNull(),
   schemaVersion: integer("schema_version").notNull().default(1),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_commander_tenant").on(table.tenantId),
   index("idx_commander_tick").on(table.tick),
@@ -185,8 +184,8 @@ export const botSessions = pgTable("bot_sessions", (table) => ({
   playerId: text("player_id"),
   sessionId: text("session_id"),
   sessionExpiresAt: text("session_expires_at"),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
+  updatedAt: text("updated_at").default(sql`now()`),
 }), (table) => [
   primaryKey({ columns: [table.tenantId, table.username] }),
 ]);
@@ -229,7 +228,7 @@ export const botSettings = pgTable("bot_settings", (table) => ({
   factionStorage: integer("faction_storage").notNull().default(0),
   role: text("role"),
   manualControl: integer("manual_control").notNull().default(0),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedAt: text("updated_at").default(sql`now()`),
 }), (table) => [
   primaryKey({ columns: [table.tenantId, table.username] }),
 ]);
@@ -275,7 +274,7 @@ export const fleetSettings = pgTable("fleet_settings", (table) => ({
   tenantId: text("tenant_id").notNull(),
   key: text("key").notNull(),
   value: text("value").notNull(),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedAt: text("updated_at").default(sql`now()`),
 }), (table) => [
   primaryKey({ columns: [table.tenantId, table.key] }),
 ]);
@@ -295,7 +294,7 @@ export const llmDecisions = pgTable("llm_decisions", {
   reasoning: text("reasoning"),
   scoringBrainAssignments: text("scoring_brain_assignments"),
   agreementRate: doublePrecision("agreement_rate"),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_llm_tenant").on(table.tenantId),
   index("idx_llm_tick").on(table.tick),
@@ -309,7 +308,7 @@ export const poiCache = pgTable("poi_cache", (table) => ({
   poiId: text("poi_id").notNull(),
   systemId: text("system_id").notNull(),
   data: text("data").notNull(),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedAt: text("updated_at").default(sql`now()`),
 }), (table) => [
   primaryKey({ columns: [table.tenantId, table.poiId] }),
   index("idx_poi_system").on(table.systemId),
@@ -357,7 +356,7 @@ export const commanderMemory = pgTable("commander_memory", (table) => ({
   key: text("key").notNull(),
   fact: text("fact").notNull(),
   importance: integer("importance").notNull().default(5),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedAt: text("updated_at").default(sql`now()`),
 }), (table) => [
   primaryKey({ columns: [table.tenantId, table.key] }),
 ]);
@@ -368,7 +367,7 @@ export const botSkills = pgTable("bot_skills", (table) => ({
   tenantId: text("tenant_id").notNull(),
   username: text("username").notNull(),
   skills: text("skills").notNull(),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedAt: text("updated_at").default(sql`now()`),
 }), (table) => [
   primaryKey({ columns: [table.tenantId, table.username] }),
 ]);
@@ -384,7 +383,7 @@ export const banditWeights = pgTable("bandit_weights", (table) => ({
   covariance: text("covariance").notNull(),
   /** Total episodes observed for this role */
   episodeCount: integer("episode_count").notNull().default(0),
-  updatedAt: timestamp("updated_at").defaultNow(),
+  updatedAt: text("updated_at").default(sql`now()`),
 }), (table) => [
   primaryKey({ columns: [table.tenantId, table.role] }),
 ]);
@@ -407,7 +406,7 @@ export const banditEpisodes = pgTable("bandit_episodes", {
   /** Active goal type at decision time */
   goalType: text("goal_type"),
   botId: text("bot_id").notNull(),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_bandit_ep_tenant").on(table.tenantId),
   index("idx_bandit_ep_role").on(table.role),
@@ -430,7 +429,7 @@ export const outcomeEmbeddings = pgTable("outcome_embeddings", {
   metadata: text("metadata").notNull().default("{}"),
   /** Credit impact of this outcome (positive = profitable) */
   profitImpact: doublePrecision("profit_impact"),
-  createdAt: timestamp("created_at").defaultNow(),
+  createdAt: text("created_at").default(sql`now()`),
 }, (table) => [
   index("idx_embed_tenant").on(table.tenantId),
   index("idx_embed_category").on(table.category),
