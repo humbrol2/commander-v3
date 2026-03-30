@@ -722,7 +722,7 @@ export class GameCache {
     let count = 0;
     const now = Date.now();
     for (const row of rows) {
-      if (now - row.fetchedAt > row.ttlMs) continue; // expired
+      if (now - Number(row.fetchedAt) > Number(row.ttlMs)) continue; // expired
       const stationId = row.key.replace("shipyard:", "");
       try {
         const ships = JSON.parse(row.data) as Array<{ id: string; name: string; classId: string; price: number }>;
@@ -746,17 +746,17 @@ export class GameCache {
       .where(eq(timedCache.tenantId, this.tenantId));
 
     for (const row of rows) {
-      if (now - row.fetchedAt > MAX_STALE_AGE) continue; // too old even for startup
+      if (now - Number(row.fetchedAt) > MAX_STALE_AGE) continue; // too old even for startup
       try {
         if (row.key.startsWith("market:")) {
           const stationId = row.key.replace("market:", "");
           this.marketPricesMemory.set(stationId, JSON.parse(row.data));
-          this.marketFetchedAt.set(stationId, row.fetchedAt);
+          this.marketFetchedAt.set(stationId, Number(row.fetchedAt));
           markets++;
         } else if (row.key.startsWith("insights:")) {
           const stationId = row.key.replace("insights:", "");
           this.marketInsightsMemory.set(stationId, JSON.parse(row.data));
-          this.insightFetchedAt.set(stationId, row.fetchedAt);
+          this.insightFetchedAt.set(stationId, Number(row.fetchedAt));
           insights++;
         } else if (row.key.startsWith("system:")) {
           const systemId = row.key.replace("system:", "");
