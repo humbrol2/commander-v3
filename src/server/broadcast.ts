@@ -255,7 +255,18 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       } catch { /* non-critical */ }
     }
 
-    // ── Dashboard Broadcasts ──
+    // ── Always-on tasks (even without dashboard clients) ──
+    // Refresh 24h financial totals every 30s (used by economy_update + public stats)
+    if (tick % 10 === 0 && deps.trainingLogger) {
+      try {
+        const totals = await deps.trainingLogger.get24hFinancialTotals();
+        if (totals.revenue > 0 || totals.cost > 0) {
+          cached24hTotals = totals;
+        }
+      } catch { /* non-critical */ }
+    }
+
+    // ── Dashboard Broadcasts (skip if no clients) ──
     if (getClientCount() === 0) return;
 
     // Fleet update (every 3s) — use full BotSummary (not FleetBotInfo) for dashboard
@@ -448,19 +459,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
         cachedOrders = await pollOpenOrders(deps);
       });
 
-      // Refresh 24h financial totals from DB (persists across restarts)
-      console.log(`[Broadcast] trainingLogger=${!!deps.trainingLogger}`);
-      if (deps.trainingLogger) {
-        try {
-          const totals = await deps.trainingLogger.get24hFinancialTotals();
-          if (totals.revenue > 0 || totals.cost > 0) {
-            cached24hTotals = totals;
-          }
-          console.log(`[Broadcast] 24h totals: rev=${totals.revenue} cost=${totals.cost} profit=${totals.profit}`);
-        } catch (err) {
-          console.warn(`[Broadcast] 24h totals failed: ${err instanceof Error ? err.message : err}`);
-        }
-      }
+      // (24h totals now refreshed above, outside client gate)
     }
 
     // Social feed polling (every 30s — uses bot API queries)
