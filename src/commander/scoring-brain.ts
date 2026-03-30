@@ -838,28 +838,31 @@ export class ScoringBrain implements CommanderBrain {
         return crafterBonus;
       }
       case "miner": {
-        // Deficit-aware: reward mining scarce ores, penalize when oversupplied
+        // % of faction storage capacity drives miner urgency
+        // Faction lockbox: 100,000 per item type. Total ore capacity depends on ore types tracked.
+        const STORAGE_CAP_PER_ITEM = 100_000;
+        const oreTypes = Math.max(oreBreakdown.size, 1);
+        const totalOreCap = oreTypes * STORAGE_CAP_PER_ITEM;
+        const oreFillPct = oreInStorage / totalOreCap;
+
+        // Smooth linear curve: 100% empty = +60 bonus, 100% full = -60 penalty
+        // Crossover at ~40% fill (slight positive encouragement to keep mining)
+        let minerBonus = Math.round(60 - (oreFillPct * 150));
+        minerBonus = Math.max(-60, Math.min(60, minerBonus));
+
+        // Per-ore scarcity override: even if total is high, mine what's missing
         let scarceCount = 0;
-        let surplusCount = 0;
         for (const [, qty] of oreBreakdown) {
-          if (qty < 100) scarceCount++;
-          if (qty > 3000) surplusCount++;
+          const itemFillPct = qty / STORAGE_CAP_PER_ITEM;
+          if (itemFillPct < 0.01) scarceCount++; // <1% of cap = scarce
         }
-
-        let minerBonus = 0;
-
-        // Low ore = high incentive to mine
-        if (oreInStorage < 50) minerBonus += 60;        // Critical — crafters idle
-        else if (oreInStorage < 200) minerBonus += 40;  // Low supply
-        else if (oreInStorage < 500) minerBonus += 20;  // Moderate
-        else if (oreInStorage < 2000) minerBonus += 0;  // Comfortable
-        else if (oreInStorage < 5000) minerBonus -= 20; // Getting heavy
-        else minerBonus -= 50;                           // Massive stockpile, slow down
-
-        // Scarce ore types override — even with total abundance, mine what's missing
         if (scarceCount > 0) minerBonus += scarceCount * 15;
 
-        // All ores oversupplied — heavy penalty
+        // Per-ore surplus: each type >50% cap adds penalty
+        let surplusCount = 0;
+        for (const [, qty] of oreBreakdown) {
+          if (qty / STORAGE_CAP_PER_ITEM > 0.50) surplusCount++;
+        }
         if (surplusCount > 0 && scarceCount === 0) minerBonus -= surplusCount * 10;
 
         return minerBonus;
