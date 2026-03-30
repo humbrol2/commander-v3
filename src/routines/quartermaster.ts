@@ -1318,8 +1318,21 @@ function calculateBuyPrice(
   const gapQty = rawMaterials.get(gapItemId);
   if (!gapQty || gapQty <= 0) return null;
 
-  // End product sell price
-  const endProductPrice = ctx.crafting.getItemBasePrice(recipe.outputItem) * recipe.outputQuantity;
+  // End product sell price — prefer actual market data over catalog
+  const idx2 = priceIdx ?? buildPriceIndex(ctx);
+  const outputEntry = idx2.get(recipe.outputItem);
+  const marketSellPrice = outputEntry?.medianSell ?? outputEntry?.highestBuy ?? 0;
+  const catalogSellPrice = ctx.crafting.getItemBasePrice(recipe.outputItem) * recipe.outputQuantity;
+  // Use market price if available and reasonable, otherwise catalog
+  const endProductPrice = (marketSellPrice > 0 && marketSellPrice < catalogSellPrice * 3)
+    ? marketSellPrice * recipe.outputQuantity
+    : catalogSellPrice;
+
+  // Safety: if no market data AND no buy orders exist for end product, skip
+  // (we'd be crafting goods nobody is buying)
+  if (!marketSellPrice && !outputEntry?.highestBuy) {
+    return null; // No proven demand — don't invest in materials
+  }
 
   // Cost of all other raw materials
   let otherCosts = 0;
