@@ -6,7 +6,7 @@
 	 *   2. Simple mode (data prop): renders provided data directly (used in bot detail)
 	 */
 	import Chart from "./Chart.svelte";
-	import { fleetStats, getAuthHeaders } from "$stores/websocket";
+	import { fleetStats, factionState, getAuthHeaders } from "$stores/websocket";
 
 	type Range = "1h" | "1d" | "1w" | "1m";
 
@@ -73,6 +73,7 @@
 			return d.time.slice(5, 10) + " " + d.time.slice(11, 16);
 		});
 		const values = chartData.map((d) => d.credits);
+		const factionCredits = $factionState?.credits ?? 0;
 
 		return {
 			tooltip: {
@@ -81,8 +82,12 @@
 				borderColor: "#3d5a6c",
 				textStyle: { color: "#e8f4f8", fontSize: 12 },
 				formatter: (params: any) => {
-					const p = Array.isArray(params) ? params[0] : params;
-					return `<b>${p.axisValue}</b><br/>Credits: ${p.value?.toLocaleString() ?? "---"}`;
+					const pp = Array.isArray(params) ? params : [params];
+					let html = `<b>${pp[0]?.axisValue ?? ""}</b>`;
+					for (const p of pp) {
+						html += `<br/><span style="color:${p.color}">${p.seriesName}:</span> ${p.value?.toLocaleString() ?? "---"} cr`;
+					}
+					return html;
 				},
 			},
 			xAxis: {
@@ -102,8 +107,15 @@
 					formatter: (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : `${v}`),
 				},
 			},
+			legend: {
+				data: ["Bot Credits", "Faction Treasury"],
+				textStyle: { color: "#a8c5d6", fontSize: 10 },
+				top: 0,
+				right: 60,
+			},
 			series: [
 				{
+					name: "Bot Credits",
 					type: "line",
 					data: values,
 					smooth: true,
@@ -114,12 +126,20 @@
 							type: "linear",
 							x: 0, y: 0, x2: 0, y2: 1,
 							colorStops: [
-								{ offset: 0, color: "rgba(0, 212, 255, 0.3)" },
+								{ offset: 0, color: "rgba(0, 212, 255, 0.15)" },
 								{ offset: 1, color: "rgba(0, 212, 255, 0.02)" },
 							],
 						},
 					},
 				},
+				...(factionCredits > 0 ? [{
+					name: "Faction Treasury",
+					type: "line",
+					data: values.map(() => factionCredits),
+					smooth: false,
+					showSymbol: false,
+					lineStyle: { color: "#f59e0b", width: 1.5, type: "dashed" as const },
+				}] : []),
 			],
 			grid: { left: 8, right: 8, top: 20, bottom: 8 },
 		} as any;

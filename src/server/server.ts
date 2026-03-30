@@ -341,9 +341,18 @@ async function handleCreditsRoute(url: URL, db: DB): Promise<Response> {
   const rows = await db.select().from(creditHistory)
     .where(gt(creditHistory.timestamp, since));
 
+  // Filter out restart dips: skip points where activeBots=0 or credits drops >50%
+  let lastCredits = 0;
+  const filtered = rows.filter(r => {
+    if (r.activeBots === 0) return false; // Bots not logged in yet after restart
+    if (lastCredits > 0 && r.totalCredits < lastCredits * 0.5) return false; // Restart dip
+    lastCredits = r.totalCredits;
+    return true;
+  });
+
   return Response.json(
-    rows.map(r => ({
-      time: new Date(r.timestamp).toISOString(),
+    filtered.map(r => ({
+      time: new Date(Number(r.timestamp)).toISOString(),
       credits: r.totalCredits,
       activeBots: r.activeBots,
     }))
