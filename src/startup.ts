@@ -513,6 +513,16 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       if (lastDecision) {
         sendTo(ws, { type: "commander_decision", decision: lastDecision });
       }
+
+      // Send persisted faction state (survives restarts)
+      (async () => {
+        try {
+          const faction = await gameCache.getPersistedFactionState();
+          if (faction) {
+            sendTo(ws, { type: "faction_update", faction });
+          }
+        } catch { /* non-critical */ }
+      })();
     },
   };
 
@@ -530,6 +540,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     db,
     tenantId,
     startTime: Date.now(),
+    gameCache,
     trainingLogger,
     broadcastConfig: config.broadcast ? {
       tickIntervalMs: config.broadcast.tick_interval_ms,

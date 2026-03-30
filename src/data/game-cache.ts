@@ -355,7 +355,7 @@ export class GameCache {
 
   // ── Timed Cache Helpers ──
 
-  private async getTimed(key: string): Promise<string | null> {
+  async getTimed(key: string): Promise<string | null> {
     // Check Redis first when available
     if (this.redis) {
       const redisVal = await this.redis.getTimed(key);
@@ -370,7 +370,7 @@ export class GameCache {
     return row.data;
   }
 
-  private async setTimed(key: string, data: string, ttlMs: number): Promise<void> {
+  async setTimed(key: string, data: string, ttlMs: number): Promise<void> {
     // Write-through: Redis + DB
     if (this.redis) {
       await this.redis.setTimed(key, data, ttlMs);
@@ -766,6 +766,13 @@ export class GameCache {
       } catch { /* skip corrupted entries */ }
     }
     return { markets, insights, systems };
+  }
+
+  /** Load persisted faction state (survives restarts) */
+  async getPersistedFactionState(): Promise<any | null> {
+    const cached = await this.getTimed("faction_state");
+    if (!cached) return null;
+    try { return JSON.parse(cached); } catch { return null; }
   }
 
   /** Sync getter — returns from in-memory catalog cache */

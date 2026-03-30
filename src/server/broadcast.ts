@@ -42,6 +42,8 @@ export interface BroadcastDeps {
   startTime: number;
   trainingLogger?: TrainingLogger;
   broadcastConfig?: Partial<BroadcastConfig>;
+  /** Game cache for persisting faction data across restarts */
+  gameCache?: import("../data/game-cache").GameCache;
 }
 
 // Cached 24h financial totals (refreshed from DB every 30s)
@@ -735,6 +737,11 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
     }));
 
     broadcast({ type: "faction_update", faction });
+
+    // Persist faction state to DB for cross-restart recovery (6h TTL)
+    if (deps.gameCache) {
+      deps.gameCache.setTimed("faction_state", JSON.stringify(faction), 6 * 60 * 60 * 1000).catch(() => {});
+    }
   } catch (err) {
     console.log(`[Broadcast] Faction poll failed: ${err instanceof Error ? err.message : err}`);
   }
