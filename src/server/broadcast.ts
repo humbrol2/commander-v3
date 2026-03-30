@@ -449,6 +449,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       });
 
       // Refresh 24h financial totals from DB (persists across restarts)
+      console.log(`[Broadcast] trainingLogger=${!!deps.trainingLogger}`);
       if (deps.trainingLogger) {
         try {
           const totals = await deps.trainingLogger.get24hFinancialTotals();
