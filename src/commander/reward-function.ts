@@ -57,6 +57,10 @@ export interface EpisodeSignals {
   staleScanCount: number;
   /** Number of stations scanned that were < 30min old */
   freshScanCount: number;
+  /** New resource POIs discovered (belts/clouds with ore data) */
+  resourcePoisDiscovered: number;
+  /** Scarce resources found (resources with <5% faction cap) */
+  scarceResourcesFound: number;
 }
 
 /** Computed reward with breakdown */
@@ -214,7 +218,19 @@ export function computeReward(
   totalRaw += craftScore;
 
   // Exploration
-  const exploreScore = signals.systemsExplored * SIGNAL_WEIGHTS.systemsExplored * (goalMultipliers.systemsExplored ?? 1);
+  let exploreScore = signals.systemsExplored * SIGNAL_WEIGHTS.systemsExplored * (goalMultipliers.systemsExplored ?? 1);
+  // Resource discovery bonus: finding new belts with ore data
+  if (signals.resourcePoisDiscovered > 0) {
+    const discoveryBonus = signals.resourcePoisDiscovered * 25.0; // 25 per new resource POI
+    exploreScore += discoveryBonus;
+    breakdown.resourceDiscovery = discoveryBonus;
+  }
+  // Scarce resource bonus: finding ores we're low on
+  if (signals.scarceResourcesFound > 0) {
+    const scarceBonus = signals.scarceResourcesFound * 50.0; // 50 per scarce resource found
+    exploreScore += scarceBonus;
+    breakdown.scarceResourceFind = scarceBonus;
+  }
   breakdown.explored = exploreScore;
   totalRaw += exploreScore;
 
@@ -343,5 +359,7 @@ export function emptySignals(): EpisodeSignals {
     avgScanStalenessMs: 0,
     staleScanCount: 0,
     freshScanCount: 0,
+    resourcePoisDiscovered: 0,
+    scarceResourcesFound: 0,
   };
 }

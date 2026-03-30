@@ -166,7 +166,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   };
 
   // Load saved fleet settings
-  const savedFleetSettings = await loadFleetSettings(db);
+  const savedFleetSettings = await loadFleetSettings(db, tenantId);
   if (savedFleetSettings) {
     botManager.fleetConfig.factionTaxPercent = savedFleetSettings.factionTaxPercent;
     botManager.fleetConfig.minBotCredits = savedFleetSettings.minBotCredits;
@@ -310,7 +310,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       if (!bot) return;
       bot.role = role;
       bot.settings.role = role;
-      saveBotSettings(db, bot.username, bot.settings);
+      saveBotSettings(db, tenantId, bot.username, bot.settings);
     },
     recoverErrorBots: () => botManager.recoverStuckBots(),
     isBotManual: (botId: string) => botManager.getBot(botId)?.settings.manualControl ?? false,
@@ -359,7 +359,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   }
 
   // Load saved goals
-  const savedGoals = await loadGoals(db);
+  const savedGoals = await loadGoals(db, tenantId);
   if (savedGoals.length > 0) {
     commander.setGoals(savedGoals);
     console.log(`[Config] Loaded ${savedGoals.length} saved goals`);
@@ -370,18 +370,18 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const manualBotIds = new Set<string>();
   for (const creds of savedBots) {
     const bot = botManager.addBot(creds.username);
-    const settings = await loadBotSettings(db, creds.username);
+    const settings = await loadBotSettings(db, tenantId, creds.username);
     if (settings) {
       bot.settings = settings;
       if (settings.role) bot.role = settings.role;
       if (settings.manualControl) manualBotIds.add(bot.id);
     }
     // Seed cached skills from DB (available immediately without API call)
-    const cachedSkills = await loadBotSkills(db, creds.username);
+    const cachedSkills = await loadBotSkills(db, tenantId, creds.username);
     if (cachedSkills) bot.seedSkills(cachedSkills);
     // Persist skills to DB whenever refreshed from API
     bot.onSkillsRefreshed = (username, skills) => {
-      try { saveBotSkills(db, username, skills); } catch { /* non-critical */ }
+      try { saveBotSkills(db, tenantId, username, skills); } catch { /* non-critical */ }
     };
   }
   if (savedBots.length > 0) {
@@ -463,6 +463,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     commander,
     galaxy,
     db,
+    tenantId,
     cache: gameCache,
     sessionStore,
     ensureGalaxyLoaded,

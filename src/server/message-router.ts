@@ -20,6 +20,7 @@ export interface MessageRouterDeps {
   commander: Commander;
   galaxy: Galaxy;
   db: DB;
+  tenantId: string;
   cache: GameCache;
   sessionStore: SessionStore;
   ensureGalaxyLoaded: () => Promise<void>;
@@ -42,7 +43,7 @@ export function handleClientMessage(
     switch (msg.type) {
       case "set_goal": {
         commander.addGoal(msg.goal);
-        saveGoals(db, commander.getGoals());
+        saveGoals(db, deps.tenantId, commander.getGoals());
         broadcast({ type: "goals_update", goals: commander.getGoals() });
         broadcast({ type: "notification", level: "info", title: "Goal added", message: `${msg.goal.type} (priority ${msg.goal.priority})` });
         break;
@@ -53,7 +54,7 @@ export function handleClientMessage(
         if (msg.index >= 0 && msg.index < goals.length) {
           goals[msg.index] = msg.goal;
           commander.setGoals(goals);
-          saveGoals(db, commander.getGoals());
+          saveGoals(db, deps.tenantId, commander.getGoals());
           broadcast({ type: "goals_update", goals: commander.getGoals() });
         }
         break;
@@ -61,7 +62,7 @@ export function handleClientMessage(
 
       case "remove_goal": {
         commander.removeGoal(msg.index);
-        saveGoals(db, commander.getGoals());
+        saveGoals(db, deps.tenantId, commander.getGoals());
         broadcast({ type: "goals_update", goals: commander.getGoals() });
         break;
       }
@@ -236,7 +237,7 @@ export function handleClientMessage(
         }
 
         // Persist all settings
-        saveFleetSettings(db, {
+        saveFleetSettings(db, deps.tenantId, {
           factionTaxPercent: botManager.fleetConfig.factionTaxPercent,
           minBotCredits: botManager.fleetConfig.minBotCredits,
           maxBotCredits: botManager.fleetConfig.maxBotCredits,
@@ -296,7 +297,7 @@ export function handleClientMessage(
           if (s.storageMode !== undefined) bot.settings.storageMode = s.storageMode as any;
           if (s.factionStorage !== undefined) bot.settings.factionStorage = Boolean(s.factionStorage);
 
-          saveBotSettings(db, bot.username, bot.settings);
+          saveBotSettings(db, deps.tenantId, bot.username, bot.settings);
           broadcast({ type: "notification", level: "info", title: "Settings saved", message: `${bot.username}` });
         }
         break;
@@ -550,7 +551,7 @@ export function handleClientMessage(
         if (bot) {
           bot.role = msg.role;
           bot.settings.role = msg.role;
-          saveBotSettings(db, bot.username, bot.settings);
+          saveBotSettings(db, deps.tenantId, bot.username, bot.settings);
           console.log(`[WS] Set bot ${msg.botId} role → ${msg.role ?? "generalist"}`);
           broadcast({ type: "notification", level: "info", title: "Role updated", message: `${bot.username} is now ${msg.role ?? "generalist"}` });
         }
@@ -561,7 +562,7 @@ export function handleClientMessage(
         const bot = botManager.getBot(msg.botId);
         if (bot) {
           bot.settings.manualControl = msg.enabled;
-          saveBotSettings(db, bot.username, bot.settings);
+          saveBotSettings(db, deps.tenantId, bot.username, bot.settings);
           console.log(`[WS] Set bot ${msg.botId} manualControl → ${msg.enabled}`);
           broadcast({ type: "notification", level: "info", title: "Manual control", message: `${bot.username} manual control ${msg.enabled ? "enabled" : "disabled"}` });
         }

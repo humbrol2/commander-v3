@@ -109,6 +109,7 @@ export class Commander {
     deposited: number; crafted: number; mined: number; xp: number; scanned: number; missions: number;
     oreDeposits: Map<string, number>;
     staleScanCount: number; freshScanCount: number;
+    resourcePoisDiscovered: number; scarceResourcesFound: number;
   }>();
   /** Strategic trigger engine — decides when to call LLM */
   private triggerEngine = new StrategicTriggerEngine();
@@ -200,11 +201,22 @@ export class Commander {
     return this.economy;
   }
 
+  /** Record resource POI discovery for a bot */
+  addResourceDiscovery(botId: string, scarce: boolean): void {
+    let s = this._botSignals.get(botId);
+    if (!s) {
+      s = { deposited: 0, crafted: 0, mined: 0, xp: 0, scanned: 0, missions: 0, oreDeposits: new Map(), staleScanCount: 0, freshScanCount: 0, resourcePoisDiscovered: 0, scarceResourcesFound: 0 };
+      this._botSignals.set(botId, s);
+    }
+    s.resourcePoisDiscovered++;
+    if (scarce) s.scarceResourcesFound++;
+  }
+
   /** Accumulate a reward signal for a bot (called by event handlers) */
   addBotSignal(botId: string, signal: "deposited" | "crafted" | "mined" | "xp" | "scanned" | "missions", amount: number, itemId?: string): void {
     let s = this._botSignals.get(botId);
     if (!s) {
-      s = { deposited: 0, crafted: 0, mined: 0, xp: 0, scanned: 0, missions: 0, oreDeposits: new Map(), staleScanCount: 0, freshScanCount: 0 };
+      s = { deposited: 0, crafted: 0, mined: 0, xp: 0, scanned: 0, missions: 0, oreDeposits: new Map(), staleScanCount: 0, freshScanCount: 0, resourcePoisDiscovered: 0, scarceResourcesFound: 0 };
       this._botSignals.set(botId, s);
     }
     s[signal] += amount;
@@ -226,7 +238,7 @@ export class Commander {
 
   /** Get and reset accumulated signals for a bot */
   private drainBotSignals(botId: string) {
-    const empty = { deposited: 0, crafted: 0, mined: 0, xp: 0, scanned: 0, missions: 0, oreDeposits: new Map<string, number>(), staleScanCount: 0, freshScanCount: 0 };
+    const empty = { deposited: 0, crafted: 0, mined: 0, xp: 0, scanned: 0, missions: 0, oreDeposits: new Map<string, number>(), staleScanCount: 0, freshScanCount: 0, resourcePoisDiscovered: 0, scarceResourcesFound: 0 };
     const s = this._botSignals.get(botId) ?? empty;
     this._botSignals.delete(botId);
     return s;
@@ -1502,6 +1514,8 @@ export class Commander {
         signals.oreDeposits = botSigs.oreDeposits;
         signals.staleScanCount = botSigs.staleScanCount;
         signals.freshScanCount = botSigs.freshScanCount;
+        signals.resourcePoisDiscovered = botSigs.resourcePoisDiscovered;
+        signals.scarceResourcesFound = botSigs.scarceResourcesFound;
 
         // Get faction stock levels for ore-balance scoring
         try {
