@@ -44,6 +44,8 @@ export interface BroadcastDeps {
   broadcastConfig?: Partial<BroadcastConfig>;
   /** Game cache for persisting faction data across restarts */
   gameCache?: import("../data/game-cache").GameCache;
+  /** Work order manager for persistent fleet orders */
+  workOrderManager?: import("../commander/work-order-manager").WorkOrderManager;
 }
 
 // Cached 24h financial totals (refreshed from DB every 30s)
@@ -367,6 +369,11 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
               routineBotMap.set(bot.routine, bot.botId);
             }
           }
+        }
+
+        // Sync work orders from economy engine into persistent work order manager
+        if (deps.workOrderManager) {
+          deps.workOrderManager.syncFromEconomy(snap.workOrders);
         }
 
         broadcast({

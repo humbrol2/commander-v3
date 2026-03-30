@@ -164,7 +164,7 @@ export interface EconomySnapshot {
 
 /** A prioritized task for the fleet to execute, produced by market/storage analysis */
 export interface FleetWorkOrder {
-  type: "mine" | "craft" | "trade" | "explore";
+  type: "mine" | "craft" | "trade" | "explore" | "sell" | "buy" | "scan" | "deliver";
   /** Target item/recipe/system ID */
   targetId: string;
   /** Human-readable description */
@@ -175,6 +175,22 @@ export interface FleetWorkOrder {
   reason: string;
   /** Desired quantity (for mine/craft) */
   quantity?: number;
+  /** Station to operate at (for sell/buy/scan) */
+  stationId?: string;
+  /** Source station (for deliver) */
+  fromStationId?: string;
+  /** Min price (for sell) or max price (for buy) */
+  priceLimit?: number;
+}
+
+/** Persistent work order with claim tracking */
+export interface PersistentWorkOrder extends FleetWorkOrder {
+  id: string;
+  status: "pending" | "claimed" | "in_progress" | "completed" | "failed" | "expired";
+  claimedBy: string | null;
+  claimedAt: number | null;
+  createdAt: number;
+  expiresAt: number;
 }
 
 // ── Scoring ──

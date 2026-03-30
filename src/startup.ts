@@ -324,6 +324,10 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const commander = new Commander(commanderConfig, commanderDeps, brain);
 
   // Wire event bus → commander reward signals (per-bot accumulators for bandit learning)
+  // Work order manager (persistent, claimable orders for the fleet)
+  const { WorkOrderManager } = await import("./commander/work-order-manager");
+  const workOrderManager = new WorkOrderManager(redisCache, tenantId);
+
   eventBus.on("deposit", (e) => commander.addBotSignal(e.botId, "deposited", e.quantity, e.itemId));
   eventBus.on("mine", (e) => commander.addBotSignal(e.botId, "mined", e.quantity));
   eventBus.on("craft", (e) => commander.addBotSignal(e.botId, "crafted", e.outputQuantity));
@@ -549,6 +553,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     tenantId,
     startTime: Date.now(),
     gameCache,
+    workOrderManager,
     trainingLogger,
     broadcastConfig: config.broadcast ? {
       tickIntervalMs: config.broadcast.tick_interval_ms,

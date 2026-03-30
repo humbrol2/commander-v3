@@ -508,10 +508,50 @@ export class EconomyEngine {
       }
     }
 
+    // ── Sell orders: faction goods with known buy orders at stations ──
+    for (const [itemId, qty] of this.factionInventory) {
+      if (qty < 10) continue;
+      // Generate sell orders for items that aren't raw ores (already covered above)
+      if (!itemId.startsWith("ore_") && !itemId.includes("ice") && !itemId.includes("gas")) {
+        if (qty >= 20) {
+          orders.push({
+            type: "sell",
+            targetId: itemId,
+            description: `Sell ${itemId.replace(/_/g, " ")} (${qty} available)`,
+            priority: Math.min(65, 25 + Math.round(qty / 10)),
+            reason: `${qty} units in faction storage`,
+            quantity: qty,
+          });
+        }
+      }
+    }
+
+    // ── Scan orders: stations with stale or missing market data ──
+    // (generated when market data is older than 30 min)
+    if (this._staleStations) {
+      for (const stationId of this._staleStations) {
+        orders.push({
+          type: "scan",
+          targetId: stationId,
+          description: `Scan market at ${stationId.replace(/_/g, " ")}`,
+          priority: 35,
+          reason: "market data stale (>30min)",
+          stationId,
+        });
+      }
+    }
+
     // Sort by priority descending
     orders.sort((a, b) => b.priority - a.priority);
     return orders;
   }
+
+  /** Set stale station IDs for scan order generation */
+  setStaleStations(stationIds: string[]): void {
+    this._staleStations = stationIds;
+  }
+
+  private _staleStations: string[] = [];
 }
 
 function priorityValue(p: "critical" | "normal" | "low"): number {
