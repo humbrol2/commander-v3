@@ -391,6 +391,8 @@ export class EconomyEngine {
    */
   private computeWorkOrders(deficits: SupplyDeficit[], surpluses: SupplySurplus[]): FleetWorkOrder[] {
     const orders: FleetWorkOrder[] = [];
+    const STORAGE_CAP = 100_000;
+    const facilityNeededItems = new Set(this.facilityMaterialNeeds.keys());
 
     // ── Mining orders: from deficits + low faction storage ──
     const oreStock = new Map<string, number>();
@@ -523,8 +525,6 @@ export class EconomyEngine {
     }
 
     // ── Sell orders: only sell genuine surplus (not needed for facilities/crafting) ──
-    const facilityNeededItems = new Set(this.facilityMaterialNeeds.keys());
-    const STORAGE_CAP = 100_000;
     for (const [itemId, qty] of this.factionInventory) {
       if (qty < 20) continue;
 
