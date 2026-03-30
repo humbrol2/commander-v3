@@ -104,6 +104,8 @@ export class Commander {
   private _poolConfig: RolePoolConfig[] = DEFAULT_POOL_CONFIG;
   /** Bandit reward tracking: per-bot snapshot at last eval (for computing deltas) */
   private _botSnapshots = new Map<string, { credits: number; routine: string | null; role: string | null; startTick: number; warm?: boolean }>();
+  /** Per-bot signal accumulators — reset each eval cycle, fed by events */
+  private _botSignals = new Map<string, { deposited: number; crafted: number; mined: number; xp: number; scanned: number; missions: number }>();
   /** Strategic trigger engine — decides when to call LLM */
   private triggerEngine = new StrategicTriggerEngine();
   /** Last strategic trigger (for dashboard) */
@@ -192,6 +194,20 @@ export class Commander {
   /** Get the economy engine for direct manipulation */
   getEconomy(): EconomyEngine {
     return this.economy;
+  }
+
+  /** Accumulate a reward signal for a bot (called by event handlers) */
+  addBotSignal(botId: string, signal: "deposited" | "crafted" | "mined" | "xp" | "scanned" | "missions", amount: number): void {
+    let s = this._botSignals.get(botId);
+    if (!s) { s = { deposited: 0, crafted: 0, mined: 0, xp: 0, scanned: 0, missions: 0 }; this._botSignals.set(botId, s); }
+    s[signal] += amount;
+  }
+
+  /** Get and reset accumulated signals for a bot */
+  private drainBotSignals(botId: string): { deposited: number; crafted: number; mined: number; xp: number; scanned: number; missions: number } {
+    const s = this._botSignals.get(botId) ?? { deposited: 0, crafted: 0, mined: 0, xp: 0, scanned: 0, missions: 0 };
+    this._botSignals.delete(botId);
+    return s;
   }
 
   // ── Evaluation Loop ──
@@ -1452,10 +1468,15 @@ export class Commander {
         const durationSec = Math.max(this.tick - prev.startTick, 30);
         const creditDelta = (bot.credits ?? 0) - (prev.credits ?? 0);
 
-        // Build simple reward signals from credit delta
-        // Full signal extraction would require event tracking — credit delta is the main signal
+        // Build reward signals from credit delta + accumulated event signals
+        const botSigs = this.drainBotSignals(bot.botId);
         const signals = emptySignals();
         signals.creditDelta = creditDelta;
+        signals.itemsDeposited = botSigs.deposited;
+        signals.itemsCrafted = botSigs.crafted;
+        signals.xpGained = botSigs.xp;
+        signals.stationsScanned = botSigs.scanned;
+        signals.missionsCompleted = botSigs.missions;
 
         // Compute composite reward
         const { reward, breakdown } = computeReward(signals, durationSec, this.goals);

@@ -59,11 +59,11 @@ export interface RewardResult {
 const SIGNAL_WEIGHTS = {
   creditDelta: 1.0,           // 1 reward per credit earned
   xpGained: 2.0,              // XP is valuable for unlocking recipes/ships
-  itemsDeposited: 0.5,        // Supply chain contribution
+  itemsDeposited: 2.0,        // Supply chain contribution (bumped: miners deposit, no credit delta)
   strategicItem: 10.0,        // Per strategic item (silicon, crystals, etc.)
-  itemsCrafted: 3.0,          // Crafting output
+  itemsCrafted: 5.0,          // Crafting output (bumped: crafters produce, not sell)
   systemsExplored: 15.0,      // New system discovery
-  stationsScanned: 5.0,       // Market data refresh
+  stationsScanned: 8.0,       // Market data refresh (bumped: scouts keep data fresh)
   intelSubmitted: 3.0,        // Faction intel
   missionsCompleted: 20.0,    // Mission completion
   facilityMaterials: 8.0,     // Per unit of facility build material deposited
