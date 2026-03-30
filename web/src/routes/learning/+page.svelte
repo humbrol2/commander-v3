@@ -39,13 +39,32 @@
 		avgReward: number;
 	}
 
+	interface RoleTrendPoint {
+		role: string;
+		hour: string;
+		episodes: number;
+		avgReward: number;
+	}
+
 	interface LearningData {
 		roleWeights: Record<string, RoleWeight>;
 		recentEpisodes: Episode[];
 		topCombos: TopCombo[];
 		rewardTrend: TrendPoint[];
+		roleRewardTrend: RoleTrendPoint[];
 		totals: Totals;
 	}
+
+	const ROLE_COLORS: Record<string, string> = {
+		ore_miner: "#f59e0b",
+		crystal_miner: "#06b6d4",
+		crafter: "#a78bfa",
+		trader: "#22c55e",
+		explorer: "#3b82f6",
+		quartermaster: "#ec4899",
+		mission_runner: "#f97316",
+		scout: "#14b8a6",
+	};
 
 	let data = $state<LearningData | null>(null);
 	let loading = $state(true);
@@ -136,8 +155,49 @@
 	function breakdownTooltip(ep: Episode): string {
 		if (!ep.breakdown) return "";
 		return Object.entries(ep.breakdown)
-			.map(([k, v]) => `${k}: ${v.toLocaleString()}`)
+			.map(([k, v]) => `${k}: ${typeof v === "number" ? v.toLocaleString() : v}`)
 			.join(", ");
+	}
+
+	function explainReward(ep: Episode): string {
+		if (!ep.breakdown) return ep.reward === 0 ? "No activity detected" : "";
+		const b = ep.breakdown;
+		const parts: string[] = [];
+
+		const credits = Number(b.credits ?? b._rawTotal ?? 0);
+		if (credits > 0) parts.push(`earned ${Math.round(credits)} cr`);
+		else if (credits < 0) parts.push(`spent ${Math.abs(Math.round(credits))} cr (fuel/fees)`);
+
+		const deposits = Number(b.deposits ?? 0);
+		if (deposits > 0) parts.push(`deposited items (+${deposits.toFixed(0)})`);
+		else if (deposits < 0) parts.push(`ore oversupplied (${deposits.toFixed(0)})`);
+
+		const crafted = Number(b.crafted ?? 0);
+		if (crafted > 0) parts.push(`crafted items (+${crafted.toFixed(0)})`);
+
+		const scanned = Number(b.staleScanBonus ?? b.scanned ?? 0);
+		if (scanned > 0) parts.push(`scanned stale markets (+${scanned.toFixed(0)})`);
+
+		const explored = Number(b.explored ?? 0);
+		if (explored > 0) parts.push(`explored systems (+${explored.toFixed(0)})`);
+
+		const discovery = Number(b.resourceDiscovery ?? 0);
+		if (discovery > 0) parts.push(`found resource belts (+${discovery.toFixed(0)})`);
+
+		const scarce = Number(b.scarceResourceFind ?? 0);
+		if (scarce > 0) parts.push(`found scarce ores! (+${scarce.toFixed(0)})`);
+
+		const missions = Number(b.missions ?? 0);
+		if (missions > 0) parts.push(`completed missions (+${missions.toFixed(0)})`);
+
+		const balance = Number(b.oreBalance ?? 0);
+		if (balance < -5) parts.push(`mining oversupplied ore`);
+
+		if (parts.length === 0) {
+			if (ep.reward === 0) return "Idle — no credits, deposits, or actions detected";
+			return ep.reward > 0 ? "Positive outcome" : "Negative outcome (see breakdown)";
+		}
+		return parts.join(" · ");
 	}
 
 	function roleBadgeClass(role: string): string {
@@ -306,6 +366,74 @@
 		</div>
 	{/if}
 
+	<!-- Per-Role Reward Trends -->
+	{#if data && data.roleRewardTrend && data.roleRewardTrend.length > 0}
+		{@const roleGroups = (() => {
+			const groups = new Map<string, Array<{ hour: string; avgReward: number; episodes: number }>>();
+			for (const p of data.roleRewardTrend) {
+				if (!groups.has(p.role)) groups.set(p.role, []);
+				groups.get(p.role)!.push({ hour: p.hour, avgReward: p.avgReward, episodes: p.episodes });
+			}
+			return groups;
+		})()}
+		{@const maxRoleAbs = (() => {
+			let max = 1;
+			for (const points of roleGroups.values()) {
+				for (const p of points) max = Math.max(max, Math.abs(p.avgReward));
+			}
+			return max;
+		})()}
+		<div class="card p-4">
+			<h2 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-3">
+				Reward Trend by Role (Hourly)
+			</h2>
+			<div class="space-y-3">
+				{#each [...roleGroups.entries()].sort((a, b) => a[0].localeCompare(b[0])) as [role, points]}
+					{@const color = ROLE_COLORS[role] ?? "#6b7280"}
+					{@const latest = points[points.length - 1]?.avgReward ?? 0}
+					{@const first = points[0]?.avgReward ?? 0}
+					{@const improving = latest > first}
+					<div>
+						<div class="flex items-center justify-between mb-1">
+							<div class="flex items-center gap-2">
+								<span class="w-3 h-3 rounded" style="background: {color};"></span>
+								<span class="text-xs font-semibold text-chrome-silver">{role.replace(/_/g, " ")}</span>
+							</div>
+							<div class="flex items-center gap-2 text-xs">
+								<span class="{latest >= 0 ? 'text-bio-green' : 'text-claw-red'} mono">
+									{latest >= 0 ? "+" : ""}{latest.toFixed(1)}
+								</span>
+								<span class="{improving ? 'text-bio-green' : 'text-claw-red'}">
+									{improving ? "↑" : "↓"}
+								</span>
+								<span class="text-hull-grey">{points.reduce((s, p) => s + p.episodes, 0)} ep</span>
+							</div>
+						</div>
+						<div class="flex items-center gap-px h-6 overflow-hidden rounded bg-hull-darker">
+							{#each points as p}
+								{@const pct = Math.min(Math.abs(p.avgReward) / maxRoleAbs, 1) * 100}
+								<div
+									class="flex-1 relative"
+									title="{formatHour(p.hour)}: {p.avgReward.toFixed(1)} avg ({p.episodes} ep)"
+								>
+									<div
+										class="absolute bottom-0 left-0 right-0 rounded-sm"
+										style="height: {Math.max(pct, 4)}%; background: {p.avgReward >= 0 ? color : '#ef4444'}; opacity: {Math.max(0.3, pct / 100)};"
+									></div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/each}
+			</div>
+			<div class="flex items-center gap-3 mt-3 text-xs text-hull-grey">
+				<span>↑ Improving</span>
+				<span>↓ Declining</span>
+				<span>Bar height = reward magnitude, color = role (red = negative)</span>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Top Performing Combos -->
 	{#if data && data.topCombos.length > 0}
 		<div class="card p-4">
@@ -364,23 +492,28 @@
 			<div class="space-y-0.5 max-h-[400px] overflow-y-auto">
 				{#each data.recentEpisodes.slice(0, 30) as ep}
 					<div
-						class="flex items-center gap-2 text-xs py-1.5 px-2 rounded hover:bg-hull-darker/50 border-b border-hull-border/10 last:border-0"
+						class="py-1.5 px-2 rounded hover:bg-hull-darker/50 border-b border-hull-border/10 last:border-0"
 						title={breakdownTooltip(ep)}
 					>
-						<span class="mono text-hull-grey shrink-0 w-12">{formatTimestamp(ep.createdAt)}</span>
-						<span class="mono text-plasma-cyan shrink-0 w-24 truncate">{ep.botId}</span>
-						<span class="inline-block px-1.5 py-0.5 rounded text-xs font-medium shrink-0 {roleBadgeClass(ep.role)}">
-							{ep.role.replace(/_/g, " ")}
-						</span>
-						<span class="text-hull-grey shrink-0">-></span>
-						<span class="mono text-star-white shrink-0">{ep.routine}</span>
-						<span class="flex-1"></span>
-						<span class="mono font-medium shrink-0 {rewardColor(ep.reward)}">
-							{formatReward(ep.reward)} cr
-						</span>
-						<span class="mono text-hull-grey shrink-0 w-14 text-right">
-							{ep.durationSec}s
-						</span>
+						<div class="flex items-center gap-2 text-xs">
+							<span class="mono text-hull-grey shrink-0 w-12">{formatTimestamp(ep.createdAt)}</span>
+							<span class="mono text-plasma-cyan shrink-0 w-24 truncate">{ep.botId}</span>
+							<span class="inline-block px-1.5 py-0.5 rounded text-xs font-medium shrink-0 {roleBadgeClass(ep.role)}">
+								{ep.role.replace(/_/g, " ")}
+							</span>
+							<span class="text-hull-grey shrink-0">-></span>
+							<span class="mono text-star-white shrink-0">{ep.routine}</span>
+							<span class="flex-1"></span>
+							<span class="mono font-medium shrink-0 {rewardColor(ep.reward)}">
+								{formatReward(ep.reward)} cr
+							</span>
+							<span class="mono text-hull-grey shrink-0 w-14 text-right">
+								{ep.durationSec}s
+							</span>
+						</div>
+						<div class="text-[10px] text-hull-grey mt-0.5 pl-12 italic">
+							{explainReward(ep)}
+						</div>
 					</div>
 				{/each}
 			</div>

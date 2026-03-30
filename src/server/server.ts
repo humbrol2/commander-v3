@@ -641,7 +641,16 @@ async function handlePublicLearning(opts: ServerOptions): Promise<Response> {
           ORDER BY hour`
     ) as Array<{ hour: string; episodes: number; avg_reward: number; positive_pct: number }>;
 
-    // 5. Total stats
+    // 5. Per-role reward trend (hourly, last 24h)
+    const roleRewardTrend = await (db as any).execute(
+      sql`SELECT role, DATE_TRUNC('hour', created_at::timestamp) as hour,
+              COUNT(*) as episodes, ROUND(AVG(reward)::numeric, 2) as avg_reward
+          FROM bandit_episodes WHERE created_at::timestamp >= ${sinceStr}::timestamp
+          GROUP BY role, DATE_TRUNC('hour', created_at::timestamp)
+          ORDER BY role, hour`
+    ) as Array<{ role: string; hour: string; episodes: number; avg_reward: number }>;
+
+    // 6. Total stats
     const [totalRow] = await (db as any).execute(
       sql`SELECT COUNT(*) as total, COUNT(DISTINCT role) as roles, COUNT(DISTINCT routine) as routines,
               ROUND(AVG(reward)::numeric, 2) as avg_reward
@@ -658,6 +667,9 @@ async function handlePublicLearning(opts: ServerOptions): Promise<Response> {
       topCombos: topCombos ?? [],
       rewardTrend: (rewardTrend ?? []).map(r => ({
         hour: r.hour, episodes: +r.episodes, avgReward: +r.avg_reward, positivePct: +r.positive_pct,
+      })),
+      roleRewardTrend: (roleRewardTrend ?? []).map(r => ({
+        role: r.role, hour: r.hour, episodes: +r.episodes, avgReward: +r.avg_reward,
       })),
       totals: totalRow ? { episodes: +totalRow.total, roles: +totalRow.roles, routines: +totalRow.routines, avgReward: +totalRow.avg_reward } : null,
       timestamp: new Date().toISOString(),
