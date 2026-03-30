@@ -535,9 +535,29 @@ export class EconomyEngine {
         || itemId.includes("hydrogen") || itemId.includes("argon") || itemId.includes("neon");
       if (isRaw) continue;
 
-      // Never sell strategic consumables (facility inputs, fleet consumables)
-      const NEVER_SELL = new Set(["purified_water", "fuel_cell", "fuel_cell_premium", "repair_kit"]);
-      if (NEVER_SELL.has(itemId)) continue;
+      // Fleet consumables: keep a reserve, sell excess
+      const CONSUMABLE_RESERVES: Record<string, number> = {
+        fuel_cell: 200,           // Keep 200, sell excess
+        fuel_cell_premium: 50,    // Keep 50 premium
+        repair_kit: 100,          // Keep 100 repair kits
+      };
+      if (itemId in CONSUMABLE_RESERVES) {
+        const reserve = CONSUMABLE_RESERVES[itemId];
+        if (qty <= reserve) continue; // Below reserve — don't sell
+        // Sell only the excess above reserve
+        const sellableQty = qty - reserve;
+        if (sellableQty >= 20) {
+          orders.push({
+            type: "sell",
+            targetId: itemId,
+            description: `Sell ${itemId.replace(/_/g, " ")} (${sellableQty} excess, keeping ${reserve} reserve)`,
+            priority: Math.min(55, 25 + Math.round(sellableQty / 20)),
+            reason: `${qty} in stock, ${reserve} reserved, ${sellableQty} sellable`,
+            quantity: sellableQty,
+          });
+        }
+        continue;
+      }
 
       // Never sell items needed for facility upgrades
       if (facilityNeededItems.has(itemId)) {
