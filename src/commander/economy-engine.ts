@@ -512,22 +512,37 @@ export class EconomyEngine {
       }
     }
 
-    // ── Sell orders: faction goods with known buy orders at stations ──
+    // ── Sell orders: only sell genuine surplus (not needed for facilities/crafting) ──
+    const facilityNeededItems = new Set(this.facilityMaterialNeeds.keys());
+    const STORAGE_CAP = 100_000;
     for (const [itemId, qty] of this.factionInventory) {
-      if (qty < 10) continue;
-      // Generate sell orders for items that aren't raw ores (already covered above)
-      if (!itemId.startsWith("ore_") && !itemId.includes("ice") && !itemId.includes("gas")) {
-        if (qty >= 20) {
-          orders.push({
-            type: "sell",
-            targetId: itemId,
-            description: `Sell ${itemId.replace(/_/g, " ")} (${qty} available)`,
-            priority: Math.min(65, 25 + Math.round(qty / 10)),
-            reason: `${qty} units in faction storage`,
-            quantity: qty,
-          });
-        }
+      if (qty < 20) continue;
+
+      // Never sell raw ores/crystals/gas/ice (miners handle these, crafters need them)
+      const isRaw = itemId.endsWith("_ore") || itemId.startsWith("ore_")
+        || itemId.endsWith("_crystal") || itemId.includes("crystal")
+        || itemId.includes("ice") || itemId.includes("gas")
+        || itemId.includes("hydrogen") || itemId.includes("argon") || itemId.includes("neon");
+      if (isRaw) continue;
+
+      // Never sell items needed for facility upgrades
+      if (facilityNeededItems.has(itemId)) {
+        const needed = this.facilityMaterialNeeds.get(itemId) ?? 0;
+        if (qty <= needed * 1.5) continue; // Keep 150% of what's needed as buffer
       }
+
+      // Only sell crafted/refined goods that are genuinely surplus
+      const fillPct = qty / STORAGE_CAP;
+      if (fillPct < 0.01 && qty < 100) continue; // Too little to bother selling
+
+      orders.push({
+        type: "sell",
+        targetId: itemId,
+        description: `Sell ${itemId.replace(/_/g, " ")} (${qty} available)`,
+        priority: Math.min(65, 25 + Math.round(qty / 10)),
+        reason: `${qty} units in faction storage`,
+        quantity: qty,
+      });
     }
 
     // ── Scan orders: stations with stale or missing market data ──
