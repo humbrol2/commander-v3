@@ -733,7 +733,40 @@ export class GameCache {
     return count;
   }
 
-  /** Get a catalog item by ID (from cached item catalog) */
+  /**
+   * Hydrate all in-memory caches from timed_cache DB on startup.
+   * Loads market prices, insights, system details so dashboard shows data immediately.
+   */
+  async hydrateFromDb(): Promise<{ markets: number; insights: number; systems: number }> {
+    const now = Date.now();
+    let markets = 0, insights = 0, systems = 0;
+
+    const rows = await this.db.select().from(timedCache)
+      .where(eq(timedCache.tenantId, this.tenantId));
+
+    for (const row of rows) {
+      if (now - row.fetchedAt > row.ttlMs) continue; // expired
+      try {
+        if (row.key.startsWith("market:")) {
+          const stationId = row.key.replace("market:", "");
+          this.marketPricesMemory.set(stationId, JSON.parse(row.data));
+          this.marketFetchedAt.set(stationId, row.fetchedAt);
+          markets++;
+        } else if (row.key.startsWith("insights:")) {
+          const stationId = row.key.replace("insights:", "");
+          this.marketInsightsMemory.set(stationId, JSON.parse(row.data));
+          this.insightFetchedAt.set(stationId, row.fetchedAt);
+          insights++;
+        } else if (row.key.startsWith("system:")) {
+          const systemId = row.key.replace("system:", "");
+          this.systemDetailMemory.set(systemId, JSON.parse(row.data));
+          systems++;
+        }
+      } catch { /* skip corrupted entries */ }
+    }
+    return { markets, insights, systems };
+  }
+
   /** Sync getter — returns from in-memory catalog cache */
   getCatalogItem(itemId: string): CatalogItem | null {
     return this.catalogItemMemory.get(itemId) ?? null;

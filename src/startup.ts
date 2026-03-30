@@ -94,6 +94,10 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const shipyardCount = await gameCache.loadShipyardData();
   if (shipyardCount > 0) console.log(`[Cache] Loaded ${shipyardCount} shipyard scans from disk`);
   await gameCache.loadRecentMarketData();
+  const hydrated = await gameCache.hydrateFromDb();
+  if (hydrated.markets + hydrated.insights + hydrated.systems > 0) {
+    console.log(`[Cache] Hydrated from DB: ${hydrated.markets} markets, ${hydrated.insights} insights, ${hydrated.systems} systems`);
+  }
   const sessionStore = new SessionStore(db, tenantId);
   const eventBus = new EventBus();
 
