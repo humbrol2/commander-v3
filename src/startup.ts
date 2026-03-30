@@ -100,6 +100,16 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   } catch (err) {
     console.warn(`[Cache] Hydration failed: ${err instanceof Error ? err.message : err}`);
   }
+
+  // Hydrate faction storage from persisted state (so crafters have data on first cycle)
+  try {
+    const factionState = await gameCache.getPersistedFactionState();
+    if (factionState?.storage && Array.isArray(factionState.storage)) {
+      gameCache.setFactionStorageSync(factionState.storage);
+      console.log(`[Cache] Hydrated faction storage: ${factionState.storage.length} item types`);
+    }
+  } catch { /* non-critical */ }
+
   const sessionStore = new SessionStore(db, tenantId);
   const eventBus = new EventBus();
 
