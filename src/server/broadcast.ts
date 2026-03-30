@@ -266,6 +266,17 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       } catch { /* non-critical */ }
     }
 
+    // ── Economy engine + work orders (always-on, even without clients) ──
+    if (tick % 5 === 0) {
+      const ecoEngine = deps.commander.getEconomy();
+      if (ecoEngine) {
+        const snap = ecoEngine.analyze(fleet);
+        if (deps.workOrderManager) {
+          deps.workOrderManager.syncFromEconomy(snap.workOrders);
+        }
+      }
+    }
+
     // ── Dashboard Broadcasts (skip if no clients) ──
     if (getClientCount() === 0) return;
 

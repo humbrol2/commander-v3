@@ -1503,8 +1503,8 @@ export class Commander {
         const creditDelta = (bot.credits ?? 0) - (prev.credits ?? 0);
 
         // Safety: skip absurd credit deltas (restart artifacts, faction transfers)
-        // A bot earning/losing >50K in a single eval cycle is almost certainly a data issue
-        if (Math.abs(creditDelta) > 50000) {
+        // Ship sales can be 100K+, so cap at 500K. Anything beyond that is a data issue.
+        if (Math.abs(creditDelta) > 500000) {
           this._botSnapshots.set(bot.botId, { credits: bot.credits ?? 0, routine: bot.routine, role: (bot as any).role, startTick: this.tick, warm: true });
           continue;
         }
