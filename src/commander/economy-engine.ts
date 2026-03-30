@@ -535,6 +535,10 @@ export class EconomyEngine {
         || itemId.includes("hydrogen") || itemId.includes("argon") || itemId.includes("neon");
       if (isRaw) continue;
 
+      // Never sell strategic consumables (facility inputs, fleet consumables)
+      const NEVER_SELL = new Set(["purified_water", "fuel_cell", "fuel_cell_premium", "repair_kit"]);
+      if (NEVER_SELL.has(itemId)) continue;
+
       // Never sell items needed for facility upgrades
       if (facilityNeededItems.has(itemId)) {
         const needed = this.facilityMaterialNeeds.get(itemId) ?? 0;

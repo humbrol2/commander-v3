@@ -468,6 +468,12 @@ export class ScoringBrain implements CommanderBrain {
       }
 
       if (bestScore) {
+        // Stay idle: if best option is return_home but bot is already home and docked, skip
+        if (bestScore.routine === "return_home" && bot.docked && bot.systemId === this.homeSystem) {
+          console.log(`[Commander] ${bestScore.botId} staying idle (already home, no productive routines available)`);
+          continue;
+        }
+
         const cycleCount = cycleRoutineCounts.get(bestScore.routine) ?? 0;
         console.log(`[Commander] Pass2: ${bestScore.botId} ${effectiveRoutine ?? "idle"} → ${bestScore.routine} (adjusted=${bestAdjusted.toFixed(0)}, mustSwitch=${mustSwitch})`);
         assignments.push({
@@ -1169,9 +1175,11 @@ export class ScoringBrain implements CommanderBrain {
           return -150; // Very strong bonus — override nearly everything
         }
 
-        // Already at home base (docked) → block
-        if (this.homeBase && bot.docked && bot.systemId === this.homeSystem) return 200;
-        // Already in home system → mild penalty (might still need to dock)
+        // Already at home base (docked) → hard block (prevents stuck loops)
+        if (this.homeBase && bot.docked && bot.systemId === this.homeSystem) return 500;
+        // Already in home system and docked somewhere → block
+        if (this.homeSystem && bot.systemId === this.homeSystem && bot.docked) return 300;
+        // Already in home system undocked → mild penalty (might still need to dock)
         if (this.homeSystem && bot.systemId === this.homeSystem) return 60;
         // Bot is idle (no routine) and away from home → big BONUS (negative penalty)
         if (!bot.routine) return -80;
