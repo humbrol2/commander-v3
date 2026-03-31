@@ -710,22 +710,25 @@ async function handlePublicLearning(opts: ServerOptions): Promise<Response> {
     // 4. Reward trend (hourly buckets, last 24h)
     const since24h = Date.now() - 24 * 60 * 60 * 1000;
     const sinceStr = new Date(since24h).toISOString();
+    // 15-minute buckets for better resolution (was hourly)
     const rewardTrend = await (db as any).execute(
-      sql`SELECT DATE_TRUNC('hour', created_at::timestamp) as hour,
+      sql`SELECT DATE_TRUNC('hour', created_at::timestamp) +
+              (FLOOR(EXTRACT(MINUTE FROM created_at::timestamp) / 15) * INTERVAL '15 minutes') as hour,
               COUNT(*) as episodes, ROUND(AVG(reward)::numeric, 2) as avg_reward,
               ROUND(SUM(CASE WHEN reward > 0 THEN 1 ELSE 0 END)::numeric * 100 / COUNT(*), 1) as positive_pct
           FROM bandit_episodes WHERE created_at >= ${sinceStr}
-          GROUP BY DATE_TRUNC('hour', created_at::timestamp)
-          ORDER BY hour`
+          GROUP BY 1
+          ORDER BY 1`
     ) as Array<{ hour: string; episodes: number; avg_reward: number; positive_pct: number }>;
 
-    // 5. Per-role reward trend (hourly, last 24h)
+    // Per-role reward trend (15-minute buckets)
     const roleRewardTrend = await (db as any).execute(
-      sql`SELECT role, DATE_TRUNC('hour', created_at::timestamp) as hour,
+      sql`SELECT role, DATE_TRUNC('hour', created_at::timestamp) +
+              (FLOOR(EXTRACT(MINUTE FROM created_at::timestamp) / 15) * INTERVAL '15 minutes') as hour,
               COUNT(*) as episodes, ROUND(AVG(reward)::numeric, 2) as avg_reward
           FROM bandit_episodes WHERE created_at::timestamp >= ${sinceStr}::timestamp
-          GROUP BY role, DATE_TRUNC('hour', created_at::timestamp)
-          ORDER BY role, hour`
+          GROUP BY role, 2
+          ORDER BY role, 2`
     ) as Array<{ role: string; hour: string; episodes: number; avg_reward: number }>;
 
     // 6. Total stats

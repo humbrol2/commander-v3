@@ -1491,8 +1491,13 @@ export class Commander {
     for (const bot of fleet.bots) {
       const prev = this._botSnapshots.get(bot.botId);
 
-      if (prev && prev.routine && prev.routine !== bot.routine) {
-        // Routine changed — the previous routine completed a cycle
+      // Record episode when: (a) routine changed, OR (b) bot has been on same routine for 5+ minutes
+      const PERIODIC_EPISODE_SEC = 300; // 5 minutes
+      const elapsed = prev ? this.tick - prev.startTick : 0;
+      const routineChanged = prev && prev.routine && prev.routine !== bot.routine;
+      const periodicRecord = prev && prev.routine && prev.routine === bot.routine && elapsed >= PERIODIC_EPISODE_SEC;
+
+      if (prev && prev.routine && (routineChanged || periodicRecord)) {
         // Skip return_home episodes (no productive work, pollutes learning data)
         if (prev.routine === "return_home" || bot.routine === "return_home") {
           this._botSnapshots.set(bot.botId, { credits: bot.credits ?? 0, routine: bot.routine, role: (bot as any).role, startTick: this.tick, warm: true });
