@@ -224,8 +224,17 @@ export class BanditBrain {
     const context = extractContext(bot, economy, goals, fleetSize, homeSystem);
     const arm = this.getOrCreateArm(role, routine);
 
-    // If very few pulls, blend with default to avoid cold-start noise
-    const ucb = ucbScore(arm, context, this.alpha);
+    // Adaptive exploration: high alpha early (explore), low alpha later (exploit)
+    const totalEpisodes = this.getTotalEpisodes();
+    const adaptiveAlpha = totalEpisodes < 100
+      ? 1.5                                    // Early: explore aggressively
+      : totalEpisodes < 500
+        ? 0.8                                  // Mid: balanced
+        : totalEpisodes < 2000
+          ? 0.4                                // Mature: mostly exploit
+          : 0.2;                               // Expert: strong exploit, rare exploration
+
+    const ucb = ucbScore(arm, context, adaptiveAlpha);
     const defaultScore = DEFAULT_BASE_SCORES[routine] ?? 0;
 
     if (arm.pulls < 10) {
