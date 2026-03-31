@@ -345,6 +345,9 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   eventBus.on("trade_sell", (e) => commander.addBotSignal(e.botId, "deposited", e.quantity)); // faction sell = deposit
   eventBus.on("scan_market", (e) => commander.addBotSignal(e.botId, "scanned", 1));
   eventBus.on("mission_complete", (e) => commander.addBotSignal(e.botId, "missions", 1));
+  eventBus.on("resource_discovered" as any, (e: any) => {
+    commander.addResourceDiscovery(e.botId, e.scarce);
+  });
 
   // Attach bandit brain to scoring brain (learns base weights from outcomes)
   const scoringBrain = commander.getScoringBrain?.() ?? (brain instanceof ScoringBrain ? brain : null);

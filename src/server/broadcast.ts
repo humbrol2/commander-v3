@@ -277,6 +277,13 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
           for (const item of cachedStorage) inv.set(item.itemId, item.quantity);
           ecoEngine.updateFactionInventory(inv);
         }
+        // Feed stale station list for scan work orders
+        if (deps.gameCache) {
+          const allFreshness = deps.gameCache.getAllMarketFreshness(1_800_000); // 30min TTL
+          const staleStations = allFreshness.filter(f => !f.fresh).map(f => f.stationId);
+          ecoEngine.setStaleStations(staleStations);
+        }
+
         const snap = ecoEngine.analyze(fleet);
         if (deps.workOrderManager) {
           deps.workOrderManager.syncFromEconomy(snap.workOrders);

@@ -432,6 +432,28 @@ async function* exploreSystem(
         // fleetGetPoi already calls updatePoiResources
         poiDataUpdated = true;
 
+        // Fire resource discovery reward signals
+        const commander = (ctx as any).commander ?? (ctx as any).workOrderManager?.constructor;
+        const factionStorage = ctx.cache.getFactionStorageSync();
+        const STORAGE_CAP = 100_000;
+        for (const res of detail.resources) {
+          if (res.remaining <= 0) continue;
+          const stock = factionStorage.find(s => s.itemId === res.resourceId)?.quantity ?? 0;
+          const isScarce = stock / STORAGE_CAP < 0.05;
+          // Signal resource discovery to commander (for bandit reward)
+          try {
+            const cmd = ctx.getFleetStatus?.()?.commander;
+            // Use a simpler approach — emit via event bus
+            ctx.eventBus.emit({
+              type: "resource_discovered" as any,
+              botId: ctx.botId,
+              resourceId: res.resourceId,
+              poiId: poi.id,
+              scarce: isScarce,
+            });
+          } catch { /* non-critical */ }
+        }
+
         const isBelt = poi.type === "asteroid_belt" || poi.type === "gas_cloud"
           || poi.type === "ice_field" || poi.type === "asteroid" || poi.type === "nebula";
         if (isBelt) {
