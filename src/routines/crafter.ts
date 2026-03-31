@@ -163,7 +163,15 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
         continue; // Try next recipe
       }
       recipeId = sourced.recipe.id;
-      yield `target recipe: ${sourced.recipe.name} (profit ${sourced.profit}cr, materials ${Math.round(sourced.availability * 100)}% available, ${failedRecipes.size} skipped)`;
+      // Calculate batch count from available materials (up to 10)
+      const srcRawMats = ctx.crafting.getRawMaterials(sourced.recipe.id, 1);
+      let srcMaxBatch = 10;
+      for (const [matId, perBatch] of srcRawMats) {
+        const avail = factionInventory.get(matId) ?? 0;
+        srcMaxBatch = Math.min(srcMaxBatch, Math.floor(avail / Math.max(perBatch, 1)));
+      }
+      count = Math.max(1, srcMaxBatch);
+      yield `target recipe: ${sourced.recipe.name} x${count} (profit ${sourced.profit}cr, materials ${Math.round(sourced.availability * 100)}% available, ${failedRecipes.size} skipped)`;
     }
   }
 

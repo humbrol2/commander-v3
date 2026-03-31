@@ -374,15 +374,25 @@ async function* manageFactionSales(
       s = { ...s, quantity: available };
     }
 
-    const isOre = s.itemId.startsWith("ore_") || s.itemId.endsWith("_ore");
-    if (isOre) {
-      // Never sell raw ore — always refine through crafters first
-      // Ore is worth far more as crafted goods
-      continue;
-    }
+    // Never sell raw materials (ores, crystals, gas, ice)
+    const isRaw = s.itemId.endsWith("_ore") || s.itemId.startsWith("ore_")
+      || s.itemId.endsWith("_crystal") || s.itemId.includes("crystal")
+      || s.itemId.includes("ice") || s.itemId.includes("gas")
+      || s.itemId.includes("hydrogen") || s.itemId.includes("argon") || s.itemId.includes("neon");
+    if (isRaw) continue;
 
     // Protect strategic crafting materials from being sold
     if (PROTECTED_MATERIALS.has(s.itemId)) continue;
+
+    // Consumable reserves — keep minimum stock, only sell excess
+    const CONSUMABLE_RESERVES: Record<string, number> = {
+      fuel_cell: 200, fuel_cell_premium: 50, repair_kit: 100,
+    };
+    if (s.itemId in CONSUMABLE_RESERVES) {
+      const reserve = CONSUMABLE_RESERVES[s.itemId];
+      if (s.quantity <= reserve) continue;
+      s = { ...s, quantity: s.quantity - reserve };
+    }
 
     if (isModuleItem(s.itemId)) {
       // Check if this module is a target type — only sell excess above target

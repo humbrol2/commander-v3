@@ -103,19 +103,20 @@ export interface ScoringConfig {
 }
 
 /** Per-routine cooldowns — fast-cycling routines get shorter cooldowns */
+/** Per-routine cooldowns — tuned from learning data (avg cycle durations) */
 const ROUTINE_COOLDOWNS: Partial<Record<RoutineName, number>> = {
-  miner: 600_000,          // 10 min — crystal miners do 13-jump round trips, need time to fill holds
-  crafter: 90_000,         // 1.5 min — batch craft cycles
-  harvester: 600_000,      // 10 min — same as miner
-  trader: 240_000,         // 4 min — multi-jump routes need time
-  explorer: 180_000,       // 3 min — travel-heavy
-  mission_runner: 180_000, // 3 min — multi-step missions
-  hunter: 120_000,         // 2 min — combat varies
-  return_home: 60_000,     // 1 min — travel only
-  scout: 120_000,          // 2 min — scan loop
-  refit: 60_000,           // 1 min — quick equipment swap
-  ship_upgrade: 120_000,   // 2 min — buy/switch
-  ship_dealer: 300_000,    // 5 min — capital-intensive, wait between cycles
+  miner: 180_000,          // 3 min (was 10) — learning shows avg 136s cycle, 10min was too long
+  crafter: 90_000,         // 1.5 min — good match (avg 71s)
+  harvester: 300_000,      // 5 min (was 10) — gas harvesting cycles faster than ore mining
+  trader: 240_000,         // 4 min — keep (limited data, multi-jump routes)
+  explorer: 120_000,       // 2 min (was 3) — learning shows avg 90s cycle
+  mission_runner: 180_000, // 3 min — keep (multi-step missions)
+  hunter: 120_000,         // 2 min — keep (disabled but preserve for re-enable)
+  return_home: 60_000,     // 1 min — keep
+  scout: 120_000,          // 2 min — good match (avg 114s)
+  refit: 60_000,           // 1 min — keep
+  ship_upgrade: 120_000,   // 2 min — keep
+  ship_dealer: 300_000,    // 5 min — keep
 };
 
 const DEFAULT_CONFIG: ScoringConfig = {
