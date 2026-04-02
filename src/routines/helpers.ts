@@ -851,11 +851,50 @@ export async function disposeCargo(ctx: BotContext): Promise<SellResult> {
   if (mode === "deposit" || mode === "faction_deposit") {
     const items: SellResult["items"] = [];
     let depositFailed = false;
+    let sellEarnings = 0;
     const cargoSnapshot = [...ctx.ship.cargo]; // Snapshot before depositing
+
+    // HYBRID MODE: deposit raw ores to faction (for crafters), SELL everything else
     for (const item of cargoSnapshot) {
       if (ctx.shouldStop) break;
       if (isProtectedItem(item.itemId)) continue;
       const qty = item.quantity;
+
+      // Raw materials → faction storage (crafters need these)
+      const isRaw = item.itemId.endsWith("_ore") || item.itemId.includes("crystal")
+        || item.itemId.includes("ice") || item.itemId.includes("_gas")
+        || item.itemId.includes("hydrogen") || item.itemId.includes("argon");
+
+      if (isRaw && mode === "faction_deposit") {
+        try {
+          await ctx.api.factionDepositItems(item.itemId, qty);
+          ctx.cache.invalidateFactionStorage();
+          ctx.eventBus.emit({
+            type: "deposit", botId: ctx.botId, itemId: item.itemId, quantity: qty,
+            target: "faction", stationId: ctx.player.dockedAtBase ?? "",
+          });
+          log(ctx, `deposited ${qty}x ${item.itemId} to faction storage`);
+          items.push({ itemId: item.itemId, quantity: qty, priceEach: 0, total: 0 });
+          continue;
+        } catch (err) {
+          logWarn(ctx, `faction deposit failed for ${item.itemId}: ${err instanceof Error ? err.message : err}`);
+          // Fall through to sell
+        }
+      }
+
+      // Non-raw items (crafted goods, components, etc) → SELL for credits
+      try {
+        const result = await ctx.api.sell(item.itemId, qty);
+        const earned = Number(result.total ?? result.credits ?? 0);
+        if (earned > 0) {
+          sellEarnings += earned;
+          log(ctx, `sold ${qty}x ${item.itemId} for ${earned}cr`);
+          items.push({ itemId: item.itemId, quantity: qty, priceEach: Number(result.price_each ?? 0), total: earned });
+          continue;
+        }
+      } catch { /* no buyer — fall through to deposit */ }
+
+      // No buyer — deposit to faction storage as fallback
       try {
         if (mode === "faction_deposit") {
           await ctx.api.factionDepositItems(item.itemId, qty);
@@ -885,7 +924,7 @@ export async function disposeCargo(ctx: BotContext): Promise<SellResult> {
         return { totalEarned: sellResult.totalEarned, items: [...items, ...sellResult.items] };
       }
     }
-    return { totalEarned: 0, items };
+    return { totalEarned: sellEarnings, items };
   }
 
   // Default: sell

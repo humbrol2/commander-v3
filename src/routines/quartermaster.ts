@@ -570,15 +570,18 @@ async function* manageFactionSales(
       listPrice = moduleFloor;
     }
 
-    // Skip items where per-unit revenue is essentially zero
-    if (listPrice < 2) continue;
+    // Skip items only if TOTAL revenue is negligible (not per-unit — bulk cheap items are valuable)
+    const estTotalRevenue = listPrice * Math.min(item.quantity, 50);
+    if (listPrice <= 0 || estTotalRevenue < 10) continue; // Need at least 10cr total
 
     // Withdraw from faction storage and sell/list
     const freeSpace = ctx.cargo.freeSpace(ctx.ship);
     if (freeSpace <= 0) break; // Cargo full — stop trying
     const itemSize = ctx.cargo.getItemSize(ctx.ship, item.itemId);
     const maxBySpace = Math.floor(freeSpace / Math.max(1, itemSize));
-    let listQty = Math.min(item.quantity, 50, maxBySpace); // Don't flood, respect cargo
+    // Bulk sell: up to 200 for cheap items, 50 for expensive ones
+    const maxSellQty = listPrice <= 10 ? 200 : 50;
+    let listQty = Math.min(item.quantity, maxSellQty, maxBySpace);
     if (listQty <= 0) continue; // Item too heavy for remaining space
     try {
       try {
@@ -706,14 +709,27 @@ async function* manageFactionSales(
           listedItems.add(item.itemId);
           ordersCreated++;
           await advertiseInChat(ctx, `Selling ${sellQty}x ${itemName} @ ${listPrice}cr`, adState);
-        } else {
-          // Not worth listing — re-deposit to faction storage
+        } else if (listPrice * sellQty < 50) {
+          // Total value too low even for an order — re-deposit
           try {
             await ctx.api.factionDepositItems(item.itemId, sellQty);
             ctx.cache.invalidateFactionStorage();
             await ctx.refreshState();
           } catch { /* best effort */ }
-          yield `${itemName} — no demand, per-unit value too low (${listPrice}cr/ea)`;
+          yield `${itemName} — total value too low (${sellQty}x @ ${listPrice}cr = ${listPrice * sellQty}cr)`;
+        } else {
+          // Place sell order even at low per-unit price — bulk sells add up
+          try {
+            const lowResult = hasFloor
+              ? await ctx.api.createSellOrder(item.itemId, sellQty, listPrice) as Record<string, unknown>
+              : await ctx.api.factionCreateSellOrder(item.itemId, listPrice, sellQty);
+            yield `listed ${sellQty} ${itemName} @ ${listPrice}cr/ea (${listPrice * sellQty}cr total)`;
+            listedItems.add(item.itemId);
+            ordersCreated++;
+          } catch {
+            // Fallback: re-deposit
+            try { await ctx.api.factionDepositItems(item.itemId, sellQty); ctx.cache.invalidateFactionStorage(); } catch { /* ok */ }
+          }
         }
       }
 
