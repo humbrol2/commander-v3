@@ -53,6 +53,12 @@ export class EconomyEngine {
   /** Work order manager for chain creation (set by startup) */
   workOrderManager: import("./work-order-manager").WorkOrderManager | null = null;
 
+  /** Game cache for market price lookups (set by startup) */
+  cache: import("../data/game-cache").GameCache | null = null;
+
+  /** Market service for trade route analysis (set by startup) */
+  market: import("../core/market").Market | null = null;
+
   /** Track which chains we've already created (prevent duplicates) */
   private createdChains = new Set<string>();
 
@@ -149,35 +155,67 @@ export class EconomyEngine {
       }
     }
 
-    // ── Sell surplus chains ──
-    // When faction storage has excess crafted goods, create sell chain
-    const SURPLUS_THRESHOLD = 50;
-    const sellableGoods = [...this.factionInventory.entries()]
+    // ── Demand-routed sell orders ──
+    // For each faction storage item with known buyers, create sell orders
+    // routed to the station with the BEST price. Uses cached market data.
+    const SELL_THRESHOLD = 10; // Min qty to bother selling
+    const sellableItems = [...this.factionInventory.entries()]
       .filter(([id, qty]) => {
-        if (qty < SURPLUS_THRESHOLD) return false;
-        // Not raw materials
-        if (id.endsWith("_ore") || id.includes("crystal") || id.includes("ice") || id.includes("gas")) return false;
-        // Not facility materials
-        if (this.facilityMaterialNeeds.has(id)) return false;
+        if (qty < SELL_THRESHOLD) return false;
+        if (this.facilityMaterialNeeds.has(id)) return false; // Needed for upgrades
         return true;
-      });
+      })
+      .sort((a, b) => b[1] - a[1]); // Largest stockpiles first
 
-    for (const [itemId, qty] of sellableGoods) {
-      const chainName = `sell_${itemId}`;
-      if (this.createdChains.has(chainName)) continue;
+    if (this.market && sellableItems.length > 0) {
+      // Find best buyer station for each item from cached market data
+      for (const [itemId, qty] of sellableItems) {
+        const chainName = `sell_${itemId}`;
+        if (this.createdChains.has(chainName)) continue;
 
-      this.workOrderManager.createChain(chainName, [
-        {
+        // Check market data for stations with buy orders for this item
+        let bestStation = "";
+        let bestPrice = 0;
+        let bestVolume = 0;
+
+        const allFreshness = this.cache?.getAllMarketFreshness() ?? [];
+        for (const f of allFreshness) {
+          const prices = this.cache?.getMarketPrices(f.stationId);
+          if (!prices) continue;
+          const entry = prices.find(p => p.itemId === itemId);
+          if (!entry || !entry.buyPrice || entry.buyPrice <= 0) continue;
+          if (entry.buyPrice > bestPrice || (entry.buyPrice === bestPrice && (entry.buyVolume ?? 0) > bestVolume)) {
+            bestPrice = entry.buyPrice;
+            bestVolume = entry.buyVolume ?? 0;
+            bestStation = f.stationId;
+          }
+        }
+
+        const isRaw = itemId.endsWith("_ore") || itemId.includes("crystal")
+          || itemId.includes("ice") || itemId.includes("gas") || itemId.includes("hydrogen");
+        // Raw ores: only sell if >80% cap or if good price
+        if (isRaw && qty < 80_000 && bestPrice < 5) continue;
+
+        const totalValue = bestPrice * Math.min(qty, 200);
+        const priority = totalValue > 100_000 ? 85 : totalValue > 10_000 ? 75 : totalValue > 1000 ? 65 : 50;
+
+        const sellQty = Math.min(qty, bestVolume > 0 ? bestVolume : 200);
+        const desc = bestStation
+          ? `Sell ${sellQty} ${itemId.replace(/_/g, " ")} @ ${bestStation.replace(/_/g, " ")} (${bestPrice}cr/ea)`
+          : `Sell ${sellQty} ${itemId.replace(/_/g, " ")} (${qty} available)`;
+
+        this.workOrderManager.createChain(chainName, [{
           type: "sell",
           targetId: itemId,
-          description: `Sell ${qty} ${itemId.replace(/_/g, " ")}`,
-          priority: 65,
-          reason: `${qty} surplus in faction storage`,
-          quantity: qty,
+          description: desc,
+          priority,
+          reason: bestStation ? `${bestPrice}cr/ea × ${sellQty} = ${bestPrice * sellQty}cr at ${bestStation}` : `${qty} units in faction storage`,
+          quantity: sellQty,
+          stationId: bestStation || undefined,
           routineHint: "trader",
-        },
-      ]);
-      this.createdChains.add(chainName);
+        }]);
+        this.createdChains.add(chainName);
+      }
     }
 
     // ── Facility upgrade auto-trigger chain ──

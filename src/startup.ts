@@ -351,10 +351,12 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   // Wire work order manager to commander for order-first assignment
   (commanderDeps as any).workOrderManager = workOrderManager;
 
-  // Wire work order manager to economy engine for chain generation
+  // Wire work order manager + market data to economy engine for chain generation
   const ecoEngine = commander.getEconomy();
   if (ecoEngine) {
     ecoEngine.workOrderManager = workOrderManager;
+    ecoEngine.cache = gameCache;
+    ecoEngine.market = market;
   }
 
   eventBus.on("deposit", (e) => commander.addBotSignal(e.botId, "deposited", e.quantity, e.itemId));
