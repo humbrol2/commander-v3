@@ -351,6 +351,12 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   // Wire work order manager to commander for order-first assignment
   (commanderDeps as any).workOrderManager = workOrderManager;
 
+  // Wire work order manager to economy engine for chain generation
+  const ecoEngine = commander.getEconomy();
+  if (ecoEngine) {
+    ecoEngine.workOrderManager = workOrderManager;
+  }
+
   eventBus.on("deposit", (e) => commander.addBotSignal(e.botId, "deposited", e.quantity, e.itemId));
   eventBus.on("mine", (e) => commander.addBotSignal(e.botId, "mined", e.quantity));
   eventBus.on("craft", (e) => commander.addBotSignal(e.botId, "crafted", e.outputQuantity));

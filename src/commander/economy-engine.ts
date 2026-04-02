@@ -50,9 +50,134 @@ export class EconomyEngine {
   /** Facility material needs from GameCache (injected by Commander) */
   private facilityMaterialNeeds = new Map<string, number>();
 
+  /** Work order manager for chain creation (set by startup) */
+  workOrderManager: import("./work-order-manager").WorkOrderManager | null = null;
+
+  /** Track which chains we've already created (prevent duplicates) */
+  private createdChains = new Set<string>();
+
   /** Update facility material needs (called by Commander after QM sets cache) */
   setFacilityMaterialNeeds(needs: Map<string, number>): void {
     this.facilityMaterialNeeds = new Map(needs);
+  }
+
+  /**
+   * Generate order chains for complex multi-step goals.
+   * Called after computeWorkOrders — uses work order manager for dependency tracking.
+   */
+  generateChains(): void {
+    if (!this.workOrderManager) return;
+
+    // ── Facility upgrade chains ──
+    // For each facility material need, create a chain: mine raw → craft → accumulate
+    if (this.facilityMaterialNeeds.size > 0 && this.crafting) {
+      const chainName = "facility_upgrade";
+      if (!this.createdChains.has(chainName)) {
+        const steps: FleetWorkOrder[] = [];
+
+        for (const [itemId, needed] of this.facilityMaterialNeeds) {
+          const inStorage = this.factionInventory.get(itemId) ?? 0;
+          if (inStorage >= needed) continue;
+          const deficit = needed - inStorage;
+
+          // Is this a raw material or crafted?
+          const isRaw = itemId.endsWith("_ore") || itemId.includes("crystal")
+            || itemId.includes("ice") || itemId.includes("gas");
+
+          if (isRaw) {
+            // Step: mine the raw material
+            steps.push({
+              type: "mine",
+              targetId: itemId,
+              description: `Mine ${deficit} ${itemId.replace(/_/g, " ")} for facility`,
+              priority: 92,
+              reason: `facility needs ${needed}, have ${inStorage}`,
+              quantity: deficit,
+              requiredModule: "mining_laser",
+              routineHint: "miner",
+            });
+          } else {
+            // Crafted item — find what raw materials are needed
+            const recipes = this.crafting.findRecipesForItem(itemId);
+            const recipe = recipes[0]; // Use first available recipe
+            if (recipe) {
+              // Step 1: mine raw materials for this recipe
+              for (const ing of recipe.ingredients) {
+                const ingStock = this.factionInventory.get(ing.itemId) ?? 0;
+                const ingNeeded = ing.quantity * deficit;
+                if (ingStock < ingNeeded) {
+                  const isIngRaw = ing.itemId.endsWith("_ore") || ing.itemId.includes("crystal")
+                    || ing.itemId.includes("ice") || ing.itemId.includes("gas");
+                  if (isIngRaw) {
+                    steps.push({
+                      type: "mine",
+                      targetId: ing.itemId,
+                      description: `Mine ${ing.itemId.replace(/_/g, " ")} for ${itemId.replace(/_/g, " ")}`,
+                      priority: 90,
+                      reason: `crafting needs ${ingNeeded}, have ${ingStock}`,
+                      quantity: ingNeeded - ingStock,
+                      requiredModule: "mining_laser",
+                      routineHint: "miner",
+                    });
+                  }
+                }
+              }
+              // Step 2: craft the item
+              steps.push({
+                type: "craft",
+                targetId: recipe.id,
+                description: `Craft ${deficit} ${itemId.replace(/_/g, " ")} for facility`,
+                priority: 93,
+                reason: `facility needs ${needed}, have ${inStorage}`,
+                quantity: deficit,
+                routineHint: "crafter",
+              });
+            }
+          }
+        }
+
+        if (steps.length > 0) {
+          this.workOrderManager.createChain(chainName, steps);
+          this.createdChains.add(chainName);
+        }
+      }
+    }
+
+    // ── Sell surplus chains ──
+    // When faction storage has excess crafted goods, create sell chain
+    const SURPLUS_THRESHOLD = 50;
+    const sellableGoods = [...this.factionInventory.entries()]
+      .filter(([id, qty]) => {
+        if (qty < SURPLUS_THRESHOLD) return false;
+        // Not raw materials
+        if (id.endsWith("_ore") || id.includes("crystal") || id.includes("ice") || id.includes("gas")) return false;
+        // Not facility materials
+        if (this.facilityMaterialNeeds.has(id)) return false;
+        return true;
+      });
+
+    for (const [itemId, qty] of sellableGoods) {
+      const chainName = `sell_${itemId}`;
+      if (this.createdChains.has(chainName)) continue;
+
+      this.workOrderManager.createChain(chainName, [
+        {
+          type: "sell",
+          targetId: itemId,
+          description: `Sell ${qty} ${itemId.replace(/_/g, " ")}`,
+          priority: 65,
+          reason: `${qty} surplus in faction storage`,
+          quantity: qty,
+          routineHint: "trader",
+        },
+      ]);
+      this.createdChains.add(chainName);
+    }
+
+    // Reset chain tracking periodically so new chains can be created
+    if (this.createdChains.size > 50) {
+      this.createdChains.clear();
+    }
   }
 
   /**
@@ -211,6 +336,9 @@ export class EconomyEngine {
     // Compute prioritized work orders from deficits + market analysis
     const workOrders = this.computeWorkOrders(deficits, surpluses);
     this._workOrders = workOrders;
+
+    // Generate dependency chains for complex multi-step goals (facility upgrades, etc.)
+    this.generateChains();
 
     return {
       deficits,
