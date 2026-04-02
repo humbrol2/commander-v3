@@ -1583,6 +1583,15 @@ export class Commander {
         const context = extractContext(bot, economy, this.goals, fleet.bots.length, this.deps.homeSystem);
 
         const role = prev.role ?? "generalist";
+
+        // Feed EMA reward tracker (simple, robust learning)
+        const scoringBrain = this.getScoringBrain?.();
+        if (scoringBrain?.rewardTracker && prev.routine) {
+          scoringBrain.rewardTracker.record(role, prev.routine, reward);
+          await scoringBrain.rewardTracker.maybePersist();
+        }
+
+        // Feed bandit (if enabled — currently disabled due to persistence bug)
         await bandit.recordOutcome(role, prev.routine as any, context, reward, {
           botId: bot.botId,
           durationSec,

@@ -359,14 +359,15 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   });
 
   // Bandit brain DISABLED — episode count inflation causes degenerate scoring.
-  // Pure scoring brain defaults are stable and well-tuned.
-  // TODO: Fix bandit persistence (episodeCount accumulates pulls, not real episodes)
-  // const scoringBrain = commander.getScoringBrain?.() ?? (brain instanceof ScoringBrain ? brain : null);
-  // if (scoringBrain) {
-  //   (scoringBrain as any).banditBrain = banditBrain;
-  //   console.log("[Startup] Bandit brain attached to scoring brain");
-  // }
-  console.log("[Startup] Bandit brain DISABLED — using pure scoring brain defaults");
+  // Replaced with EMA Reward Tracker (simple, robust, no corruption risk).
+  const { RewardTracker } = await import("./commander/reward-tracker");
+  const rewardTracker = new RewardTracker(db, tenantId);
+  await rewardTracker.init();
+  const scoringBrain = commander.getScoringBrain?.() ?? (brain instanceof ScoringBrain ? brain : null);
+  if (scoringBrain) {
+    scoringBrain.rewardTracker = rewardTracker;
+    console.log(`[Startup] EMA Reward Tracker attached (${rewardTracker.getTotalObservations()} observations)`);
+  }
 
   // Load role pool config from config.toml
   if (config.fleet.roles.length > 0) {

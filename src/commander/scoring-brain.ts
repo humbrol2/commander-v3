@@ -152,8 +152,10 @@ export class ScoringBrain implements CommanderBrain {
   /** Persistent tracking of active miner/harvester → belt assignments across eval cycles */
   private activeBeltAssignments = new Map<string, string>(); // botId → beltPoiId
   private beltAssignmentTimestamps = new Map<string, number>(); // botId → timestamp
-  /** Contextual bandit — learns base weights from outcomes (optional) */
+  /** Contextual bandit — DISABLED (episode count inflation bug) */
   banditBrain: BanditBrain | null = null;
+  /** EMA reward tracker — simple, robust alternative to bandit */
+  rewardTracker: import("./reward-tracker").RewardTracker | null = null;
 
   constructor(config?: Partial<ScoringConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -251,13 +253,9 @@ export class ScoringBrain implements CommanderBrain {
         ? activeRoutines.filter((r) => roleRoutines.includes(r) || UNIVERSAL_FALLBACKS.includes(r))
         : activeRoutines; // Generalist (no role) scores all routines
       for (const routine of botRoutines) {
-        // Base score: use bandit-learned weight if available, else hardcoded default
-        let banditScore = this.banditBrain
-          ? this.banditBrain.getScore(botRole ?? "generalist", routine, bot, economy, goals, candidates.length, this.homeSystem)
-          : null;
-        // Cap bandit scores to prevent runaway amplification (fresh bandits with high alpha can produce 15000+)
-        if (banditScore !== null) banditScore = Math.max(-100, Math.min(200, banditScore));
-        const baseScore = (banditScore ?? this.config.baseScores[routine]) * weights[routine];
+        // Base score: hardcoded default + EMA reward nudge (learned from outcomes)
+        const rewardNudge = this.rewardTracker?.getNudge(botRole ?? "generalist", routine) ?? 0;
+        const baseScore = (this.config.baseScores[routine] + rewardNudge) * weights[routine];
         if (baseScore <= 0 && routine !== "return_home") continue;
 
         // Early skip: bot has active rapid penalty for this routine (it just failed)
@@ -676,14 +674,10 @@ export class ScoringBrain implements CommanderBrain {
     world?: WorldContext,
     goals?: Goal[],
   ): BotScore {
-    // 1. Base score × strategy weight (bandit-learned or hardcoded default)
+    // 1. Base score × strategy weight + EMA reward nudge
     const botRole = parseBotRole(bot.role);
-    let banditScore = this.banditBrain
-      ? this.banditBrain.getScore(botRole ?? "generalist", routine, bot, economy, goals ?? [], fleet.bots.length, this.homeSystem)
-      : null;
-    // Cap bandit scores to prevent runaway amplification
-    if (banditScore !== null) banditScore = Math.max(-100, Math.min(200, banditScore));
-    const baseScore = (banditScore ?? this.config.baseScores[routine]) * weights[routine];
+    const rewardNudge = this.rewardTracker?.getNudge(botRole ?? "generalist", routine) ?? 0;
+    const baseScore = (this.config.baseScores[routine] + rewardNudge) * weights[routine];
 
     // 2. Supply chain bonus: deficit detection boosts relevance
     const supplyBonus = this.calcSupplyBonus(routine, economy);
