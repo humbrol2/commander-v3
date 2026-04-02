@@ -283,6 +283,29 @@ export class WorkOrderManager {
     if (order.fromStationId) params.fromStationId = order.fromStationId;
     if (order.priceLimit) params.priceLimit = order.priceLimit;
 
+    // Map to routine-specific param names so routines understand the order
+    switch (order.routineHint ?? this.getRoutineForOrder(order)) {
+      case "trader":
+        // Trader expects: item, sellStation, sellFromFaction
+        params.item = order.targetId;
+        params.sellFromFaction = true; // Sell from faction storage
+        if (order.stationId) params.sellStation = order.stationId;
+        break;
+      case "miner":
+        // Miner expects: targetOre, targetSystem
+        params.targetOre = order.targetId;
+        break;
+      case "crafter":
+        // Crafter expects: recipeId, count
+        params.recipeId = order.targetId;
+        if (order.quantity) params.count = order.quantity;
+        break;
+      case "scout":
+        // Scout expects: targetSystem or targetSystems
+        if (order.stationId) params.targetSystem = order.stationId;
+        break;
+    }
+
     return params;
   }
 

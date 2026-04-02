@@ -668,8 +668,13 @@ export class Commander {
     const chatContext = this._chatIntelligence?.buildContextBlock() ?? "";
     const extraContext = [performanceContext, memoryContext, chatContext].filter(Boolean).join("\n\n");
 
+    // Exclude order-assigned bots from scoring brain — they already have work
+    const remainingFleet: FleetStatus = orderAssignedBots.size > 0
+      ? { ...fleet, bots: fleet.bots.filter(b => !orderAssignedBots.has(b.botId)), activeBots: fleet.activeBots - orderAssignedBots.size, totalCredits: fleet.totalCredits }
+      : fleet;
+
     const evalInput = {
-      fleet,
+      fleet: remainingFleet,
       goals: this.goals,
       economy: economySnapshot,
       world,
@@ -677,7 +682,7 @@ export class Commander {
       extraContext: extraContext || undefined,
     };
 
-    // Scoring brain is always the primary decision maker
+    // Scoring brain assigns remaining (non-order) bots
     const scoringBrain = this.getScoringBrain();
     let output: EvaluationOutput;
 
