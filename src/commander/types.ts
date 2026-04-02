@@ -181,6 +181,14 @@ export interface FleetWorkOrder {
   fromStationId?: string;
   /** Min price (for sell) or max price (for buy) */
   priceLimit?: number;
+  /** Chain ID — groups related orders (e.g. "facility_warehouse_upgrade") */
+  chainId?: string;
+  /** Order IDs this depends on — only claimable when all deps are completed */
+  dependsOn?: string[];
+  /** Which routine should execute this order */
+  routineHint?: RoutineName;
+  /** Required module pattern (e.g. "mining_laser" for mine orders) */
+  requiredModule?: string;
 }
 
 /** Persistent work order with claim tracking */

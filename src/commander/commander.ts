@@ -68,6 +68,8 @@ export interface CommanderDeps {
   setBotRole?: (botId: string, role: string | null) => void;
   /** Callback to recover bots stuck in error state */
   recoverErrorBots?: () => Promise<void>;
+  /** Work order manager for order-first assignment */
+  workOrderManager?: import("./work-order-manager").WorkOrderManager;
   /** Check if a bot is under manual control (excluded from commander eval) */
   isBotManual?: (botId: string) => boolean;
   /** Embedding-based memory store for strategic decisions (optional) */
@@ -622,7 +624,48 @@ export class Commander {
     // Step 3.9: Pre-evaluation emergency overrides — clear cooldowns BEFORE brain runs
     this.applyEmergencyOverrides(fleet);
 
-    // Step 4: Run scoring brain (ALWAYS — fast, deterministic, <50ms)
+    // Step 3.10: Work-order-first assignment — match bots to orders before scoring brain
+    // Bots assigned here are excluded from scoring brain evaluation
+    const orderAssignedBots = new Set<string>();
+    if (this.deps.workOrderManager) {
+      const wom = this.deps.workOrderManager;
+      for (const bot of fleet.bots) {
+        if (bot.status !== "running" && bot.status !== "ready") continue;
+        if (orderAssignedBots.size >= fleet.bots.length - 2) break; // Keep 2 bots for scoring brain fallback
+
+        // Skip bots already on a work order
+        const existingOrders = wom.getForBot(bot.botId);
+        if (existingOrders.some(o => o.status === "claimed" || o.status === "in_progress")) continue;
+
+        // Find best matching order for this bot
+        const bestOrder = wom.findBestOrder(
+          bot.botId,
+          bot.moduleIds,
+          bot.role ?? undefined,
+          bot.routine,
+        );
+        if (!bestOrder) continue;
+
+        // Claim it
+        const claimed = await wom.claim(bestOrder.id, bot.botId);
+        if (!claimed) continue;
+
+        const routine = wom.getRoutineForOrder(claimed);
+        const params = wom.getParamsForOrder(claimed);
+
+        // Assign the bot to this routine with order params
+        try {
+          await this.deps.assignRoutine(bot.botId, routine, params);
+          this.brain.clearCooldown(bot.botId);
+          orderAssignedBots.add(bot.botId);
+          console.log(`[Commander] Order: ${bot.botId} → ${routine} (${claimed.description}, priority ${claimed.priority}${claimed.chainId ? ", chain" : ""})`);
+        } catch {
+          wom.release(claimed.id); // Release if assignment failed
+        }
+      }
+    }
+
+    // Step 4: Run scoring brain for remaining bots (ALWAYS — fast, deterministic, <50ms)
     const performanceContext = this.performanceTracker.buildContextBlock();
     const memoryContext = this.deps.memoryStore?.buildContextBlock() ?? "";
     const chatContext = this._chatIntelligence?.buildContextBlock() ?? "";
@@ -709,6 +752,9 @@ export class Commander {
     const PROTECTED_ROUTINES = new Set(["ship_upgrade", "refit", "return_home", "scout"]);
 
     for (const assignment of cappedAssignments) {
+      // Skip bots already assigned by work order system (they take priority)
+      if (orderAssignedBots.has(assignment.botId)) continue;
+
       const botInfo = botStatusMap.get(assignment.botId);
       // Skip bots not yet ready (still logging in or idle)
       if (botInfo && botInfo.status !== "ready" && botInfo.status !== "running") {

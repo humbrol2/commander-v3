@@ -1,16 +1,44 @@
 /**
- * Work Order Manager — persistent, claimable work orders for the fleet.
+ * Work Order Manager — persistent, dependency-aware work orders for the fleet.
  *
- * The Economy Engine generates orders. Bots claim and fulfill them.
- * Orders are stored in-memory (fast) and synced to Redis (cross-restart).
- * Atomic claiming via Redis SETNX prevents duplicate work.
+ * Orders form chains: mine ore → craft plates → upgrade facility.
+ * An order is only claimable when all its dependencies are completed.
+ * Bots claim the highest-priority order matching their capability.
+ *
+ * Economy Engine generates orders. Commander matches bots to orders.
+ * Orders stored in-memory (fast) and synced to Redis (cross-restart).
  */
 
 import type { RedisCache } from "../data/cache-redis";
 import type { FleetWorkOrder, PersistentWorkOrder } from "./types";
+import type { RoutineName } from "../types/protocol";
 
 const DEFAULT_EXPIRY_MS = 30 * 60 * 1000; // 30 min default
-const MAX_ORDERS = 200;
+const CHAIN_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4h for chained orders (long-running goals)
+const MAX_ORDERS = 300;
+
+/** Map work order type to the routine that fulfills it */
+const ORDER_TO_ROUTINE: Record<string, RoutineName> = {
+  mine: "miner",
+  craft: "crafter",
+  trade: "trader",
+  sell: "trader",
+  buy: "quartermaster",
+  scan: "scout",
+  explore: "explorer",
+  deliver: "trader",
+};
+
+/** Map routine to module patterns that qualify a bot */
+const ROUTINE_MODULE_REQUIREMENTS: Record<string, string[]> = {
+  miner: ["mining_laser"],
+  harvester: ["gas_harvester", "ice_harvester"],
+  trader: [],  // No specific module needed
+  crafter: [], // No specific module needed
+  scout: [],
+  explorer: ["survey_scanner", "ship_scanner"],
+  quartermaster: [],
+};
 
 export class WorkOrderManager {
   private orders = new Map<string, PersistentWorkOrder>();
@@ -21,11 +49,11 @@ export class WorkOrderManager {
     private redis: RedisCache | null,
     private tenantId: string,
   ) {
-    // Load persisted orders from Redis on construction
     this.loadFromRedis().catch(() => {});
   }
 
-  /** Load work orders from Redis (survives restarts) */
+  // ── Persistence ──
+
   private async loadFromRedis(): Promise<void> {
     if (!this.redis || this.loaded) return;
     try {
@@ -46,52 +74,102 @@ export class WorkOrderManager {
     } catch { this.loaded = true; }
   }
 
-  /** Persist current orders to Redis */
   private async saveToRedis(): Promise<void> {
     if (!this.redis) return;
     try {
       const data = JSON.stringify([...this.orders.values()]);
-      await this.redis.setTimed("work_orders", data, 3600000); // 1h TTL
+      await this.redis.setTimed("work_orders", data, 3600000);
     } catch { /* non-critical */ }
   }
 
-  /** Generate a unique order ID */
-  private genId(): string {
-    return `wo_${Date.now()}_${this.nextId++}`;
+  private genId(prefix = "wo"): string {
+    return `${prefix}_${Date.now()}_${this.nextId++}`;
   }
+
+  // ── Chain Creation ──
+
+  /**
+   * Create a chain of dependent orders. Each order depends on the previous one.
+   * Returns the chain ID and order IDs.
+   */
+  createChain(
+    chainName: string,
+    steps: Array<Omit<FleetWorkOrder, "chainId" | "dependsOn">>,
+  ): { chainId: string; orderIds: string[] } {
+    const chainId = `chain_${chainName}_${Date.now()}`;
+    const orderIds: string[] = [];
+    const now = Date.now();
+
+    // Don't create duplicate chains
+    const existingChain = [...this.orders.values()].find(
+      o => o.chainId?.startsWith(`chain_${chainName}_`) && o.status !== "completed" && o.status !== "failed"
+    );
+    if (existingChain) {
+      return { chainId: existingChain.chainId!, orderIds: [] };
+    }
+
+    let prevId: string | null = null;
+    for (const step of steps) {
+      const id = this.genId("ch");
+      const order: PersistentWorkOrder = {
+        ...step,
+        chainId,
+        dependsOn: prevId ? [prevId] : undefined,
+        routineHint: ORDER_TO_ROUTINE[step.type] ?? undefined,
+        id,
+        status: "pending",
+        claimedBy: null,
+        claimedAt: null,
+        createdAt: now,
+        expiresAt: now + CHAIN_EXPIRY_MS,
+      };
+      this.orders.set(id, order);
+      orderIds.push(id);
+      prevId = id;
+    }
+
+    if (orderIds.length > 0) {
+      console.log(`[WorkOrders] Created chain "${chainName}": ${orderIds.length} steps`);
+    }
+
+    this.saveToRedis().catch(() => {});
+    return { chainId, orderIds };
+  }
+
+  // ── Economy Sync ──
 
   /**
    * Sync work orders from Economy Engine output.
    * Merges with existing orders — new orders added, stale ones expired.
+   * Does NOT touch chain orders — those are managed separately.
    */
   syncFromEconomy(economyOrders: FleetWorkOrder[]): void {
     const now = Date.now();
 
-    // Expire old orders
+    // Expire old orders (but not active chain steps)
     for (const [id, order] of this.orders) {
       if (now > order.expiresAt || order.status === "completed" || order.status === "failed") {
         this.orders.delete(id);
       }
     }
 
-    // Remove orders whose target is no longer in the economy engine output
-    // (e.g., faction storage filled the need — order is obsolete)
+    // Remove non-chain orders whose target is no longer needed
     const activeTargets = new Set(economyOrders.map(o => `${o.type}:${o.targetId}`));
     for (const [id, order] of this.orders) {
+      if (order.chainId) continue; // Don't touch chain orders
       const key = `${order.type}:${order.targetId}`;
       if (!activeTargets.has(key) && order.status === "pending") {
-        this.orders.delete(id); // No longer needed
+        this.orders.delete(id);
       }
     }
 
-    // Deduplicate + update existing orders with fresh data
+    // Deduplicate + update existing orders
     for (const ecoOrder of economyOrders) {
       const existing = [...this.orders.values()].find(
-        o => o.targetId === ecoOrder.targetId &&
+        o => !o.chainId && o.targetId === ecoOrder.targetId &&
           (o.status === "pending" || o.status === "claimed" || o.status === "in_progress")
       );
       if (existing) {
-        // Update with fresh data (type may have changed craft→mine, quantity updated)
         existing.type = ecoOrder.type;
         existing.priority = Math.max(existing.priority, ecoOrder.priority);
         existing.quantity = ecoOrder.quantity;
@@ -100,50 +178,121 @@ export class WorkOrderManager {
         continue;
       }
 
-      // Cap total orders
       if (this.orders.size >= MAX_ORDERS) break;
 
       const id = this.genId();
-      const expiresAt = now + DEFAULT_EXPIRY_MS;
       this.orders.set(id, {
         ...ecoOrder,
+        routineHint: ORDER_TO_ROUTINE[ecoOrder.type] ?? undefined,
         id,
         status: "pending",
         claimedBy: null,
         claimedAt: null,
         createdAt: now,
-        expiresAt,
+        expiresAt: now + DEFAULT_EXPIRY_MS,
       });
     }
 
-    // Persist to Redis after sync
     this.saveToRedis().catch(() => {});
   }
 
+  // ── Dependency Resolution ──
+
   /**
-   * Get all pending orders, sorted by priority (highest first).
-   * Optionally filter by type.
+   * Check if an order's dependencies are all satisfied.
+   * An order is claimable when it has no deps, or all deps are completed.
    */
-  getPending(type?: FleetWorkOrder["type"]): PersistentWorkOrder[] {
+  private isDependencySatisfied(order: PersistentWorkOrder): boolean {
+    if (!order.dependsOn || order.dependsOn.length === 0) return true;
+    return order.dependsOn.every(depId => {
+      const dep = this.orders.get(depId);
+      return dep?.status === "completed";
+    });
+  }
+
+  // ── Bot-Order Matching ──
+
+  /**
+   * Find the best order for a bot based on priority, capability, and dependencies.
+   * Returns the highest-priority claimable order matching the bot's modules/role.
+   */
+  findBestOrder(
+    botId: string,
+    botModules: string[],
+    botRole?: string,
+    botRoutine?: string | null,
+  ): PersistentWorkOrder | null {
     const now = Date.now();
-    const result: PersistentWorkOrder[] = [];
+    const candidates: PersistentWorkOrder[] = [];
+
     for (const order of this.orders.values()) {
       if (order.status !== "pending") continue;
       if (now > order.expiresAt) continue;
-      if (type && order.type !== type) continue;
-      result.push(order);
+      if (!this.isDependencySatisfied(order)) continue;
+
+      // Check module requirements
+      const requiredModule = order.requiredModule;
+      if (requiredModule && !botModules.some(m => m.includes(requiredModule))) continue;
+
+      // Check routine hint — bot must be able to run the required routine
+      const routine = order.routineHint;
+      if (routine) {
+        const moduleReqs = ROUTINE_MODULE_REQUIREMENTS[routine];
+        if (moduleReqs && moduleReqs.length > 0) {
+          const hasRequired = moduleReqs.some(req => botModules.some(m => m.includes(req)));
+          if (!hasRequired) continue;
+        }
+      }
+
+      candidates.push(order);
     }
-    return result.sort((a, b) => b.priority - a.priority);
+
+    if (candidates.length === 0) return null;
+
+    // Sort by priority (highest first), then by chain order (earlier chain steps first)
+    candidates.sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      // Within same chain, prefer earlier steps
+      if (a.chainId && a.chainId === b.chainId) return a.createdAt - b.createdAt;
+      return 0;
+    });
+
+    return candidates[0];
   }
 
   /**
-   * Claim an order for a bot. Returns the order if successful, null if already claimed.
+   * Get the routine a bot should run to fulfill an order.
    */
+  getRoutineForOrder(order: PersistentWorkOrder): RoutineName {
+    return order.routineHint ?? ORDER_TO_ROUTINE[order.type] ?? "miner";
+  }
+
+  /**
+   * Build routine params from an order.
+   */
+  getParamsForOrder(order: PersistentWorkOrder): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      workOrderId: order.id,
+      workOrderType: order.type,
+      workOrderTarget: order.targetId,
+      workOrderPriority: order.priority,
+    };
+
+    if (order.quantity) params.quantity = order.quantity;
+    if (order.stationId) params.stationId = order.stationId;
+    if (order.fromStationId) params.fromStationId = order.fromStationId;
+    if (order.priceLimit) params.priceLimit = order.priceLimit;
+
+    return params;
+  }
+
+  // ── Claim/Complete/Fail ──
+
   async claim(orderId: string, botId: string): Promise<PersistentWorkOrder | null> {
     const order = this.orders.get(orderId);
     if (!order || order.status !== "pending") return null;
+    if (!this.isDependencySatisfied(order)) return null;
 
-    // Atomic claim via Redis if available
     if (this.redis) {
       const claimed = await this.redis.claimArbitrageRoute(
         `wo:${orderId}`, "claim", "lock", botId
@@ -158,7 +307,6 @@ export class WorkOrderManager {
     return order;
   }
 
-  /** Mark an order as in-progress (bot started working on it) */
   markInProgress(orderId: string): void {
     const order = this.orders.get(orderId);
     if (order && order.status === "claimed") {
@@ -166,25 +314,30 @@ export class WorkOrderManager {
     }
   }
 
-  /** Mark an order as completed */
   complete(orderId: string): void {
     const order = this.orders.get(orderId);
     if (order) {
       order.status = "completed";
+      // Log chain progress
+      if (order.chainId) {
+        const chainOrders = [...this.orders.values()].filter(o => o.chainId === order.chainId);
+        const completed = chainOrders.filter(o => o.status === "completed").length;
+        console.log(`[WorkOrders] Chain step completed: ${order.description} (${completed}/${chainOrders.length})`);
+      }
+      this.saveToRedis().catch(() => {});
     }
   }
 
-  /** Mark an order as failed (bot couldn't complete it) */
   fail(orderId: string): void {
     const order = this.orders.get(orderId);
     if (order) {
       order.status = "failed";
       order.claimedBy = null;
       order.claimedAt = null;
+      this.saveToRedis().catch(() => {});
     }
   }
 
-  /** Release a claim (bot reassigned or disconnected) */
   release(orderId: string): void {
     const order = this.orders.get(orderId);
     if (order && (order.status === "claimed" || order.status === "in_progress")) {
@@ -194,50 +347,52 @@ export class WorkOrderManager {
     }
   }
 
-  /** Get all orders (for dashboard display) */
+  // ── Queries ──
+
+  getPending(type?: FleetWorkOrder["type"]): PersistentWorkOrder[] {
+    const now = Date.now();
+    const result: PersistentWorkOrder[] = [];
+    for (const order of this.orders.values()) {
+      if (order.status !== "pending") continue;
+      if (now > order.expiresAt) continue;
+      if (type && order.type !== type) continue;
+      if (!this.isDependencySatisfied(order)) continue;
+      result.push(order);
+    }
+    return result.sort((a, b) => b.priority - a.priority);
+  }
+
   getAll(): PersistentWorkOrder[] {
     return [...this.orders.values()].sort((a, b) => b.priority - a.priority);
   }
 
-  /** Get orders claimed by a specific bot */
   getForBot(botId: string): PersistentWorkOrder[] {
     return [...this.orders.values()].filter(o => o.claimedBy === botId);
   }
 
-  /** Get stats for dashboard */
-  getStats(): { total: number; pending: number; claimed: number; inProgress: number; completed: number } {
+  getChain(chainId: string): PersistentWorkOrder[] {
+    return [...this.orders.values()]
+      .filter(o => o.chainId === chainId)
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  getChainProgress(chainId: string): { total: number; completed: number; current: string | null } {
+    const chain = this.getChain(chainId);
+    const completed = chain.filter(o => o.status === "completed").length;
+    const current = chain.find(o => o.status !== "completed" && o.status !== "failed");
+    return { total: chain.length, completed, current: current?.description ?? null };
+  }
+
+  getStats(): { total: number; pending: number; claimed: number; inProgress: number; completed: number; chains: number } {
     let pending = 0, claimed = 0, inProgress = 0, completed = 0;
+    const chainIds = new Set<string>();
     for (const o of this.orders.values()) {
       if (o.status === "pending") pending++;
       else if (o.status === "claimed") claimed++;
       else if (o.status === "in_progress") inProgress++;
       else if (o.status === "completed") completed++;
+      if (o.chainId) chainIds.add(o.chainId);
     }
-    return { total: this.orders.size, pending, claimed, inProgress, completed };
-  }
-
-  /**
-   * Find the best matching order for a bot based on its role and routine.
-   * Returns the highest-priority unclaimed order that matches.
-   */
-  findBestForBot(botRole: string, botRoutine: string | null): PersistentWorkOrder | null {
-    const roleToOrderTypes: Record<string, FleetWorkOrder["type"][]> = {
-      ore_miner: ["mine"],
-      crystal_miner: ["mine"],
-      gas_harvester: ["mine"],
-      ice_harvester: ["mine"],
-      crafter: ["craft"],
-      trader: ["sell", "buy", "trade", "deliver"],
-      quartermaster: ["sell", "buy", "deliver"],
-      explorer: ["explore", "scan"],
-      scout: ["scan"],
-      mission_runner: ["deliver"],
-    };
-
-    const validTypes = roleToOrderTypes[botRole] ?? [];
-    if (validTypes.length === 0) return null;
-
-    const pending = this.getPending();
-    return pending.find(o => validTypes.includes(o.type)) ?? null;
+    return { total: this.orders.size, pending, claimed, inProgress, completed, chains: chainIds.size };
   }
 }

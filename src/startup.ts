@@ -348,6 +348,9 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   services.sellDeconfliction = new SellDeconfliction();
   services.circuitBreaker = new CircuitBreaker();
 
+  // Wire work order manager to commander for order-first assignment
+  (commanderDeps as any).workOrderManager = workOrderManager;
+
   eventBus.on("deposit", (e) => commander.addBotSignal(e.botId, "deposited", e.quantity, e.itemId));
   eventBus.on("mine", (e) => commander.addBotSignal(e.botId, "mined", e.quantity));
   eventBus.on("craft", (e) => commander.addBotSignal(e.botId, "crafted", e.outputQuantity));
