@@ -1417,11 +1417,13 @@ async function* manageFactionFacilities(
 ): AsyncGenerator<RoutineYield, void, void> {
   if (!ctx.player.dockedAtBase) return;
 
-  // User-queued facilities + essential prereqs (faction_quarters is always needed first)
+  // User-queued facilities + essential prereqs
+  // Priority order: quarters → intel terminal → trade ledger → vault (storage L2) → user queue
   const userQueue = ctx.fleetConfig.facilityBuildQueue ?? [];
+  const CORE_FACILITIES = ["faction_quarters", "intel_terminal", "trade_ledger"];
   const ESSENTIAL_FACILITIES = [
-    "faction_quarters",     // Common Space — prerequisite for most others
-    ...userQueue.filter(f => f !== "faction_quarters"),
+    ...CORE_FACILITIES,
+    ...userQueue.filter(f => !CORE_FACILITIES.includes(f)),
   ];
 
   // Check faction treasury (direct API call, not cached — upgrades need current balance)

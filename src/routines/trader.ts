@@ -364,6 +364,20 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
       }
     }
 
+    // Boost routes that match analyzeMarket demand insights
+    const cachedInsights = ctx.cache.getAllCachedInsights?.() ?? [];
+    const demandItems = new Set(
+      cachedInsights.filter((i: any) => i.category === "demand" && i.priority >= 5).map((i: any) => i.item_id)
+    );
+    if (demandItems.size > 0) {
+      for (const route of candidateRoutes) {
+        if (demandItems.has(route.itemId)) {
+          route.profitPerUnit *= 1.5; // 50% boost for items with confirmed demand
+        }
+      }
+      candidateRoutes.sort((a, b) => b.profitPerUnit - a.profitPerUnit);
+    }
+
     // Use best route for this trader (offset by traderIndex for deconfliction)
     if (candidateRoutes.length > 0) {
       const routeOffset = Math.min(traderIndex, candidateRoutes.length - 1);
