@@ -141,6 +141,8 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
   let maxBuyPrice = getParam(ctx, "maxBuyPrice", Infinity);
   let minSellPrice = getParam(ctx, "minSellPrice", 0);
 
+  let sellFromFaction = getParam(ctx, "sellFromFaction", false);
+
   // ── Check for work orders (sell/buy/deliver) ──
   let activeWorkOrder: string | null = null;
   try {
@@ -150,16 +152,23 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
       activeWorkOrder = order.id;
       startWorkOrder(ctx, order.id);
       yield `work order: ${order.type} ${order.targetId.replace(/_/g, " ")} (priority ${order.priority})`;
-      // Override params based on work order type
-      if (order.type === "sell" && order.targetId) {
-        item = order.targetId;
-        if (order.stationId) sellStation = order.stationId;
+      // Override params based on work order
+      if (order.targetId) item = order.targetId;
+      if (order.stationId) sellStation = order.stationId;
+      if (order.fromStationId) buyStation = order.fromStationId;
+      if (order.priceLimit) minSellPrice = order.priceLimit * 0.8; // Accept 80% of expected price
+      // Trade orders: pick up from faction storage at home, sell at destination
+      if (order.type === "trade" || order.type === "sell") {
+        sellFromFaction = true;
+        if (order.fromStationId) {
+          buyStation = order.fromStationId; // "buyStation" = where we pick up goods
+        }
+        yield `route: ${order.fromStationId ?? "home"} → ${order.stationId ?? "best"} (${item.replace(/_/g, " ")})`;
       }
     }
   } catch { /* work orders optional */ }
   const maxRoundTrips = getParam(ctx, "maxRoundTrips", Infinity);
   const useOrders = getParam(ctx, "useOrders", false);
-  let sellFromFaction = getParam(ctx, "sellFromFaction", false);
   const enableArbitrage = getParam(ctx, "enableArbitrage", false);
   const traderIndex = getParam(ctx, "traderIndex", 0);
 

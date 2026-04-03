@@ -693,32 +693,107 @@ export class OrderEngine {
   // ── Tier 7: Trade/Arbitrage ──
 
   private generateTradeOrders(ctx: OrderContext, orders: FleetWorkOrder[]): void {
-    // Use cached market insights to find arbitrage opportunities
+    // ═══════════════════════════════════════════════════════
+    // SPECIFIC TRADE ROUTES from faction storage + market data
+    // Traders claim these and execute directly — no self-discovery
+    // ═══════════════════════════════════════════════════════
+
+    const homeStation = this.config.factionStorageStation ?? this.config.homeBase;
+    if (!homeStation) return;
+
+    // Get all cached market prices at other stations
+    const allFreshness = ctx.cache.getAllMarketFreshness?.(3_600_000) ?? []; // 1hr TTL
+    const otherStations = allFreshness.map(f => f.stationId).filter(s => s !== homeStation);
+
+    // Items in faction storage available to sell (exclude protected + ores)
+    const sellableItems: Array<{ itemId: string; qty: number }> = [];
+    for (const [itemId, qty] of this.factionInventory) {
+      if (qty < 10) continue;
+      if (DO_NOT_SELL.has(itemId)) continue;
+      if (itemId.endsWith("_ore")) continue; // Keep ores for crafting
+      sellableItems.push({ itemId, qty });
+    }
+
+    // Also check ores we have WAY too much of (>10K) — sell the excess
+    for (const [itemId, qty] of this.factionInventory) {
+      if (!itemId.endsWith("_ore")) continue;
+      if (DO_NOT_SELL.has(itemId)) continue;
+      if (itemId in STRATEGIC_ORES) continue; // Never sell strategic ores
+      if (qty <= 10_000) continue;
+      sellableItems.push({ itemId, qty: qty - 5_000 }); // Keep 5K buffer
+    }
+
+    // Find best sell destination for each item
+    let routeCount = 0;
+    const MAX_TRADE_ROUTES = 5;
+
+    for (const item of sellableItems) {
+      if (routeCount >= MAX_TRADE_ROUTES) break;
+
+      let bestStation = "";
+      let bestPrice = 0;
+      let bestVolume = 0;
+
+      for (const stationId of otherStations) {
+        const prices = ctx.cache.getMarketPrices?.(stationId);
+        if (!prices) continue;
+        const priceEntry = prices.find((p: any) => p.itemId === item.itemId);
+        if (!priceEntry) continue;
+
+        // buyPrice = what buyers at this station will pay us
+        const buyPrice = priceEntry.buyPrice ?? 0;
+        const buyVolume = priceEntry.buyVolume ?? 0;
+
+        if (buyPrice > bestPrice && buyVolume > 0) {
+          bestPrice = buyPrice;
+          bestStation = stationId;
+          bestVolume = buyVolume;
+        }
+      }
+
+      if (bestStation && bestPrice > 0) {
+        const sellQty = Math.min(item.qty, bestVolume, 100); // Cap per trip
+        const estimatedProfit = sellQty * bestPrice;
+
+        orders.push({
+          type: "trade", targetId: item.itemId,
+          description: `SELL ${sellQty} ${item.itemId.replace(/_/g, " ")} @ ${bestStation.replace(/_/g, " ")} (~${bestPrice}cr/unit, ~${estimatedProfit}cr total)`,
+          priority: PRI.TRADE + Math.min(Math.floor(estimatedProfit / 1000), 10),
+          reason: `trade_route: ${estimatedProfit}cr profit`,
+          quantity: sellQty,
+          stationId: bestStation, // Sell destination
+          fromStationId: homeStation, // Pick up from home
+          priceLimit: bestPrice,
+        });
+        routeCount++;
+      }
+    }
+
+    // Also generate routes from market demand insights
     const now = Date.now();
     for (const [stationId, cached] of this.marketInsights) {
-      if (now - cached.fetchedAt > INSIGHT_TTL_MS) continue; // Stale
+      if (routeCount >= MAX_TRADE_ROUTES) break;
+      if (now - cached.fetchedAt > INSIGHT_TTL_MS) continue;
 
       for (const insight of cached.insights) {
-        // Look for high-demand items where we have supply
+        if (routeCount >= MAX_TRADE_ROUTES) break;
         if (insight.category === "demand" && insight.priority >= 5) {
           const stock = this.factionInventory.get(insight.item_id) ?? 0;
-          if (stock > 10) {
+          if (stock > 10 && !DO_NOT_SELL.has(insight.item_id)) {
             orders.push({
               type: "trade", targetId: insight.item_id,
-              description: `Trade ${insight.item_id} to ${stationId} (demand insight)`,
+              description: `SELL ${insight.item_id.replace(/_/g, " ")} @ ${stationId.replace(/_/g, " ")} (demand insight)`,
               priority: PRI.TRADE + Math.min(insight.priority, 10),
-              reason: "market_demand",
+              reason: "market_demand_insight",
               quantity: Math.min(stock, 50),
               stationId,
+              fromStationId: homeStation,
             });
+            routeCount++;
           }
         }
       }
     }
-
-    // Trade routes from market arbitrage analysis
-    // (findArbitrage requires station IDs and is expensive — skip for now, rely on insights)
-    // TODO: integrate findArbitrage with cached station data from intel layer
   }
 
   // ── Tier 9: Intelligence ──
