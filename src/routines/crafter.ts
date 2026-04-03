@@ -596,6 +596,12 @@ async function sourceMaterials(
           console.warn(`[${ctx.botId}] no cargo space for ${ing.itemId} from storage (size ${itemSize}, free ${freeWeight})`);
         } else {
           const isFaction = ctx.settings.factionStorage || ctx.fleetConfig.defaultStorageMode === "faction_deposit";
+          // Skip faction withdraw if not at a station with faction storage
+          const factionStationId = ctx.fleetConfig.factionStorageStation;
+          if (isFaction && factionStationId && ctx.player.dockedAtBase !== factionStationId) {
+            messages.push(`skipped ${ctx.crafting.getItemName(ing.itemId)} from storage (not at faction station)`);
+            continue;
+          }
           try {
             if (isFaction) {
               await withdrawFromFaction(ctx, ing.itemId, safeQty);
