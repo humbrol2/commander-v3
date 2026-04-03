@@ -603,11 +603,8 @@ export class Commander {
     // Step 2: Analyze economy
     const economySnapshot = this.economy.analyze(fleet);
 
-    // Step 3: Build world context from real data
-    // NOTE: stored as instance property to work around Bun scope bug
-    // where `const world` randomly becomes undefined in later code
+    // Step 3: Build world context — use this._world everywhere (Bun scope bug)
     this._world = this.buildWorldContext(fleet);
-    const world = this._world;
 
     // Step 3.5: Track performance outcomes (for LLM feedback)
     this.performanceTracker.update(fleet);
@@ -682,7 +679,7 @@ export class Commander {
       fleet: remainingFleet,
       goals: this.goals,
       economy: economySnapshot,
-      world,
+      world: this._world,
       tick: this.tick,
       extraContext: extraContext || undefined,
     };
@@ -699,7 +696,7 @@ export class Commander {
     }
 
     // Step 4.5: Check strategic triggers — should we consult the LLM?
-    const trigger = this.triggerEngine.evaluate(fleet, economySnapshot, world, this.goals);
+    const trigger = this.triggerEngine.evaluate(fleet, economySnapshot, this._world, this.goals);
     if (trigger) {
       this.lastTrigger = trigger;
       console.log(`[Commander] Strategic trigger: ${trigger.type} — ${trigger.reason}`);
@@ -728,7 +725,7 @@ export class Commander {
     }
 
     // Step 5: Build conversational thoughts
-    const thoughts = this.buildThoughts(fleet, world, output);
+    const thoughts = this.buildThoughts(fleet, this._world, output);
 
     // Step 5a: Enforce routine caps (prevents LLM overrides from violating constraints)
     const ROUTINE_CAPS: Partial<Record<string, number>> = {
@@ -826,7 +823,7 @@ export class Commander {
     }
 
     // Step 8: Record strategic memories (persistent knowledge)
-    this.recordMemories(fleet, world, decision);
+    this.recordMemories(fleet, this._world, decision);
 
     return decision;
   }
