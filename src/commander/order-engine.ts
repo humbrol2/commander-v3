@@ -1024,6 +1024,11 @@ export class OrderEngine {
     });
 
     for (const bot of sortedBots) {
+      // Debug: track all trader bots
+      if (bot.role === "trader") {
+        console.log(`[OrderEngine] Trader ${bot.username}: status=${bot.status}, routine=${bot.routine ?? "none"}`);
+      }
+
       // Skip bots on protected one-shot routines (already in progress)
       if (bot.routine && bot.status === "running" && PROTECTED_ROUTINES.has(bot.routine)) {
         continue;
