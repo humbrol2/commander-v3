@@ -1563,6 +1563,23 @@ async function* manageFactionFacilities(
       }
     }
 
+    // Withdraw materials into cargo before building (game requires materials in personal cargo)
+    if (materials.length > 0) {
+      yield `withdrawing materials for ${facilityType.replace(/_/g, " ")} build`;
+      for (const mat of materials) {
+        const inStorage = storageMap.get(mat.itemId) ?? 0;
+        const qty = Math.min(mat.quantity, inStorage);
+        if (qty <= 0) continue;
+        try {
+          await withdrawFromFaction(ctx, mat.itemId, qty);
+          yield `withdrew ${qty}x ${ctx.crafting.getItemName(mat.itemId)}`;
+        } catch (wErr) {
+          yield `withdraw failed for ${mat.itemId}: ${wErr instanceof Error ? wErr.message : String(wErr)}`;
+        }
+      }
+      await ctx.refreshState();
+    }
+
     yield `building ${facilityType.replace(/_/g, " ")}${buildCost > 0 ? ` (${buildCost}cr)` : ""}`;
     try {
       await ctx.api.factionFacilityBuild(facilityType);
@@ -1603,6 +1620,25 @@ async function* manageFactionFacilities(
           if (existingFacility) {
             const fId = String(existingFacility.id ?? existingFacility.facility_id ?? "");
             const fType = String(existingFacility.type ?? existingFacility.facility_type ?? "");
+
+            // Withdraw upgrade materials from faction storage into bot cargo
+            // Facility upgrades require materials in personal cargo, not faction storage
+            if (materials.length > 0) {
+              yield `withdrawing materials for ${facilityType.replace(/_/g, " ")} upgrade`;
+              for (const mat of materials) {
+                const inStorage = storageMap.get(mat.itemId) ?? 0;
+                const qty = Math.min(mat.quantity, inStorage);
+                if (qty <= 0) continue;
+                try {
+                  await withdrawFromFaction(ctx, mat.itemId, qty);
+                  yield `withdrew ${qty}x ${ctx.crafting.getItemName(mat.itemId)}`;
+                } catch (wErr) {
+                  yield `withdraw failed for ${mat.itemId}: ${wErr instanceof Error ? wErr.message : String(wErr)}`;
+                }
+              }
+              await ctx.refreshState();
+            }
+
             yield `upgrading ${fType.replace(/_/g, " ")} (id: ${fId}) → ${facilityType.replace(/_/g, " ")}`;
             await ctx.api.factionFacilityUpgrade(fId, facilityType);
             await ctx.refreshState();
