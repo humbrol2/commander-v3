@@ -222,12 +222,12 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
       }
     }
 
-    // ── Clear leftover cargo from previous failed cycles ──
-    // Without this, intermediates and materials pile up until cargo is 100% full,
-    // blocking all future sourcing and crafting (infinite stuck loop).
+    // ── Clear leftover cargo before sourcing ──
+    // Small ships (Theoria: 70 cargo) fill up fast from intermediates/leftovers.
+    // Clear at 30% to ensure room for material withdrawal.
     const cargoUsedPct = ctx.ship.cargoCapacity > 0
       ? (ctx.ship.cargoUsed / ctx.ship.cargoCapacity) * 100 : 0;
-    if (ctx.player.dockedAtBase && cargoUsedPct > 50) {
+    if (ctx.player.dockedAtBase && cargoUsedPct > 30) {
       yield* clearCrafterCargo(ctx, recipe);
     }
 
@@ -681,13 +681,46 @@ async function sourceMaterials(
         const storage = await fleetViewFactionStorage(ctx);
         const inStorage = storage.items.find(i => i.itemId === ing.itemId);
         if (inStorage && inStorage.quantity >= shortfall) {
-          isTrulyMissing = false; // Material exists — failure was transient
-          console.log(`[${ctx.botId}] ${ing.itemId} has ${inStorage.quantity} in storage — transient failure, not blacklisting`);
+          isTrulyMissing = false;
+          // Material exists but withdraw failed — likely cargo full
+          // Try clearing cargo and retrying once
+          if (ctx.player.dockedAtBase) {
+            try {
+              const cargoItems = [...ctx.ship.cargo];
+              for (const item of cargoItems) {
+                if (item.itemId === ing.itemId) continue; // Keep what we need
+                const useFaction = ctx.fleetConfig.defaultStorageMode === "faction_deposit";
+                if (useFaction) {
+                  await ctx.api.factionDepositItems(item.itemId, item.quantity);
+                } else {
+                  await ctx.api.depositItems(item.itemId, item.quantity);
+                }
+              }
+              await ctx.refreshState();
+              // Retry withdraw after clearing cargo
+              const retryQty = Math.min(shortfall, ctx.cargo.freeSpace(ctx.ship));
+              if (retryQty > 0) {
+                await withdrawFromFaction(ctx, ing.itemId, retryQty);
+                got += retryQty;
+                messages.push(`cleared cargo + withdrew ${retryQty} ${ctx.crafting.getItemName(ing.itemId)} (retry)`);
+                console.log(`[${ctx.botId}] cargo clear + retry: got ${retryQty} ${ing.itemId}`);
+              }
+            } catch {
+              console.log(`[${ctx.botId}] cargo clear + retry failed for ${ing.itemId}`);
+            }
+          }
+          if (got < ing.missing) {
+            console.log(`[${ctx.botId}] ${ing.itemId} has ${inStorage.quantity} in storage — transient failure, not blacklisting`);
+          }
         }
       } catch { /* can't verify — assume truly missing to be safe */ }
+
+      // If retry succeeded, continue to next ingredient
+      if (got >= ing.missing) continue;
+
       return {
         ok: false,
-        reason: `need ${shortfall} more ${ctx.crafting.getItemName(ing.itemId)}`,
+        reason: `need ${ing.missing - got} more ${ctx.crafting.getItemName(ing.itemId)}`,
         missingItemId: isTrulyMissing ? ing.itemId : undefined,
         messages,
       };
