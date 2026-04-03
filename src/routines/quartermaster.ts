@@ -76,8 +76,9 @@ const MODULE_PATTERNS = [
 // ── Price index (built once per sell cycle, replaces O(n²) scans) ──
 
 interface PriceEntry {
-  cheapestBuy: number;   // Lowest buy price across all stations (what sellers charge)
-  bestSell: number;      // Highest sell/demand price (what buyers will pay)
+  cheapestBuy: number;   // Lowest buy ORDER price (lowest a buyer will pay)
+  bestBuy: number;       // Highest buy ORDER price (most a buyer will pay) — OUR SELL TARGET
+  bestSell: number;      // Highest sell ORDER price (most a seller is asking)
   hasBuyVolume: boolean; // Any station has buy orders with volume > 0
   medianBuy: number;     // Volume-weighted median buy price (0 if no data)
   medianSell: number;    // Volume-weighted median sell price (0 if no data)
@@ -116,11 +117,12 @@ function buildPriceIndex(ctx: BotContext, excludeStation?: string): Map<string, 
     for (const p of prices) {
       let entry = index.get(p.itemId);
       if (!entry) {
-        entry = { cheapestBuy: Infinity, bestSell: 0, hasBuyVolume: false, medianBuy: 0, medianSell: 0 };
+        entry = { cheapestBuy: Infinity, bestBuy: 0, bestSell: 0, hasBuyVolume: false, medianBuy: 0, medianSell: 0 };
         index.set(p.itemId, entry);
       }
       if (p.buyPrice && p.buyPrice > 0) {
         if (p.buyPrice < entry.cheapestBuy) entry.cheapestBuy = p.buyPrice;
+        if (p.buyPrice > entry.bestBuy) entry.bestBuy = p.buyPrice; // Track HIGHEST buyer
         if (p.buyVolume > 0) {
           entry.hasBuyVolume = true;
           let obs = buyObs.get(p.itemId);
@@ -1780,7 +1782,8 @@ export function calculateSellPrice(
   const idx = priceIdx ?? buildPriceIndex(ctx, homeBase);
   const entry = idx.get(itemId);
   const cheapestElsewhere = entry?.cheapestBuy ?? Infinity;
-  const bestDemandPrice = entry?.bestSell ?? 0;
+  const bestBuyerPrice = entry?.bestBuy ?? 0; // Highest price ANY buyer will pay
+  const bestDemandPrice = Math.max(bestBuyerPrice, entry?.bestSell ?? 0); // Best of buyer or seller
 
   // Skip items where market value is far below crafting cost AND no demand exists
   // If demand exists (bestDemandPrice > 0), let market price drive the listing
@@ -1803,21 +1806,23 @@ export function calculateSellPrice(
     }
   }
 
-  // Calculate list price: apply demand boost first, then undercut competitors
+  // Calculate list price: use BUYER demand as primary signal (what buyers will pay)
+  // NOT cheapest seller (which can be 1cr for items worth thousands)
   let listPrice: number;
-  if (cheapestElsewhere < Infinity) {
-    listPrice = Math.floor(cheapestElsewhere * demandBoost * (1 - undercutPct));
-  } else if (bestDemandPrice > 0) {
+  if (bestDemandPrice > 0) {
+    // Price slightly below what buyers are paying (instant fills)
     listPrice = Math.floor(bestDemandPrice * demandBoost * (1 - undercutPct / 2));
+  } else if (cheapestElsewhere < Infinity && cheapestElsewhere > costBasis * 0.5) {
+    // No buyer data — use competitor pricing (but only if reasonable vs cost)
+    listPrice = Math.floor(cheapestElsewhere * demandBoost * (1 - undercutPct));
   } else {
+    // No market data — price at 125% of cost basis
     listPrice = Math.ceil(costBasis * 1.25 * demandBoost);
   }
 
-  // Floor: at least cost basis (break even)
-  const minPrice = cheapestElsewhere < Infinity
-    ? Math.max(1, Math.floor(cheapestElsewhere * 0.95))
-    : Math.ceil(costBasis * 1.10);
-  if (listPrice < minPrice) {
+  // Floor: never sell below cost basis (break even minimum)
+  const minPrice = Math.max(1, Math.ceil(costBasis * 0.90));
+  if (listPrice < minPrice && costBasis > 0) {
     listPrice = minPrice;
   }
 
