@@ -135,6 +135,58 @@
 		{/if}
 	</div>
 
+	<!-- Legend for active filters -->
+	{#if activeFilters.size > 0}
+	<div class="card p-2.5 flex flex-wrap gap-x-6 gap-y-1 text-[10px]">
+		{#if activeFilters.has("intel-freshness")}
+			<div class="flex items-center gap-1.5">
+				<span class="font-medium text-chrome-silver mr-1">Intel:</span>
+				<span class="w-2 h-2 rounded-full" style="background: #2dd4bf"></span><span class="text-hull-grey">&lt;10m</span>
+				<span class="w-2 h-2 rounded-full" style="background: #ffd93d"></span><span class="text-hull-grey">10-30m</span>
+				<span class="w-2 h-2 rounded-full" style="background: #ff6b35"></span><span class="text-hull-grey">30m-2h</span>
+				<span class="w-2 h-2 rounded-full" style="background: #e63946"></span><span class="text-hull-grey">&gt;2h</span>
+				<span class="w-2 h-2 rounded-full" style="background: #3a3a4a"></span><span class="text-hull-grey">never</span>
+			</div>
+		{/if}
+		{#if activeFilters.has("bots")}
+			<div class="flex items-center gap-1.5">
+				<span class="font-medium text-chrome-silver mr-1">Bots:</span>
+				<span class="w-2 h-2 rotate-45" style="background: #ff6b35"></span><span class="text-hull-grey">miner</span>
+				<span class="w-2 h-2 rotate-45" style="background: #2dd4bf"></span><span class="text-hull-grey">trader</span>
+				<span class="w-2 h-2 rotate-45" style="background: #00d4ff"></span><span class="text-hull-grey">explorer</span>
+				<span class="w-2 h-2 rotate-45" style="background: #9b59b6"></span><span class="text-hull-grey">crafter</span>
+				<span class="w-2 h-2 rotate-45" style="background: #e63946"></span><span class="text-hull-grey">hunter</span>
+				<span class="w-2 h-2 rotate-45" style="background: #ffd700"></span><span class="text-hull-grey">mission</span>
+				<span class="text-hull-grey ml-1">--- route</span>
+			</div>
+		{/if}
+		{#if activeFilters.has("threats")}
+			<div class="flex items-center gap-1.5">
+				<span class="font-medium text-chrome-silver mr-1">Security:</span>
+				<span class="w-2 h-2 rounded-full" style="background: #e63946"></span><span class="text-hull-grey">none</span>
+				<span class="w-2 h-2 rounded-full" style="background: #ffd93d"></span><span class="text-hull-grey">low</span>
+				<span class="w-2 h-2 rounded-full" style="background: #2dd4bf"></span><span class="text-hull-grey">high</span>
+			</div>
+		{/if}
+		{#if activeFilters.has("resources") && selectedResources.size > 0}
+			<div class="flex items-center gap-1.5">
+				<span class="font-medium text-chrome-silver mr-1">Resources:</span>
+				<span class="w-3 h-3 rounded-full border-2" style="border-color: #ff6b35"></span><span class="text-hull-grey">ring = has resource (thicker = richer)</span>
+			</div>
+		{/if}
+		{#if activeFilters.has("factions")}
+			<div class="flex items-center gap-1.5">
+				<span class="font-medium text-chrome-silver mr-1">Empires:</span>
+				<span class="w-2 h-2 rounded-full" style="background: #ffd700"></span><span class="text-hull-grey">solarian</span>
+				<span class="w-2 h-2 rounded-full" style="background: #9b59b6"></span><span class="text-hull-grey">voidborn</span>
+				<span class="w-2 h-2 rounded-full" style="background: #e63946"></span><span class="text-hull-grey">crimson</span>
+				<span class="w-2 h-2 rounded-full" style="background: #00d4ff"></span><span class="text-hull-grey">nebula</span>
+				<span class="w-2 h-2 rounded-full" style="background: #2dd4bf"></span><span class="text-hull-grey">outerrim</span>
+			</div>
+		{/if}
+	</div>
+	{/if}
+
 	<!-- Canvas map + side panel -->
 	<div class="flex gap-4">
 		<div class="card p-0 overflow-hidden flex-1">
