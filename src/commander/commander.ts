@@ -405,6 +405,15 @@ export class Commander {
         if (enriched > 0) console.log(`[Commander] Hydrated ${enriched} POIs from discoveries`);
       }
     } catch { /* non-critical */ }
+    // Restore POI scan timestamps from Redis (for intel freshness map layer)
+    try {
+      const scannedAt = await this.deps.cache.loadScannedAt();
+      const count = Object.keys(scannedAt).length;
+      if (count > 0) {
+        this.deps.galaxy.importScannedAt(scannedAt);
+        console.log(`[Commander] Restored ${count} POI scan timestamps from Redis`);
+      }
+    } catch { /* non-critical */ }
   }
 
   // ══════════════════════════════════════════════════════════

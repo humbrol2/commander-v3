@@ -346,6 +346,15 @@ export class OrderEngine {
           priority: PRI.EMERGENCY, reason: "fuel_critical",
           routineHint: "return_home",
         });
+        // Generate rescue order for nearby bots (send fuel via gift/refuel)
+        if (bot.systemId) {
+          orders.push({
+            type: "deliver", targetId: `rescue_${bot.botId}`,
+            description: `RESCUE: send fuel to ${bot.username} at ${bot.systemId}`,
+            priority: PRI.EMERGENCY - 2, reason: "rescue_fuel",
+            stationId: bot.systemId,
+          });
+        }
       }
       // Damaged: hull critical
       if (bot.hullPct < 30 && !bot.docked) {

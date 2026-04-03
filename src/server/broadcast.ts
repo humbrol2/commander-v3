@@ -455,6 +455,14 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
         systems: deps.galaxy.toSummaries(),
       });
       deps.galaxy.dirty = false;
+
+      // Persist scannedAt to Redis (survives restarts, non-blocking)
+      if (deps.gameCache) {
+        const scannedData = deps.galaxy.exportScannedAt();
+        if (Object.keys(scannedData).length > 0) {
+          deps.gameCache.persistScannedAt(scannedData).catch(() => {});
+        }
+      }
     }
 
     // Faction state polling (every 60s)

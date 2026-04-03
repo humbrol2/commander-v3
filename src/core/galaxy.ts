@@ -349,6 +349,24 @@ export class Galaxy {
     return this.poiScannedAt.get(poiId) ?? 0;
   }
 
+  /** Export scannedAt data for persistence (save to Redis/DB) */
+  exportScannedAt(): Record<string, number> {
+    const data: Record<string, number> = {};
+    for (const [poiId, ts] of this.poiScannedAt) {
+      if (ts > 0) data[poiId] = ts;
+    }
+    return data;
+  }
+
+  /** Import scannedAt data from persistence (restore on startup) */
+  importScannedAt(data: Record<string, number>): void {
+    for (const [poiId, ts] of Object.entries(data)) {
+      if (ts > 0 && !this.poiScannedAt.has(poiId)) {
+        this.poiScannedAt.set(poiId, ts);
+      }
+    }
+  }
+
   /** Mark a POI as depleted (distinct from "never scanned" which also has empty resources) */
   markPoiDepleted(poiId: string): void {
     this.depletedPois.add(poiId);

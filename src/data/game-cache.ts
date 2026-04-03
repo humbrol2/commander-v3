@@ -315,6 +315,23 @@ export class GameCache {
     private tenantId: string,
   ) {}
 
+  /** Persist POI scannedAt timestamps to Redis (survives restarts) */
+  async persistScannedAt(data: Record<string, number>): Promise<void> {
+    if (!this.redis) return;
+    try {
+      await this.redis.setTimed("poi_scanned_at", JSON.stringify(data), 86_400_000); // 24h TTL
+    } catch { /* non-critical */ }
+  }
+
+  /** Load persisted POI scannedAt timestamps from Redis */
+  async loadScannedAt(): Promise<Record<string, number>> {
+    if (!this.redis) return {};
+    try {
+      const raw = await this.redis.getTimed("poi_scanned_at");
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  }
+
   async initialize(api: ApiClient): Promise<void> {
     const { version } = await api.getVersion();
     this.gameVersion = version;
