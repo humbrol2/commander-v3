@@ -33,6 +33,7 @@ import {
   fleetGetSystem,
   fleetAnalyzeMarket,
   fleetGetPoi,
+  interruptibleSleep,
 } from "./helpers";
 import { isSystemExplored, KNOWN_RESOURCE_LOCATIONS } from "../data/resource-locations";
 
@@ -116,9 +117,10 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
       targetSystems = yield* planRoute(ctx, explorerIndex, maxRouteJumps, homeSystem);
 
       if (targetSystems.length === 0) {
-        yield "all systems freshly scanned — waiting for data to go stale";
+        yield "no reachable targets — waiting 5min for fuel/data refresh";
         yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "explorer" });
-        return;
+        await interruptibleSleep(ctx, 300_000); // 5 min cooldown before retry
+        continue;
       }
     }
 
