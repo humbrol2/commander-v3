@@ -46,10 +46,16 @@ const PRI = {
 // ── Strategic Material Classification ──
 
 /** Tier 1: Strategic — gates facility builds and high-value crafting */
-const STRATEGIC_ORES: Record<string, { minStock: number; reason: string; craftInto?: string; recipe?: string }> = {
-  silicon_ore:    { minStock: 600, reason: "CRITICAL: optical fiber → Trade Ledger + Intel Terminal", craftInto: "optical_fiber_bundle", recipe: "spin_optical_fiber" },
+const STRATEGIC_ORES: Record<string, { minStock: number; reason: string; craftInto?: string; recipe?: string; canBuy?: boolean }> = {
+  silicon_ore:    { minStock: 600, reason: "CRITICAL: optical fiber → Intel Terminal", craftInto: "optical_fiber_bundle", recipe: "spin_optical_fiber", canBuy: true },
   energy_crystal: { minStock: 500, reason: "optical fiber + circuit boards + focused crystals", craftInto: "optical_fiber_bundle", recipe: "spin_optical_fiber" },
 };
+
+/** Items to search for at other stations (bots should check markets for these) */
+const SEARCH_ITEMS = [
+  { itemId: "trade_cipher", reason: "Trade Ledger facility build", quantity: 10 },
+  { itemId: "optical_fiber_bundle", reason: "Intel Terminal + Trade Ledger", quantity: 200 },
+];
 
 /** Tier 2: Supply chain — consumed by crafters for sellable output */
 const SUPPLY_CHAIN_ORES: Record<string, { minStock: number; craftInto: string; recipe: string; sellValue: number }> = {
@@ -402,7 +408,35 @@ export class OrderEngine {
     // Each tier triggers the next when materials are available
     // ═══════════════════════════════════════════════════════
 
-    // ── TIER 1: STRATEGIC ORES (pri 80-85) — gate facility builds ──
+    // ── TIER 0: BUY STRATEGIC MATERIALS (pri 90) — fastest path to facilities ──
+    // Buy silicon/materials from station market instead of mining (much faster)
+    for (const [oreId, config] of Object.entries(STRATEGIC_ORES)) {
+      if (!config.canBuy) continue;
+      const stock = this.factionInventory.get(oreId) ?? 0;
+      if (stock >= config.minStock) continue;
+      const deficit = config.minStock - stock;
+      orders.push({
+        type: "buy", targetId: oreId,
+        description: `BUY ${deficit} ${oreId.replace(/_/g, " ")} from market (faster than mining, ${config.reason})`,
+        priority: PRI.MAINTENANCE, reason: `buy_strategic: ${config.reason}`,
+        quantity: deficit,
+        stationId: this.config.factionStorageStation ?? this.config.homeBase,
+      });
+    }
+
+    // Search other stations for trade ciphers (needed for Trade Ledger)
+    for (const search of SEARCH_ITEMS) {
+      const have = this.factionInventory.get(search.itemId) ?? 0;
+      if (have >= search.quantity) continue;
+      orders.push({
+        type: "trade", targetId: search.itemId,
+        description: `SEARCH: find ${search.itemId.replace(/_/g, " ")} at other stations (${search.reason})`,
+        priority: PRI.SUPPLY_HIGH, reason: `search: ${search.reason}`,
+        quantity: search.quantity - have,
+      });
+    }
+
+    // ── TIER 1: STRATEGIC ORES (pri 80-85) — mine if can't buy ──
     for (const [oreId, config] of Object.entries(STRATEGIC_ORES)) {
       const stock = this.factionInventory.get(oreId) ?? 0;
       if (stock >= config.minStock) continue;
@@ -500,6 +534,7 @@ export class OrderEngine {
     const silicon = this.factionInventory.get("silicon_ore") ?? 0;
     const energyCrystal = this.factionInventory.get("energy_crystal") ?? 0;
     const opticalFiber = this.factionInventory.get("optical_fiber_bundle") ?? 0;
+    // Intel Terminal needs 100, Trade Ledger needs 100 more = 200 total
     const opticalFiberNeeded = (this.facilityMaterialNeeds.get("optical_fiber_bundle") ?? 200) - opticalFiber;
 
     if (opticalFiberNeeded > 0 && silicon >= 3 && energyCrystal >= 2) {
