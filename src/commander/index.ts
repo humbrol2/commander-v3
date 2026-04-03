@@ -1,19 +1,11 @@
 /**
- * Commander barrel export.
+ * Commander barrel export (v4 — order-driven).
  */
 
 export { Commander } from "./commander";
 export type { CommanderConfig, CommanderDeps } from "./commander";
-export type { CommanderBrain, EvaluationInput, EvaluationOutput, BrainHealth, BotScore, PendingUpgrade, WorldContext, StrategyWeights, ReassignmentState } from "./types";
-export { ScoringBrain } from "./scoring-brain";
-export type { ScoringConfig } from "./scoring-brain";
-export { EconomyEngine } from "./economy-engine";
-export { getStrategyWeights, getGoalWeights } from "./strategies";
-export { LlmBrain } from "./llm-brain";
-export type { LlmBrainConfig } from "./llm-brain";
-export { createOllamaBrain } from "./ollama-brain";
-export { createGeminiBrain } from "./gemini-brain";
-export { createClaudeBrain } from "./claude-brain";
-export { TieredBrain } from "./tiered-brain";
-export type { TieredBrainConfig } from "./tiered-brain";
-export { buildSystemPrompt, buildUserPrompt, parseLlmResponse } from "./prompt-builder";
+export { OrderEngine } from "./order-engine";
+export type { OrderEngineConfig, OrderContext, OrderAssignment } from "./order-engine";
+export { WorkOrderManager } from "./work-order-manager";
+export type { CommanderBrain, EvaluationInput, EvaluationOutput, BrainHealth, PendingUpgrade, WorldContext } from "./types";
+export type { FleetWorkOrder, PersistentWorkOrder, EconomySnapshot, Assignment } from "./types";

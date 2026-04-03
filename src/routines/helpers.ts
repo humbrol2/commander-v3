@@ -308,6 +308,15 @@ export async function dockAtCurrent(ctx: BotContext): Promise<void> {
     // Analyze market for insights (rate-limited — at most once per 30min per station)
     await analyzeMarketIfStale(ctx);
 
+    // Submit intel to faction (if we have intel facilities)
+    // Non-blocking, best-effort — feeds the shared intel database
+    try {
+      await ctx.api.factionSubmitIntel([{ system_id: ctx.player.currentSystem }]);
+    } catch { /* no intel facility or not in faction — ignore */ }
+    try {
+      await ctx.api.factionSubmitTradeIntel([{ base_id: ctx.player.dockedAtBase }]);
+    } catch { /* no trade ledger facility — ignore */ }
+
   }
 }
 
@@ -763,7 +772,7 @@ export async function sellAllCargo(ctx: BotContext): Promise<SellResult> {
     if (ctx.shouldStop) break;
     if (isProtectedItem(item.itemId)) continue;
     try {
-      const result = await ctx.api.sell(item.itemId, item.quantity);
+      const result = await ctx.api.sell(item.itemId, item.quantity, { autoList: true });
       if (result.priceEach === 0 && result.total === 0) {
         log(ctx, `skipped ${item.itemId} (no demand at this station)`);
         continue;
@@ -929,6 +938,56 @@ export async function disposeCargo(ctx: BotContext): Promise<SellResult> {
 
   // Default: sell
   return sellAllCargo(ctx);
+}
+
+// ── Field Repairs & Refueling (without docking) ──
+
+/**
+ * Use repair kits from cargo to repair hull in the field (no dock needed).
+ * Returns true if repair was performed.
+ */
+export async function fieldRepair(ctx: BotContext, hullThreshold = 50): Promise<boolean> {
+  const hullPct = (ctx.ship.hull / ctx.ship.maxHull) * 100;
+  if (hullPct >= hullThreshold) return false;
+
+  const repairKits = ctx.cargo.getItemQuantity(ctx.ship, "repair_kit");
+  if (repairKits <= 0) return false;
+
+  // Use enough kits to get hull above threshold
+  const needed = Math.ceil((hullThreshold - hullPct) / 10); // Each kit ~10% hull
+  const use = Math.min(needed, repairKits);
+  try {
+    await ctx.api.repair();
+    await ctx.refreshState();
+    log(ctx, `field repair: used ${use} repair kit(s), hull now ${((ctx.ship.hull / ctx.ship.maxHull) * 100).toFixed(0)}%`);
+    return true;
+  } catch (err) {
+    logWarn(ctx, `field repair failed: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+}
+
+/**
+ * Use fuel cells from cargo to refuel in the field (no dock needed).
+ * Returns true if refuel was performed.
+ */
+export async function fieldRefuel(ctx: BotContext, fuelThreshold = 30): Promise<boolean> {
+  const fuelPct = ctx.fuel.getPercentage(ctx.ship);
+  if (fuelPct >= fuelThreshold) return false;
+
+  const fuelCells = ctx.cargo.getItemQuantity(ctx.ship, "fuel_cell");
+  if (fuelCells <= 0) return false;
+
+  const use = Math.min(3, fuelCells); // Burn up to 3 cells at a time
+  try {
+    await ctx.api.refuel("fuel_cell", use);
+    await ctx.refreshState();
+    log(ctx, `field refuel: burned ${use} fuel cell(s), fuel now ${ctx.fuel.getPercentage(ctx.ship).toFixed(0)}%`);
+    return true;
+  } catch (err) {
+    logWarn(ctx, `field refuel failed: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
 }
 
 // ── Emergency ──

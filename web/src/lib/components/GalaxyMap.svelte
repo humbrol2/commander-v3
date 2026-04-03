@@ -23,15 +23,33 @@
 		connections: string[];
 		poiCount?: number;
 		visited?: boolean;
+		pois?: Array<{
+			id: string;
+			name: string;
+			type: string;
+			hasBase: boolean;
+			resources?: Array<{ resourceId: string; richness: number; remaining: number }>;
+			scannedAt?: number;
+		}>;
 	}
 
 	interface Props {
 		systems?: SystemNode[];
 		bots?: BotSummary[];
 		activeFilters?: Set<string>;
+		selectedResources?: Set<string>;
 		onSelectSystem?: (systemId: string) => void;
 		onSelectBot?: (botId: string) => void;
 	}
+
+	/** Intel freshness colors by age */
+	const FRESHNESS_COLORS = {
+		fresh: "#2dd4bf",    // <10min — teal/green
+		recent: "#ffd93d",   // 10-30min — yellow
+		stale: "#ff6b35",    // 30min-2hr — orange
+		veryStale: "#e63946", // >2hr — red
+		unknown: "#3a3a4a",  // never scanned — dark grey
+	};
 
 	const EMPIRE_COLORS: Record<string, string> = {
 		solarian: "#ffd700",
@@ -61,9 +79,46 @@
 		systems = [],
 		bots = [],
 		activeFilters = new Set<string>(),
+		selectedResources = new Set<string>(),
 		onSelectSystem,
 		onSelectBot,
 	}: Props = $props();
+
+	/** Get freshness color for a system based on most recent POI scan */
+	function getSystemFreshnessColor(sys: SystemNode): string {
+		const scans = (sys.pois ?? []).map(p => p.scannedAt ?? 0).filter(t => t > 0);
+		if (scans.length === 0) return FRESHNESS_COLORS.unknown;
+		const newest = Math.max(...scans);
+		const ageMs = Date.now() - newest;
+		if (ageMs < 10 * 60_000) return FRESHNESS_COLORS.fresh;
+		if (ageMs < 30 * 60_000) return FRESHNESS_COLORS.recent;
+		if (ageMs < 2 * 60 * 60_000) return FRESHNESS_COLORS.stale;
+		return FRESHNESS_COLORS.veryStale;
+	}
+
+	/** Check if system has any of the selected resources */
+	function systemHasResource(sys: SystemNode, resources: Set<string>): boolean {
+		if (resources.size === 0) return false;
+		for (const poi of sys.pois ?? []) {
+			for (const res of poi.resources ?? []) {
+				if (resources.has(res.resourceId) && res.remaining > 0) return true;
+			}
+		}
+		return false;
+	}
+
+	/** Get max resource richness for a system */
+	function getResourceRichness(sys: SystemNode, resources: Set<string>): number {
+		let maxRich = 0;
+		for (const poi of sys.pois ?? []) {
+			for (const res of poi.resources ?? []) {
+				if (resources.has(res.resourceId) && res.remaining > 0 && res.richness > maxRich) {
+					maxRich = res.richness;
+				}
+			}
+		}
+		return maxRich;
+	}
 
 	let canvas: HTMLCanvasElement;
 	let container: HTMLDivElement;
@@ -299,6 +354,52 @@
 				ctx.moveTo(x1, y1);
 				ctx.lineTo(x2, y2);
 				ctx.stroke();
+			}
+		}
+
+		// 2.5. Intel freshness overlay — color-coded rings showing data staleness
+		if (activeFilters.has("intel-freshness")) {
+			for (const sys of systems) {
+				const [sx, sy] = worldToScreen(sys.x, sys.y);
+				if (sx < -50 || sx > w + 50 || sy < -50 || sy > h + 50) continue;
+				const color = getSystemFreshnessColor(sys);
+				const ringSize = Math.max(8, 14 * zoom);
+				// Outer glow
+				ctx.strokeStyle = color + "55";
+				ctx.lineWidth = 3;
+				ctx.beginPath();
+				ctx.arc(sx, sy, ringSize + 2, 0, Math.PI * 2);
+				ctx.stroke();
+				// Inner ring
+				ctx.strokeStyle = color + "cc";
+				ctx.lineWidth = 1.5;
+				ctx.beginPath();
+				ctx.arc(sx, sy, ringSize, 0, Math.PI * 2);
+				ctx.stroke();
+			}
+		}
+
+		// 2.6. Resource overlay — highlight systems with selected resources
+		if (activeFilters.has("resources") && selectedResources.size > 0) {
+			for (const sys of systems) {
+				if (!systemHasResource(sys, selectedResources)) continue;
+				const [sx, sy] = worldToScreen(sys.x, sys.y);
+				if (sx < -50 || sx > w + 50 || sy < -50 || sy > h + 50) continue;
+				const richness = getResourceRichness(sys, selectedResources);
+				const ringSize = Math.max(10, (16 + richness * 8) * zoom);
+				// Bright orange ring — thicker for richer deposits
+				ctx.strokeStyle = "#ff6b35cc";
+				ctx.lineWidth = 1 + richness * 2;
+				ctx.beginPath();
+				ctx.arc(sx, sy, ringSize, 0, Math.PI * 2);
+				ctx.stroke();
+				// Resource label at high zoom
+				if (zoom > 0.5) {
+					ctx.fillStyle = "#ff6b35";
+					ctx.font = `${Math.max(8, 9 * zoom)}px monospace`;
+					ctx.textAlign = "center";
+					ctx.fillText(`${(richness * 100).toFixed(0)}%`, sx, sy + ringSize + 10);
+				}
 			}
 		}
 

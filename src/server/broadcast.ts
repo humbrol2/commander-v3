@@ -6,7 +6,7 @@
 
 import type { BotManager } from "../bot/bot-manager";
 import type { Commander } from "../commander/commander";
-import type { EconomyEngine } from "../commander/economy-engine";
+import type { OrderEngine } from "../commander/order-engine";
 import type { Galaxy } from "../core/galaxy";
 import type { DB } from "../data/db";
 import type { SocialChatMessage, SocialForumThread, SocialDM, FactionState, FactionMember, FactionFacility, OpenOrder, BrainDecisionStats } from "../types/protocol";
@@ -14,7 +14,7 @@ import type { MarketOrder } from "../types/game";
 import { creditHistory, activityLog } from "../data/schema";
 import { lt } from "drizzle-orm";
 import type { TrainingLogger } from "../data/training-logger";
-import { ChatIntelligence, type ChatFleetContext } from "../commander/chat-intelligence";
+// ChatIntelligence removed — LLM deferred to social features later
 import { broadcast, getClientCount } from "./server";
 import { promoteFactionMembers } from "../fleet/faction-manager";
 
@@ -35,7 +35,7 @@ const DEFAULT_BROADCAST_CONFIG: BroadcastConfig = {
 export interface BroadcastDeps {
   botManager: BotManager;
   commander: Commander;
-  economy: EconomyEngine;
+  // economy removed — use commander.getOrderEngine() instead
   galaxy: Galaxy;
   db: DB;
   tenantId: string;
@@ -128,15 +128,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
   let lastSocialChatTick = 0;
   const SOCIAL_CHAT_INTERVAL_TICKS = 100; // ~5 minutes between faction chat messages
 
-  // Chat intelligence — reads and learns from global/faction chat (shared with Commander)
-  const botNames = deps.botManager.getAllBots().map(b => b.username);
-  const memStore = deps.commander.getMemoryStore();
-  const aiSettings = deps.commander.getAiSettings();
-  const chatIntel = new ChatIntelligence(memStore, botNames, {
-    baseUrl: aiSettings?.ollamaBaseUrl ?? "http://localhost:11434",
-    model: aiSettings?.ollamaModel ?? "qwen3:8b",
-  });
-  deps.commander.setChatIntelligence(chatIntel);
+  // Chat intelligence removed — LLM deferred to social features later
 
   const timer = setInterval(async () => {
     tick++;
@@ -145,7 +137,7 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
 
     // ── Credit Tracking ──
     // Use the Commander's economy engine so revenue/costs appear in economy_update
-    const ecoTracker = deps.commander.getEconomy();
+    const ecoTracker = deps.commander.getOrderEngine();
     for (const bot of fleet.bots) {
       if (bot.status !== "running" && bot.status !== "ready") continue;
       const prev = lastCredits.get(bot.botId);
@@ -278,28 +270,18 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       } catch { /* non-critical */ }
     }
 
-    // ── Economy engine + work orders (always-on, even without clients) ──
+    // ── Faction storage feed (always-on, even without clients) ──
     if (tick % 5 === 0) {
-      const ecoEngine = deps.commander.getEconomy();
-      if (ecoEngine) {
-        // Feed cached faction storage into economy engine (persists across restarts)
+      const orderEngine = deps.commander.getOrderEngine();
+      if (orderEngine) {
+        // Feed cached faction storage into order engine (persists across restarts)
         const cachedStorage = deps.gameCache?.getFactionStorageSync();
         if (cachedStorage && cachedStorage.length > 0) {
           const inv = new Map<string, number>();
           for (const item of cachedStorage) inv.set(item.itemId, item.quantity);
-          ecoEngine.updateFactionInventory(inv);
+          orderEngine.updateFactionInventory(inv);
         }
-        // Feed stale station list for scan work orders
-        if (deps.gameCache) {
-          const allFreshness = deps.gameCache.getAllMarketFreshness(1_800_000); // 30min TTL
-          const staleStations = allFreshness.filter(f => !f.fresh).map(f => f.stationId);
-          ecoEngine.setStaleStations(staleStations);
-        }
-
-        const snap = ecoEngine.analyze(fleet);
-        if (deps.workOrderManager) {
-          deps.workOrderManager.syncFromEconomy(snap.workOrders);
-        }
+        // Order generation + work order sync happens in Commander eval loop, not here
       }
     }
 
@@ -410,9 +392,9 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
         stuckBots,
       });
 
-      const ecoEngine = deps.commander.getEconomy();
-      if (ecoEngine) {
-        const snap = ecoEngine.analyze(fleet);
+      const orderEngine = deps.commander.getOrderEngine();
+      if (orderEngine) {
+        const snap = orderEngine.buildSnapshot();
 
         // Map work orders to assigned bots by matching order type → routine
         const workOrderTypeToRoutine: Record<string, string> = {
@@ -421,17 +403,12 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
         const routineBotMap = new Map<string, string>();
         for (const bot of fleet.bots) {
           if (bot.status === "running" && bot.routine) {
-            // First bot per routine wins — work orders get one assignee
             if (!routineBotMap.has(bot.routine)) {
               routineBotMap.set(bot.routine, bot.botId);
             }
           }
         }
-
-        // Sync work orders from economy engine into persistent work order manager
-        if (deps.workOrderManager) {
-          deps.workOrderManager.syncFromEconomy(snap.workOrders);
-        }
+        // Work order sync happens in Commander eval loop, not broadcast
 
         broadcast({
           type: "economy_update",
@@ -513,11 +490,8 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
       pollQueue.enqueue("social", () => pollSocialFeed(deps));
     }
 
-    // Chat intelligence: read + analyze + reply (~every 30s for reading, ~5min for status posting)
-    if (tick % 10 === 0) {
-      chatIntel.updateBotNames(deps.botManager.getAllBots().map(b => b.username));
-      pollQueue.enqueue("chat", () => readAndRespondToChat(deps, chatIntel));
-    }
+    // Chat intelligence removed — LLM deferred to social features later
+    // if (tick % 10 === 0) { ... }
     // Disabled: generic chat messages spam public channels when multiple fleets are active
     // if (tick - lastSocialChatTick >= SOCIAL_CHAT_INTERVAL_TICKS) {
     //   lastSocialChatTick = tick;
@@ -923,63 +897,7 @@ async function pollSocialFeed(deps: BroadcastDeps): Promise<void> {
   }
 }
 
-/** Read global and faction chat, extract intel, and reply to interesting messages */
-async function readAndRespondToChat(deps: BroadcastDeps, chatIntel: ChatIntelligence): Promise<void> {
-  const bots = deps.botManager.getAllBots();
-  const readyBot = bots.find(b => (b.status === "running" || b.status === "ready") && b.api);
-  if (!readyBot?.api) return;
-
-  // Update fleet context for LLM chat persona
-  try {
-    const fleet = deps.botManager.getFleetStatus();
-    const eco = deps.commander.getEconomy();
-    const snap = eco.analyze(fleet);
-    const selling: Array<{ item: string; qty: number; price?: number }> = [];
-    if (cachedFactionStorage) {
-      for (const s of cachedFactionStorage.filter(i => !i.itemId.startsWith("ore_") && i.quantity >= 3)) {
-        selling.push({ item: s.itemName, qty: s.quantity });
-      }
-    }
-    chatIntel.setFleetContext({
-      factionName: "Castellan Industrial",
-      factionTag: "CAST",
-      botCount: fleet.activeBots,
-      totalCredits: fleet.totalCredits,
-      homeSystem: deps.botManager.fleetConfig.homeSystem || "sol",
-      selling: selling.slice(0, 8),
-      buying: snap.deficits.filter(d => d.priority === "critical").map(d => ({ item: d.itemId.replace(/_/g, " ") })),
-      systems: [...new Set(fleet.bots.map(b => b.systemId).filter(Boolean))].slice(0, 6) as string[],
-    });
-  } catch { /* non-critical */ }
-
-  // Read from both channels
-  for (const channel of ["system", "faction"] as const) {
-    try {
-      const intel = await chatIntel.readAndAnalyze(readyBot.api, channel);
-      if (intel.length > 0) {
-        const trades = intel.filter(i => i.type === "trade_offer").length;
-        const warnings = intel.filter(i => i.type === "warning").length;
-        if (trades > 0 || warnings > 0) {
-          console.log(`[ChatIntel] ${channel}: ${trades} trade offer(s), ${warnings} warning(s) detected`);
-        }
-      }
-    } catch {
-      // Chat read failure is non-critical
-    }
-  }
-
-  // Send any queued replies (one per tick, rate limited internally)
-  if (chatIntel.pendingReplyCount > 0) {
-    try {
-      const sent = await chatIntel.sendReplies(readyBot.api);
-      if (sent > 0) {
-        console.log(`[ChatIntel] Sent ${sent} reply(s) to chat`);
-      }
-    } catch {
-      // Reply failure is non-critical
-    }
-  }
-}
+// readAndRespondToChat removed — LLM chat deferred to social features later
 
 /** Post relevant intel to global chat: buy/sell orders, missions, pirate warnings, ore requests */
 async function postFactionChatUpdate(deps: BroadcastDeps): Promise<void> {
@@ -991,7 +909,7 @@ async function postFactionChatUpdate(deps: BroadcastDeps): Promise<void> {
   if (!poster.api) return;
 
   const fleet = deps.botManager.getFleetStatus();
-  const ecoEngine = deps.commander.getEconomy();
+  const ecoEngine = deps.commander.getOrderEngine();
   const candidates: string[] = [];
 
   // 1. Advertise active sell orders (items we have for sale)
@@ -1008,7 +926,7 @@ async function postFactionChatUpdate(deps: BroadcastDeps): Promise<void> {
 
   // 2. Advertise material needs (ore/materials we're short on)
   if (ecoEngine) {
-    const snap = ecoEngine.analyze(fleet);
+    const snap = ecoEngine.buildSnapshot();
     const critical = snap.deficits.filter(d => d.priority === "critical" && d.shortfall > 5);
     if (critical.length > 0) {
       const need = critical[0];
@@ -1224,10 +1142,10 @@ async function postFactionMissionsForDeficits(deps: BroadcastDeps): Promise<void
   try {
     // Get current economy deficits
     const fleet = deps.botManager.getFleetStatus();
-    const ecoEngine = deps.commander.getEconomy();
+    const ecoEngine = deps.commander.getOrderEngine();
     if (!ecoEngine) return;
 
-    const snap = ecoEngine.analyze(fleet);
+    const snap = ecoEngine.buildSnapshot();
     const criticalDeficits = snap.deficits.filter(d => d.priority === "critical" || d.shortfall > 10);
     if (criticalDeficits.length === 0) return;
 

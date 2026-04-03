@@ -573,8 +573,10 @@ export class ApiClient {
     return this.mutation("undock");
   }
 
-  async sell(itemId: string, quantity: number): Promise<TradeResult> {
-    const data = await this.mutation<Record<string, unknown>>("sell", { item_id: itemId, quantity });
+  async sell(itemId: string, quantity: number, opts?: { autoList?: boolean }): Promise<TradeResult> {
+    const payload: Record<string, unknown> = { item_id: itemId, quantity };
+    if (opts?.autoList) payload.auto_list = true;
+    const data = await this.mutation<Record<string, unknown>>("sell", payload);
     return normalizeTradeResult(data);
   }
 

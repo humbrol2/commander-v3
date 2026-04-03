@@ -624,6 +624,23 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
                 try { const stn = getStationName(ctx); await ctx.api.chat("system", `Buying ${buyQty}x ${item} @ ${orderPrice}cr${stn ? ` at ${stn}` : ""}`); } catch { /* best effort */ }
               }
             } else {
+              // Preview purchase cost before committing (read-only, no fee)
+              try {
+                const estimate = await ctx.api.estimatePurchase(item, buyQty);
+                if (estimate.available === 0) {
+                  yield `skipping buy: 0 ${item} available at this station`;
+                  break;
+                }
+                const avgCost = estimate.totalCost / Math.max(1, estimate.available);
+                if (avgCost > expectedSellPrice * 0.95) {
+                  yield `skipping buy: avg cost ${avgCost.toFixed(0)}cr >= sell price ${expectedSellPrice}cr (no profit)`;
+                  break;
+                }
+                if (estimate.available < buyQty) {
+                  buyQty = estimate.available; // Buy only what's available
+                }
+              } catch { /* estimatePurchase failed — proceed with buy anyway */ }
+
               const cargoBefore = ctx.cargo.getItemQuantity(ctx.ship, item);
               const result = await ctx.api.buy(item, buyQty);
               await ctx.refreshState();
@@ -870,7 +887,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
           } else {
             const cargoBeforeSell = ctx.cargo.getItemQuantity(ctx.ship, item);
             const creditsBefore = ctx.player.credits;
-            const result = await ctx.api.sell(item, qty);
+            const result = await ctx.api.sell(item, qty, { autoList: true });
             await ctx.refreshState();
             const cargoAfterSell = ctx.cargo.getItemQuantity(ctx.ship, item);
             const creditsGained = ctx.player.credits - creditsBefore;

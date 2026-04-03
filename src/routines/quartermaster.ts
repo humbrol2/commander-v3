@@ -634,7 +634,7 @@ async function* manageFactionSales(
       const hasFloor = MODULE_MIN_PRICES[item.itemId] != null;
       const directResult = hasFloor
         ? { quantity: 0, total: 0, priceEach: 0 }
-        : await ctx.api.sell(item.itemId, sellQty);
+        : await ctx.api.sell(item.itemId, sellQty, { autoList: true });
       if (!hasFloor) await ctx.refreshState();
 
       if (directResult.total > 0) {

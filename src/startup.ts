@@ -28,13 +28,6 @@ import { registerTradeTracker, registerProductionTracker, registerDashboardRelay
 import { BotManager, type SharedServices, type ApiClientFactory } from "./bot/bot-manager";
 import { ApiClient } from "./core/api-client";
 import { Commander, type CommanderConfig, type CommanderDeps } from "./commander/commander";
-import { ScoringBrain } from "./commander/scoring-brain";
-import { TieredBrain } from "./commander/tiered-brain";
-import { createOllamaBrain } from "./commander/ollama-brain";
-import { createOpenAIBrain } from "./commander/openai-brain";
-import { createGeminiBrain } from "./commander/gemini-brain";
-import { createClaudeBrain } from "./commander/claude-brain";
-import { EconomyEngine } from "./commander/economy-engine";
 import { buildRoutineRegistry } from "./routines";
 import { createServer, broadcast, sendTo, type ServerOptions } from "./server/server";
 import { activityLog } from "./data/schema";
@@ -47,9 +40,7 @@ import {
   discoverFactionStorage, propagateFleetHome,
   ensureFactionMembership,
 } from "./fleet";
-import type { CommanderBrain } from "./commander/types";
 import { MemoryStore } from "./data/memory-store";
-import { EmbeddingStore } from "./commander/embedding-store";
 import { parseBotRole, type RolePoolConfig } from "./commander/roles";
 import type Redis from "ioredis";
 
@@ -59,7 +50,6 @@ export interface AppServices {
   galaxy: Galaxy;
   botManager: BotManager;
   commander: Commander;
-  economy: EconomyEngine;
   sessionStore: SessionStore;
   stopBroadcast: () => void;
   tenantId: string;
@@ -265,35 +255,8 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     });
   };
 
-  // ── Economy Engine ──
-  const economy = new EconomyEngine();
-  economy.crafting = crafting;
-
-  // ── Persistent Memory Store (inspired by CHAPERON) ──
+  // ── Persistent Memory Store ──
   const memoryStore = new MemoryStore(db, tenantId);
-
-  // ── Contextual Bandit (learns per-role routine weights from outcomes) ──
-  const { BanditBrain } = await import("./commander/bandit-brain");
-  const banditBrain = new BanditBrain(db, tenantId, { alpha: 0.5 });
-  await banditBrain.init();
-  console.log(`[Startup] Bandit brain loaded: ${banditBrain.getTotalEpisodes()} historical episodes`);
-
-  // ── Embedding Store (semantic memory for strategic decisions) ──
-  const embeddingStore = new EmbeddingStore(db, {
-    ollamaUrl: config.ai.ollama_base_url,
-    tenantId,
-  });
-  // Check embedding model availability (non-blocking)
-  embeddingStore.checkHealth().then(available => {
-    if (available) {
-      console.log("[Startup] Embedding model (nomic-embed-text) available for semantic memory");
-    } else {
-      console.log("[Startup] Embedding model not available — memory store will use recency fallback. Run: ollama pull nomic-embed-text");
-    }
-  }).catch(() => {});
-
-  // ── Commander Brain ──
-  const brain = buildBrain(config, trainingLogger);
 
   const commanderConfig: CommanderConfig = {
     evaluationIntervalSec: savedFleetSettings?.evaluationInterval ?? config.commander.evaluation_interval,
@@ -325,19 +288,14 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     },
     recoverErrorBots: () => botManager.recoverStuckBots(),
     isBotManual: (botId: string) => botManager.getBot(botId)?.settings.manualControl ?? false,
-    embeddingStore,
-    ollamaConfig: {
-      baseUrl: config.ai.ollama_base_url,
-      model: config.ai.ollama_model,
-    },
+    redis: redisCache,
+    tenantId,
   };
 
-  const commander = new Commander(commanderConfig, commanderDeps, brain);
+  const commander = new Commander(commanderConfig, commanderDeps);
 
-  // Wire event bus → commander reward signals (per-bot accumulators for bandit learning)
-  // Work order manager (persistent, claimable orders for the fleet)
-  const { WorkOrderManager } = await import("./commander/work-order-manager");
-  const workOrderManager = new WorkOrderManager(redisCache, tenantId);
+  // Wire event bus → commander signals
+  const workOrderManager = commander.getWorkOrderManager();
   services.workOrderManager = workOrderManager;
 
   // Fleet-wide shared services (nav loop detector, sell deconfliction, circuit breaker)
@@ -348,16 +306,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   services.sellDeconfliction = new SellDeconfliction();
   services.circuitBreaker = new CircuitBreaker();
 
-  // Wire work order manager to commander for order-first assignment
-  (commanderDeps as any).workOrderManager = workOrderManager;
-
-  // Wire work order manager + market data to economy engine for chain generation
-  const ecoEngine = commander.getEconomy();
-  if (ecoEngine) {
-    ecoEngine.workOrderManager = workOrderManager;
-    ecoEngine.cache = gameCache;
-    ecoEngine.market = market;
-  }
+  // Order engine is created internally by Commander — no separate wiring needed
 
   eventBus.on("deposit", (e) => commander.addBotSignal(e.botId, "deposited", e.quantity, e.itemId));
   eventBus.on("mine", (e) => commander.addBotSignal(e.botId, "mined", e.quantity));
@@ -369,16 +318,11 @@ export async function startup(config: AppConfig): Promise<AppServices> {
     commander.addResourceDiscovery(e.botId, e.scarce);
   });
 
-  // Bandit brain DISABLED — episode count inflation causes degenerate scoring.
-  // Replaced with EMA Reward Tracker (simple, robust, no corruption risk).
+  // Reward tracker — tracks per-routine performance outcomes
   const { RewardTracker } = await import("./commander/reward-tracker");
   const rewardTracker = new RewardTracker(db, tenantId);
   await rewardTracker.init();
-  const scoringBrain = commander.getScoringBrain?.() ?? (brain instanceof ScoringBrain ? brain : null);
-  if (scoringBrain) {
-    scoringBrain.rewardTracker = rewardTracker;
-    console.log(`[Startup] EMA Reward Tracker attached (${rewardTracker.getTotalObservations()} observations)`);
-  }
+  console.log(`[Startup] Reward Tracker loaded (${rewardTracker.getTotalObservations()} observations)`);
 
   // Load role pool config from config.toml
   if (config.fleet.roles.length > 0) {
@@ -621,7 +565,6 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   const broadcastDeps: BroadcastDeps = {
     botManager,
     commander,
-    economy,
     galaxy,
     db,
     tenantId,
@@ -653,9 +596,6 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   console.log("[Startup] Facility material needs set: warehouse upgrade (steel plates, circuit boards, raw ores)");
 
   // ── Start Commander Eval Loop ──
-  // Clear all cooldowns on startup so bots get fresh assignments immediately
-  const sb = commander.getScoringBrain?.();
-  if (sb) sb.clearAllCooldowns();
   commander.start();
 
   return {
@@ -672,89 +612,10 @@ export async function startup(config: AppConfig): Promise<AppServices> {
         try { redisClient.disconnect(); } catch { /* ignore */ }
       }
     },
-    galaxy, botManager, commander, economy, sessionStore, stopBroadcast,
+    galaxy, botManager, commander, sessionStore, stopBroadcast,
     tenantId,
     redis: redisClient,
   };
 }
 
-/** Build the brain based on config */
-function buildBrain(config: AppConfig, logger: TrainingLogger): CommanderBrain {
-  const scoringBrain = new ScoringBrain({
-    reassignmentCooldownMs: config.commander.reassignment_cooldown * 1000,
-  });
-
-  if (config.commander.brain === "scoring") {
-    return scoringBrain;
-  }
-
-  // Build LLM brains for tiered system
-  const promptFile = config.ai.prompt_file || undefined;
-  const brainMap: Record<string, () => CommanderBrain> = {
-    ollama: () => createOllamaBrain({
-      baseUrl: config.ai.ollama_base_url,
-      model: config.ai.ollama_model,
-      timeoutMs: config.ai.max_latency_ms,
-      maxTokens: config.ai.max_tokens,
-      promptFile,
-    }),
-    openai: () => createOpenAIBrain({
-      baseUrl: config.ai.openai_base_url,
-      model: config.ai.openai_model,
-      timeoutMs: config.ai.max_latency_ms,
-      maxTokens: config.ai.max_tokens,
-      promptFile,
-    }),
-    gemini: () => createGeminiBrain({
-      model: config.ai.gemini_model,
-      timeoutMs: config.ai.max_latency_ms,
-      maxTokens: config.ai.max_tokens,
-      promptFile,
-    }),
-    claude: () => createClaudeBrain({
-      model: config.ai.claude_model,
-      timeoutMs: config.ai.max_latency_ms,
-      maxTokens: config.ai.max_tokens,
-      promptFile,
-    }),
-    scoring: () => scoringBrain,
-  };
-
-  if (config.commander.brain === "tiered") {
-    const tiers = config.ai.tier_order
-      .map(name => brainMap[name]?.())
-      .filter((b): b is CommanderBrain => b !== undefined);
-
-    return new TieredBrain({
-      tiers,
-      shadowBrain: config.ai.shadow_mode ? scoringBrain : undefined,
-      onShadowResult: config.ai.shadow_mode
-        ? (primary, shadow) => {
-            console.log(`[Shadow] ${primary.brainName} vs ${shadow.brainName}: ` +
-              `${primary.assignments.length} vs ${shadow.assignments.length} assignments`);
-            logger.logShadowComparison({
-              tick: Math.floor(Date.now() / 1000),
-              primary: {
-                brainName: primary.brainName,
-                latencyMs: primary.latencyMs,
-                confidence: primary.confidence,
-                tokenUsage: primary.tokenUsage,
-                assignments: primary.assignments.map(a => ({ botId: a.botId, routine: a.routine })),
-                reasoning: primary.reasoning,
-              },
-              shadow: {
-                brainName: shadow.brainName,
-                assignments: shadow.assignments.map(a => ({ botId: a.botId, routine: a.routine })),
-                reasoning: shadow.reasoning,
-              },
-              fleetInput: {},
-            });
-          }
-        : undefined,
-    });
-  }
-
-  // Single brain mode (ollama, gemini, claude)
-  const factory = brainMap[config.commander.brain];
-  return factory ? factory() : scoringBrain;
-}
+// Brain construction removed — OrderEngine is the sole decision maker.
