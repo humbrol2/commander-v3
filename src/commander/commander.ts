@@ -285,6 +285,12 @@ export class Commander {
     });
 
     // ── Step 8: Match bots to orders ──
+    // Debug: log trader bots that are in the fleet
+    for (const bot of fleet.bots) {
+      if (bot.role === "trader") {
+        console.log(`[Commander] Trader in fleet: ${bot.username} status=${bot.status} routine=${bot.routine ?? "none"}`);
+      }
+    }
     const assignments = this.orderEngine.matchAndClaim(fleet);
 
     // ── Step 9: Execute assignments ──
