@@ -599,7 +599,6 @@
 					}
 				}
 			}
-		}
 
 			// Bot count badge on system node (visible at any zoom)
 			for (const [systemId, systemBots] of botsBySystem) {
@@ -607,7 +606,6 @@
 				if (!sys) continue;
 				const [sx, sy] = worldToScreen(sys.x, sys.y);
 				const badgeR = Math.max(5, 8 * zoom);
-				// Small circle with count, bottom-right of system node
 				ctx.fillStyle = "#00d4ff";
 				ctx.beginPath();
 				ctx.arc(sx + badgeR + 2, sy + badgeR + 2, badgeR, 0, Math.PI * 2);
