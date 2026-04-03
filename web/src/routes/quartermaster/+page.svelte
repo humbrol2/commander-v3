@@ -152,12 +152,12 @@
 		</div>
 	{/if}
 
-	<!-- Active Chains -->
-	{#if data && data.chains && data.chains.length > 0}
+	<!-- Active Chains (only show multi-step chains, not single sell orders) -->
+	{#if data && data.chains && data.chains.filter(c => c.total >= 2).length > 0}
 		<div class="card p-4">
 			<h2 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-3">Active Chains</h2>
 			<div class="space-y-2">
-				{#each data.chains as chain}
+				{#each data.chains.filter(c => c.total >= 2) as chain}
 					<div class="flex items-center gap-3 p-2 rounded bg-deep-space/50">
 						<div class="flex-1">
 							<p class="text-sm text-star-white">{chain.current ?? "Waiting..."}</p>

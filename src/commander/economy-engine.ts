@@ -204,7 +204,8 @@ export class EconomyEngine {
           ? `Sell ${sellQty} ${itemId.replace(/_/g, " ")} @ ${bestStation.replace(/_/g, " ")} (${bestPrice}cr/ea)`
           : `Sell ${sellQty} ${itemId.replace(/_/g, " ")} (${qty} available)`;
 
-        this.workOrderManager.createChain(chainName, [{
+        // Single sell orders go as regular orders (not chains) — chains are for multi-step goals
+        const sellOrder: FleetWorkOrder = {
           type: "sell",
           targetId: itemId,
           description: desc,
@@ -213,8 +214,10 @@ export class EconomyEngine {
           quantity: sellQty,
           stationId: bestStation || undefined,
           routineHint: "trader",
-        }]);
-        this.createdChains.add(chainName);
+        };
+        // Inject directly as a regular order (syncFromEconomy handles dedup)
+        this._workOrders.push(sellOrder);
+        this.createdChains.add(chainName); // Prevent re-creation this cycle
       }
     }
 

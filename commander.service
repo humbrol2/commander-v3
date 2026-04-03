@@ -1,0 +1,16 @@
+[Unit]
+Description=SpaceMolt Commander v3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=humbrol2
+WorkingDirectory=/home/humbrol2/commander-v3
+ExecStart=/home/humbrol2/.bun/bin/bun run src/app.ts --config /home/humbrol2/commander-v3/data/tenants/46662032-87fa-42c7-9b94-0083086bbd46/config.toml --database-url postgresql://humbrol2:3e1779ab4980bd4c7133eb457f8d3a0b@10.0.0.54:5432/commander --redis-url redis://:7e23dd7cf7c7aea497add4e479173480@10.0.0.54:6379 --tenant-id 46662032-87fa-42c7-9b94-0083086bbd46 --port 4000 --log-dir /home/humbrol2/commander-v3/data/tenants/46662032-87fa-42c7-9b94-0083086bbd46/logs --require-auth
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
