@@ -586,14 +586,23 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   // These create high-priority work orders so miners/crafters target these materials
   // Circuit board recipe: 3 copper_ore + 2 silicon_ore + 1 energy_crystal → 1 circuit_board
   // Steel plate recipe: 5 iron_ore → 1 steel_plate
-  const warehouseNeeds = new Map<string, number>();
-  warehouseNeeds.set("steel_plate", 500);
-  warehouseNeeds.set("circuit_board", 200);
-  warehouseNeeds.set("silicon_ore", 400);       // 200 boards × 2 silicon each
-  warehouseNeeds.set("energy_crystal", 200);    // 200 boards × 1 crystal each
-  warehouseNeeds.set("iron_ore", 2500);         // 500 plates × 5 iron each
-  gameCache.setFacilityMaterialNeeds(warehouseNeeds);
-  console.log("[Startup] Facility material needs set: warehouse upgrade (steel plates, circuit boards, raw ores)");
+  // Facility build priorities:
+  // 1. Intel Terminal: 200 circuit boards + 100 optical fiber bundles + 150K credits
+  // 2. Trade Ledger: 150 circuit boards + 100 optical fiber bundles + 10 trade ciphers + 200K credits
+  // 3. Faction Vault (storage L2): steel plates + circuit boards
+  const facilityNeeds = new Map<string, number>();
+  // Intel Terminal + Trade Ledger combined
+  facilityNeeds.set("optical_fiber_bundle", 200);  // 100 each
+  facilityNeeds.set("circuit_board", 350);          // 200 + 150
+  facilityNeeds.set("trade_cipher", 10);            // Trade Ledger only (facility-only recipe, must buy)
+  // Raw inputs for crafting optical fiber
+  facilityNeeds.set("silicon_ore", 600);            // 200 bundles × 3 silicon each
+  facilityNeeds.set("energy_crystal", 400);         // 200 bundles × 2 crystals each
+  // Warehouse upgrade materials
+  facilityNeeds.set("steel_plate", 500);
+  facilityNeeds.set("iron_ore", 2500);              // 500 plates × 5 iron each
+  gameCache.setFacilityMaterialNeeds(facilityNeeds);
+  console.log("[Startup] Facility needs: Intel Terminal + Trade Ledger + Warehouse upgrade");
 
   // ── Start Commander Eval Loop ──
   commander.start();
