@@ -39,8 +39,8 @@ import { isSystemExplored, KNOWN_RESOURCE_LOCATIONS } from "../data/resource-loc
 /** Threshold in ms: stations with data older than this get priority */
 const STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
 /** Stations never scanned are even higher priority */
-const UNSCANNED_PRIORITY = 80;  // was 50 — station market data is critical for trade routes
-const STALE_PRIORITY = 50;     // was 30 — stale market data still valuable to refresh
+const UNSCANNED_PRIORITY = 60;  // Station market data is critical for trade routes
+const STALE_PRIORITY = 40;     // Stale market data valuable to refresh
 const UNEXPLORED_PRIORITY = 20;
 
 /** Valuable ore types that get extra priority when found in POIs */
@@ -265,6 +265,11 @@ async function* planRoute(
     // Calculate distance from current position
     const distance = sys.id === currentSystem ? 0 : ctx.galaxy.getDistance(currentSystem, sys.id);
     if (distance < 0) continue; // Unreachable
+
+    // Fuel-aware: skip systems too far for round trip
+    const fuelPerJump = ctx.nav?.estimateJumpFuel?.(ctx.ship) ?? 2;
+    const maxOneWay = Math.floor((ctx.ship?.fuel ?? 50) / fuelPerJump / 2.5); // 2.5x safety margin
+    if (distance > maxOneWay) continue;
 
     // Distance-to-home penalty: prefer systems closer to home base
     // This ensures miners won't need to travel far to reach discovered belts
