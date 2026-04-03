@@ -297,6 +297,7 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   // Wire event bus → commander signals
   const workOrderManager = commander.getWorkOrderManager();
   services.workOrderManager = workOrderManager;
+  services.orderEngine = commander.getOrderEngine();
 
   // Fleet-wide shared services (nav loop detector, sell deconfliction, circuit breaker)
   const { NavLoopDetector } = await import("./core/nav-loop-detector");
@@ -598,11 +599,11 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   // Raw inputs for crafting optical fiber
   facilityNeeds.set("silicon_ore", 600);            // 200 bundles × 3 silicon each
   facilityNeeds.set("energy_crystal", 400);         // 200 bundles × 2 crystals each
-  // Warehouse upgrade materials
+  // Faction Vault (L2 storage upgrade from Lockbox L1 → 500K capacity)
   facilityNeeds.set("steel_plate", 500);
   facilityNeeds.set("iron_ore", 2500);              // 500 plates × 5 iron each
   gameCache.setFacilityMaterialNeeds(facilityNeeds);
-  console.log("[Startup] Facility needs: Intel Terminal + Trade Ledger + Warehouse upgrade");
+  console.log("[Startup] Facility needs: Intel Terminal + Trade Ledger + Faction Vault (L2 storage)");
 
   // ── Start Commander Eval Loop ──
   commander.start();

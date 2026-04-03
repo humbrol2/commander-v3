@@ -39,6 +39,7 @@ export interface SharedServices {
   navLoopDetector?: import("../core/nav-loop-detector").NavLoopDetector;
   sellDeconfliction?: import("../core/sell-deconfliction").SellDeconfliction;
   circuitBreaker?: import("../core/circuit-breaker").CircuitBreaker;
+  orderEngine?: import("../commander/order-engine").OrderEngine;
 }
 
 export interface BotManagerConfig {

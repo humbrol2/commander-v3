@@ -106,6 +106,11 @@ export async function navigateTo(
     await ctx.refreshState();
   }
 
+  // Pre-flight: if not docked and fuel low, burn fuel cells from cargo
+  if (!ctx.player.dockedAtBase && ctx.fuel.getPercentage(ctx.ship) < 30) {
+    await fieldRefuel(ctx, 30);
+  }
+
   // Jump through systems if needed
   if (ctx.player.currentSystem !== targetSystemId) {
     // Use the game's find_route API (free query, knows full map)
@@ -486,12 +491,10 @@ export async function repairIfNeeded(ctx: BotContext, threshold = REPAIR_THRESHO
   const hullPct = (ctx.ship.hull / ctx.ship.maxHull) * 100;
   if (hullPct < threshold) {
     await ctx.api.repair();
-    await ctx.refreshState();
     repaired = true;
   }
 
-  // Repair worn modules (v0.228.0: repair works in space with repair kits from cargo)
-  if (repaired) await ctx.refreshState();
+  // Batch repair worn modules (single refresh at end, not per-module)
   for (const mod of ctx.ship.modules) {
     const durability = mod.durability ?? mod.health ?? 100;
     if (durability < MODULE_REPAIR_THRESHOLD) {

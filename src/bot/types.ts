@@ -121,6 +121,7 @@ export interface BotContext {
 
   // Work order system (QM-generated fleet priorities)
   workOrderManager?: import("../commander/work-order-manager").WorkOrderManager;
+  orderEngine?: import("../commander/order-engine").OrderEngine;
 
   // Fleet-wide shared services (optional — gracefully degrade if missing)
   navLoopDetector?: import("../core/nav-loop-detector").NavLoopDetector;

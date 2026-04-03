@@ -41,7 +41,7 @@ export class GameCache {
 
   /** Dedup TTLs — skip API call entirely if data was fetched within this window */
   private static readonly MARKET_DEDUP_MS = 60_000;   // 60s — market orders change slowly
-  private static readonly SYSTEM_DEDUP_MS = 120_000;   // 2min — system topology is near-static
+  private static readonly SYSTEM_DEDUP_MS = 300_000;   // 5min — system topology is near-static (was 2min)
   private static readonly INSIGHT_DEDUP_MS = 1_800_000; // 30min — insights update infrequently
 
   /**

@@ -36,9 +36,17 @@ export async function claimWorkOrder(
   return null;
 }
 
-/** Mark a work order as completed */
+/** Mark a work order as completed and record for dashboard */
 export function completeWorkOrder(ctx: BotContext, orderId: string): void {
-  ctx.workOrderManager?.complete(orderId);
+  const wom = ctx.workOrderManager;
+  if (!wom) return;
+  // Get description before completing (status change may lose it)
+  const order = wom.getAll().find(o => o.id === orderId);
+  wom.complete(orderId);
+  // Record completion for dashboard feed
+  if (order && ctx.orderEngine) {
+    ctx.orderEngine.recordCompletion(order.description, order.type, ctx.botId);
+  }
 }
 
 /** Mark a work order as failed (bot couldn't fulfill it) */
