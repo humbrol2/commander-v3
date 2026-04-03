@@ -1030,14 +1030,32 @@ export class OrderEngine {
       }
 
       // Skip bots with active claimed/in-progress orders
+      // BUT release orders claimed >10min ago (stale from previous session)
       const existingOrders = this.wom.getForBot(bot.botId);
-      if (existingOrders.some(o => o.status === "claimed" || o.status === "in_progress")) {
-        continue;
+      const now = Date.now();
+      let hasActiveOrder = false;
+      for (const o of existingOrders) {
+        if (o.status === "claimed" || o.status === "in_progress") {
+          const claimAge = o.claimedAt ? now - o.claimedAt : 0;
+          if (claimAge > 600_000) { // >10min — stale, release
+            this.wom.release(o.id);
+            console.log(`[OrderEngine] Released stale order for ${bot.botId}: ${o.description} (${Math.round(claimAge / 60_000)}min old)`);
+          } else {
+            hasActiveOrder = true;
+          }
+        }
       }
+      if (hasActiveOrder) continue;
 
       // Find best order using fitness scoring
       const bestMatch = this.findBestOrderForBot(bot);
       if (!bestMatch) {
+        // Debug: log why no match for traders
+        const botRole = bot.role ?? "none";
+        if (botRole === "trader") {
+          const pending = this.wom.getPending();
+          console.log(`[OrderEngine] Trader ${bot.botId} no match. Pending: ${pending.length} orders, role=${botRole}, status=${bot.status}`);
+        }
         // Absolute fallback: miner
         assignments.push({
           botId: bot.botId,
