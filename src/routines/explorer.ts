@@ -71,8 +71,31 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
   const maxRouteJumps = getParam(ctx, "maxRouteJumps", 12);
   const homeSystem = getParam<string>(ctx, "homeSystem", "");
 
-  // ── Equip modules (survey scanner) if commanded by scoring brain ──
+  // ── Equip modules (survey scanner) if commanded ──
   yield* equipModulesForRoutine(ctx, equipModules);
+
+  // ── Ensure fuel cells in cargo for extended range ──
+  // Explorers should carry fuel cells to avoid getting stranded on long routes
+  if (ctx.player.dockedAtBase) {
+    const fuelCells = ctx.cargo.getItemQuantity(ctx.ship, "fuel_cell");
+    const targetCells = 5; // Carry 5 fuel cells (100 fuel restore)
+    if (fuelCells < targetCells) {
+      const needed = targetCells - fuelCells;
+      try {
+        // Try faction storage first
+        const { withdrawFromFaction } = await import("./helpers");
+        await withdrawFromFaction(ctx, "fuel_cell", needed);
+        yield `loaded ${needed} fuel cells from faction storage`;
+      } catch {
+        // Try buying from market
+        try {
+          await ctx.api.buy("fuel_cell", needed);
+          yield `bought ${needed} fuel cells for exploration`;
+        } catch { /* no fuel cells available */ }
+      }
+      await ctx.refreshState();
+    }
+  }
 
   // Enable cloaking if requested
   if (useCloaking) {
@@ -111,9 +134,12 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
         if (!handled) return;
       }
 
-      // Refuel before jumping if fuel is getting low
+      // Refuel before jumping — use fuel cells from cargo if not docked
       if (ctx.player.dockedAtBase) {
         await refuelIfNeeded(ctx);
+      } else if (ctx.fuel.getPercentage(ctx.ship) < 40) {
+        const { fieldRefuel } = await import("./helpers");
+        await fieldRefuel(ctx, 40);
       }
 
       // Navigate to system — with round-trip fuel check
