@@ -841,6 +841,8 @@ export class OrderEngine {
   // ── Tier 10: Standing Orders ──
 
   private generateStandingOrders(bots: FleetBotInfo[], ctx: OrderContext, orders: FleetWorkOrder[]): void {
+    const homeStation = this.config.factionStorageStation ?? this.config.homeBase;
+
     // ── MINERS: standing mine orders for common ores ──
     const oreTypes = ["iron_ore", "copper_ore", "silicon_ore", "titanium_ore", "gold_ore", "platinum_ore"];
     for (const ore of oreTypes) {
@@ -869,7 +871,21 @@ export class OrderEngine {
       });
     }
 
-    // ── TRADERS: general trade run ──
+    // ── TRADERS: scan + sell runs to known stations ──
+    // Send traders to stations with known markets to sell goods + scan + buy return cargo
+    const allFreshness = ctx.cache.getAllMarketFreshness?.(7_200_000) ?? []; // 2hr
+    const knownStations = allFreshness.map(f => f.stationId).filter(s => s !== homeStation);
+    for (const stationId of knownStations.slice(0, 3)) {
+      orders.push({
+        type: "trade", targetId: "scan_and_sell",
+        description: `Trade run to ${stationId.replace(/_/g, " ")} (sell + scan + buy return)`,
+        priority: PRI.STANDING + 8, reason: "standing_trade_run",
+        stationId,
+        fromStationId: homeStation,
+      });
+    }
+
+    // Fallback: general trade discovery
     orders.push({
       type: "trade", targetId: "best_available",
       description: "Find and run best trade route (standing)",

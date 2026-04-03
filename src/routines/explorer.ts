@@ -39,8 +39,8 @@ import { isSystemExplored, KNOWN_RESOURCE_LOCATIONS } from "../data/resource-loc
 /** Threshold in ms: stations with data older than this get priority */
 const STALE_THRESHOLD_MS = 15 * 60 * 1000; // 15 minutes
 /** Stations never scanned are even higher priority */
-const UNSCANNED_PRIORITY = 50;
-const STALE_PRIORITY = 30;
+const UNSCANNED_PRIORITY = 80;  // was 50 — station market data is critical for trade routes
+const STALE_PRIORITY = 50;     // was 30 — stale market data still valuable to refresh
 const UNEXPLORED_PRIORITY = 20;
 
 /** Valuable ore types that get extra priority when found in POIs */
@@ -145,13 +145,34 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
 
       if (ctx.shouldStop) break;
 
-      // Explore this system
+      // Explore this system (visit all POIs including stations)
       yield* exploreSystem(ctx, systemId, submitIntel);
 
       // Refuel if docked
       if (ctx.player.dockedAtBase) {
         await refuelIfNeeded(ctx);
         await repairIfNeeded(ctx);
+      }
+
+      // If we passed through a system with a station but didn't dock,
+      // check if there's a station here and dock for market scan
+      if (!ctx.player.dockedAtBase) {
+        const sysInfo = ctx.galaxy.getSystem(systemId);
+        const station = sysInfo?.pois.find(p => p.hasBase && p.baseId);
+        if (station) {
+          const freshness = ctx.cache.getMarketFreshness(station.baseId!);
+          if (!freshness.fresh || freshness.ageMs > 1_800_000) { // >30min stale
+            try {
+              yield `transit dock: scanning market at ${station.baseName ?? station.name}`;
+              await ctx.api.travel(station.id);
+              await ctx.refreshState();
+              await dockAtCurrent(ctx); // Auto-scans market + submits intel
+              await refuelIfNeeded(ctx);
+              await ctx.api.undock();
+              await ctx.refreshState();
+            } catch { /* transit dock optional */ }
+          }
+        }
       }
     }
 
