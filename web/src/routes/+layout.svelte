@@ -50,14 +50,13 @@
 	const navItems = [
 		{ href: "/", label: "Fleet", key: "1" },
 		{ href: "/bots", label: "Bots", key: "2" },
-		{ href: "/commander", label: "Commander", key: "3" },
-		{ href: "/social", label: "Social", key: "4" },
+		{ href: "/commander", label: "Orders", key: "3" },
+		{ href: "/galaxy", label: "Map", key: "4" },
 		{ href: "/economy", label: "Economy", key: "5" },
 		{ href: "/faction", label: "Faction", key: "6" },
-		{ href: "/training", label: "Training", key: "7" },
-		{ href: "/learning", label: "Learning", key: "8" },
-		{ href: "/quartermaster", label: "QM", key: "9" },
-		{ href: "/manual", label: "Manual", key: "0" },
+		{ href: "/social", label: "Social", key: "7" },
+		{ href: "/quartermaster", label: "QM", key: "8" },
+		{ href: "/manual", label: "Manual", key: "9" },
 	];
 
 	// Close mobile nav on route change

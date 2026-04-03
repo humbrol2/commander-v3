@@ -301,6 +301,12 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
         // Refresh before check every 5 mines to avoid stale cargo_full errors
         if (mineCount > 0 && mineCount % 5 === 0) {
           await ctx.refreshState();
+          // Field self-service: use cargo items to repair/refuel without docking
+          if (mineCount % 10 === 0) {
+            const { fieldRepair, fieldRefuel } = await import("./helpers");
+            await fieldRepair(ctx, 50);
+            await fieldRefuel(ctx, 25);
+          }
         }
         if (!ctx.cargo.hasSpace(ctx.ship, 1)) break;
 

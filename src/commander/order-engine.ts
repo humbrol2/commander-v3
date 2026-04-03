@@ -137,6 +137,9 @@ export class OrderEngine {
   // Facility material needs (injected by Commander)
   private facilityMaterialNeeds = new Map<string, number>();
 
+  // Galaxy reference for distance calculations (set during generate())
+  private _galaxy: Galaxy | null = null;
+
   constructor(config: OrderEngineConfig, wom: WorkOrderManager) {
     this.config = config;
     this.wom = wom;
@@ -226,6 +229,9 @@ export class OrderEngine {
   // ══════════════════════════════════════════════════════════
 
   generate(fleet: FleetStatus, ctx: OrderContext): void {
+    // Cache galaxy reference for distance calculations during matching
+    this._galaxy = ctx.galaxy;
+
     // Trim stale observations
     this.trimObservations();
 
@@ -789,8 +795,13 @@ export class OrderEngine {
   /** Estimate jump distance between two systems (uses galaxy BFS, cached) */
   private estimateDistance(fromSystem: string, toSystem: string): number {
     if (fromSystem === toSystem) return 0;
-    // Simple heuristic: assume 2 jumps if we can't calculate
-    return 2;
+    if (this._galaxy) {
+      try {
+        const dist = this._galaxy.getDistance(fromSystem, toSystem);
+        if (dist >= 0) return dist;
+      } catch { /* galaxy may not have both systems */ }
+    }
+    return 3; // Fallback: assume 3 jumps
   }
 
   /** Map order type to routine name */
