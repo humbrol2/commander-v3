@@ -322,6 +322,16 @@ export async function dockAtCurrent(ctx: BotContext): Promise<void> {
       await ctx.api.factionSubmitTradeIntel([{ base_id: ctx.player.dockedAtBase }]);
     } catch { /* no trade ledger facility — ignore */ }
 
+    // Auto-deposit excess credits to faction treasury (maxBotCredits enforcement)
+    const maxCredits = ctx.fleetConfig.maxBotCredits ?? 100_000;
+    if (maxCredits > 0 && ctx.player.credits > maxCredits) {
+      const excess = ctx.player.credits - maxCredits;
+      try {
+        await ctx.api.factionDepositCredits(excess);
+        log(ctx, `deposited ${excess} excess credits to faction treasury`);
+      } catch { /* may fail if not at faction station */ }
+    }
+
   }
 }
 

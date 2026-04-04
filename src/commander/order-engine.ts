@@ -365,13 +365,25 @@ export class OrderEngine {
           routineHint: "return_home",
         });
       }
-      // Low credits: below minimum
+      // Low credits: below minimum — return home to withdraw
       if (bot.credits < (this.config.minBotCredits || 0) && this.config.minBotCredits > 0) {
         orders.push({
           type: "deliver", targetId: "return_home",
           description: `${bot.username} low credits (${bot.credits}/${this.config.minBotCredits})`,
           priority: PRI.EMERGENCY - 5, reason: "low_credits",
           routineHint: "return_home",
+        });
+      }
+
+      // High credits: above maximum — deposit excess to faction treasury
+      const maxCredits = 100_000; // TODO: make configurable
+      if (bot.credits > maxCredits && bot.docked) {
+        const excess = bot.credits - maxCredits;
+        orders.push({
+          type: "deliver", targetId: "deposit_credits",
+          description: `${bot.username} excess credits (${bot.credits}/${maxCredits}) — deposit ${excess} to faction`,
+          priority: PRI.MAINTENANCE - 5, reason: "excess_credits",
+          quantity: excess,
         });
       }
     }
