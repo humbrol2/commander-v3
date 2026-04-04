@@ -297,13 +297,13 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
           unavailableMaterials.add(sourced.missingItemId);
           ctx.cache.markMaterialUnavailable(ctx.botId, sourced.missingItemId);
         }
-        yield `${sourced.reason} — blacklisting recipe, trying another`;
+        yield `${sourced.reason} — blacklisting recipe`;
         ctx.cache.markRecipeFailed(recipeId);
         failedRecipes.add(recipeId);
         recipeId = "";
-        await interruptibleSleep(ctx, 10_000);
+        // Stop and let commander re-assign (avoids retrying stale recipe in loop)
         yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
-        continue;
+        return;
       }
       for (const msg of sourced.messages) {
         yield msg;
