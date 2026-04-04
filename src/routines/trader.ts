@@ -120,8 +120,8 @@ function findAlternateBuyer(ctx: BotContext, failedStation: string): string | nu
     let revenue = 0;
     for (const cargo of cargoItems) {
       const price = prices.find((p) => p.itemId === cargo.itemId);
-      if (price?.sellPrice && price.sellPrice > 0) {
-        revenue += price.sellPrice * cargo.quantity;
+      if (price?.buyPrice && price.buyPrice > 0 && price.buyVolume > 0) {
+        revenue += price.buyPrice * Math.min(cargo.quantity, price.buyVolume);
       }
     }
 
@@ -292,13 +292,14 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
             for (const stationId of cachedStationIds) {
               if (stationId === factionStation) continue;
               const prices = ctx.cache.getMarketPrices(stationId);
-              const sellPrice = prices?.find((p) => p.itemId === si.itemId)?.sellPrice ?? 0;
-              const totalValue = sellPrice * si.quantity;
+              const priceEntry = prices?.find((p) => p.itemId === si.itemId);
+              const buyPrice = (priceEntry?.buyPrice && priceEntry.buyVolume > 0) ? priceEntry.buyPrice : 0;
+              const totalValue = buyPrice * Math.min(si.quantity, priceEntry?.buyVolume ?? 0);
               if (totalValue > bestTotalValue) {
                 bestTotalValue = totalValue;
                 bestItemName = ctx.crafting.getItemName(si.itemId);
                 bestItemQty = si.quantity;
-                bestItemPrice = sellPrice;
+                bestItemPrice = buyPrice;
               }
             }
           }
@@ -1469,7 +1470,7 @@ async function* factionSellLoop(
     }
 
     // ── Pre-select sell station BEFORE withdrawing ──
-    // Only consider items with KNOWN buyers (cached sellPrice > 0 at some station).
+    // Only consider items with KNOWN buyers (cached buyPrice > 0 at some station).
     // This prevents blind withdrawals that end up re-deposited.
     const cachedStations = ctx.cache.getAllMarketFreshness().map((f) => f.stationId);
     // Prioritize refined/crafted goods — ore is worth far more processed
@@ -1511,12 +1512,12 @@ async function* factionSellLoop(
       let revenue = 0;
       for (const si of nonOreStorage) {
         const priceData = prices.find((p) => p.itemId === si.itemId);
-        if (priceData?.sellPrice && priceData.sellPrice > 0) {
-          // Cap quantity by sellVolume (actual buy order volume) — don't assume infinite demand
-          const qty = priceData.sellVolume > 0 ? Math.min(si.quantity, priceData.sellVolume) : si.quantity;
-          const total = priceData.sellPrice * qty;
+        if (priceData?.buyPrice && priceData.buyPrice > 0 && priceData.buyVolume > 0) {
+          // Cap quantity by buyVolume (actual buy order volume) — don't assume infinite demand
+          const qty = Math.min(si.quantity, priceData.buyVolume);
+          const total = priceData.buyPrice * qty;
           revenue += total;
-          stationItems.push({ itemId: si.itemId, name: ctx.crafting.getItemName(si.itemId), qty, price: priceData.sellPrice });
+          stationItems.push({ itemId: si.itemId, name: ctx.crafting.getItemName(si.itemId), qty, price: priceData.buyPrice });
         }
       }
 
