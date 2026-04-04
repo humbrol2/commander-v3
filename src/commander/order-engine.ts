@@ -81,6 +81,8 @@ const DO_NOT_SELL = new Set([
   "repair_kit",        // Keep for bot field repairs
   "trade_cipher",      // Needed for Trade Ledger
   "trade_crystal",     // Input for trade ciphers
+  "flex_polymer",      // Needed for Faction Workshop
+  "steel_plate",       // Needed for facility builds
 ]);
 
 /** Tier 4: Bulk — low value, don't mine unless actually needed */

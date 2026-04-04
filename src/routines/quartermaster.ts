@@ -63,6 +63,8 @@ const PROTECTED_MATERIALS = new Set([
   "steel_plate", "copper_wiring", "sensor_array",
   "thruster_nozzle", "power_battery", "ceramite_plating",
   "silver_wiring", "premium_fuel_cell",
+  "trade_cipher", "trade_crystal", "optical_fiber_bundle",
+  "flex_polymer", "silicon_ore",
   "compressed_hydrogen", "liquid_hydrogen",
 ]);
 
@@ -1416,6 +1418,7 @@ function calculateBuyPrice(
 const QM_DO_NOT_SELL = new Set([
   "energy_crystal", "silicon_ore", "circuit_board", "optical_fiber_bundle",
   "fuel_cell", "repair_kit", "trade_cipher", "trade_crystal",
+  "flex_polymer", "steel_plate",  // Needed for facility builds
 ]);
 
 /**
