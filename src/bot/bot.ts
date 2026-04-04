@@ -822,6 +822,9 @@ export class Bot {
         this._error = err instanceof Error ? err.message : String(err);
         this._status = "error";
         console.error(`[Bot:${this.username}] Routine error: ${this._error}`);
+        if (err instanceof Error && err.stack) {
+          console.error(`[Bot:${this.username}] Stack: ${err.stack.split("\n").slice(0, 5).join(" | ")}`);
+        }
       }
       return;
     }
