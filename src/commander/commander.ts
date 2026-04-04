@@ -269,6 +269,39 @@ export class Commander {
     const activeBotIds = new Set(fleet.bots.filter(b => b.status === "running" || b.status === "ready" || b.status === "idle").map(b => b.botId));
     wom.cleanupStaleClaims(activeBotIds);
 
+    // ── Step 6.5: Query faction intel for resource locations ──
+    // Query faction intel for resource locations (L1: query all, extract resources)
+    let intelResourceLocations: Map<string, string[]> | undefined;
+    const api = this.deps.getApi?.();
+    if (api && this.tick % 5 === 0) { // Every 5th eval (~5min)
+      try {
+        const result = await api.factionQueryIntel({ limit: 50 }) as any;
+        const entries = result?.entries ?? result?.intel ?? (Array.isArray(result) ? result : []);
+        if (entries.length > 0) {
+          const resourceMap = new Map<string, string[]>();
+          for (const entry of entries) {
+            const sysId = entry.system_id ?? entry.systemId;
+            const resources = entry.resources ?? entry.pois?.flatMap((p: any) => p.resources ?? []) ?? [];
+            for (const res of resources) {
+              const resId = res.resource_id ?? res.resourceId ?? res.item_id;
+              if (!resId || !sysId) continue;
+              const existing = resourceMap.get(resId) ?? [];
+              if (!existing.includes(sysId)) existing.push(sysId);
+              resourceMap.set(resId, existing);
+            }
+          }
+          if (resourceMap.size > 0) {
+            intelResourceLocations = resourceMap;
+            console.log(`[Commander] Intel: ${resourceMap.size} resources across ${entries.length} systems from faction intel`);
+          }
+        }
+      } catch (err) {
+        // Intel query failed — non-critical (facility may not exist or be under construction)
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("no_intel")) console.log(`[Commander] Intel query failed: ${msg}`);
+      }
+    }
+
     // ── Step 7: Generate orders ──
     this.orderEngine.generate(fleet, {
       galaxy: this.deps.galaxy,
@@ -279,9 +312,10 @@ export class Commander {
       factionStorage: this.orderEngine.buildSnapshot().factionStorage,
       facilityMaterialNeeds: this.deps.cache.getFacilityMaterialNeeds(),
       stockTargets: [],
-      hasIntelFacility: false, // TODO: detect from faction facilities
+      hasIntelFacility: true,
       hasTradeLedger: false,
       hasFactionWorkshop: false,
+      intelResourceLocations,
     });
 
     // ── Step 8: Match bots to orders ──

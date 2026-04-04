@@ -123,6 +123,8 @@ export interface OrderContext {
   hasTradeLedger: boolean;
   /** Whether faction has Faction Workshop */
   hasFactionWorkshop: boolean;
+  /** Intel data: resource locations from factionQueryIntel (keyed by resource ID → system IDs) */
+  intelResourceLocations?: Map<string, string[]>;
 }
 
 /** Cached market insight with timestamp */
@@ -183,6 +185,9 @@ export class OrderEngine {
 
   // Galaxy reference for distance calculations (set during generate())
   private _galaxy: Galaxy | null = null;
+
+  // Intel resource locations cache (from factionQueryIntel)
+  private _intelResources = new Map<string, string[]>();
 
   // Recently completed orders (rolling buffer for dashboard)
   private _completedOrders: Array<{ description: string; type: string; completedAt: number; botId: string | null }> = [];
@@ -290,6 +295,11 @@ export class OrderEngine {
   generate(fleet: FleetStatus, ctx: OrderContext): void {
     // Cache galaxy reference for distance calculations during matching
     this._galaxy = ctx.galaxy;
+
+    // Cache intel resource locations if available
+    if (ctx.intelResourceLocations) {
+      this._intelResources = ctx.intelResourceLocations;
+    }
 
     // Trim stale observations
     this.trimObservations();
@@ -499,7 +509,7 @@ export class OrderEngine {
       const pri = isSilicon
         ? (stock < 50 ? PRI.MAINTENANCE : PRI.FACILITY) // 90 or 85
         : (stock === 0 ? PRI.FACILITY : (stock < 100 ? PRI.SUPPLY_HIGH : PRI.SUPPLY_HIGH - 5));
-      const nearest = ctx.galaxy.findNearestResourceById?.(oreId, this.config.homeSystem);
+      const nearestSystem = this.findBestMiningSystem(oreId);
 
       // Generate multiple orders for silicon so multiple miners can claim
       const orderCount = isSilicon && stock < 300 ? 3 : 1;
@@ -509,7 +519,7 @@ export class OrderEngine {
           description: `STRATEGIC: mine ${oreId.replace("_", " ")} (${stock}/${config.minStock}, ${config.reason})`,
           priority: pri - i, reason: `strategic: ${config.reason}`,
           quantity: deficit, requiredModule: "mining_laser",
-          stationId: nearest?.systemId,
+          stationId: nearestSystem,
         });
       }
     }
@@ -521,14 +531,14 @@ export class OrderEngine {
 
       const deficit = config.minStock - stock;
       const pri = stock === 0 ? PRI.SUPPLY_MED + 5 : (stock < config.minStock * 0.3 ? PRI.SUPPLY_MED : PRI.SUPPLY_MED - 5);
-      const nearest = ctx.galaxy.findNearestResourceById?.(oreId, this.config.homeSystem);
+      const nearestSystem = this.findBestMiningSystem(oreId);
 
       orders.push({
         type: "mine", targetId: oreId,
         description: `Supply: mine ${oreId.replace("_", " ")} (${stock}/${config.minStock}, → ${config.craftInto})`,
         priority: pri, reason: `supply_chain: ${config.craftInto}`,
         quantity: deficit, requiredModule: "mining_laser",
-        stationId: nearest?.systemId,
+        stationId: nearestSystem,
       });
     }
 
@@ -537,13 +547,13 @@ export class OrderEngine {
       const stock = this.factionInventory.get(oreId) ?? 0;
       if (stock >= config.minStock) continue;
 
-      const nearest = ctx.galaxy.findNearestResourceById?.(oreId, this.config.homeSystem);
+      const nearestSystem = this.findBestMiningSystem(oreId);
       orders.push({
         type: "mine", targetId: oreId,
         description: `Revenue: mine ${oreId.replace("_", " ")} (${config.sellValue}cr/unit, ${stock} in stock)`,
         priority: PRI.TRADE + 5, reason: `revenue: ${config.sellValue}cr/unit`,
         quantity: config.minStock - stock, requiredModule: "mining_laser",
-        stationId: nearest?.systemId,
+        stationId: nearestSystem,
       });
     }
 
@@ -1194,6 +1204,30 @@ export class OrderEngine {
   // ── Helpers ──
 
   /** Estimate jump distance between two systems (uses galaxy BFS, cached) */
+  /** Find the best system to mine a resource — combines galaxy index + faction intel */
+  private findBestMiningSystem(resourceId: string): string | undefined {
+    // 1. Check faction intel (from factionQueryIntel — real scouting data)
+    const intelSystems = this._intelResources.get(resourceId);
+    if (intelSystems && intelSystems.length > 0) {
+      // Pick the closest intel-reported system
+      let best: string | undefined;
+      let bestDist = Infinity;
+      for (const sysId of intelSystems) {
+        const dist = this.estimateDistance(this.config.homeSystem, sysId);
+        if (dist < bestDist) { bestDist = dist; best = sysId; }
+      }
+      if (best) return best;
+    }
+
+    // 2. Fall back to galaxy resource index (hardcoded + discovered POIs)
+    if (this._galaxy) {
+      const nearest = this._galaxy.findNearestResourceById?.(resourceId, this.config.homeSystem);
+      if (nearest?.systemId) return nearest.systemId;
+    }
+
+    return undefined;
+  }
+
   private estimateDistance(fromSystem: string, toSystem: string): number {
     if (fromSystem === toSystem) return 0;
     if (this._galaxy) {

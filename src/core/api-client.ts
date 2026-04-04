@@ -1060,8 +1060,15 @@ export class ApiClient {
 
   // ── Faction Intel ──
 
-  async factionQueryIntel(opts?: { systemId?: string; systemName?: string; poiType?: string; resourceType?: string }): Promise<Record<string, unknown>> {
-    return this.query("faction_query_intel", opts ?? {});
+  async factionQueryIntel(opts?: { systemId?: string; systemName?: string; poiType?: string; resourceType?: string; limit?: number; offset?: number }): Promise<Record<string, unknown>> {
+    const params: Record<string, unknown> = {};
+    if (opts?.systemId) params.system_id = opts.systemId;
+    if (opts?.systemName) params.system_name = opts.systemName;
+    if (opts?.poiType) params.poi_type = opts.poiType;
+    if (opts?.resourceType) params.resource_type = opts.resourceType;
+    if (opts?.limit) params.limit = opts.limit;
+    if (opts?.offset) params.offset = opts.offset;
+    return this.query("faction_query_intel", params);
   }
 
   async factionQueryTradeIntel(opts?: { baseId?: string; stationName?: string; itemId?: string }): Promise<Record<string, unknown>> {
