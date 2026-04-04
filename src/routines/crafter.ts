@@ -433,9 +433,25 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
         }
         recipeId = alt.recipe.id;
         recipe = ctx.crafting.getRecipe(recipeId)!;
+        // Recalculate batch count with cargo cap for new recipe
+        const altRawMatsForCount = ctx.crafting.getRawMaterials(alt.recipe.id, 1);
+        let altMaxBatch = 10;
+        for (const [matId, perBatch] of altRawMatsForCount) {
+          const avail = factionInventory.get(matId) ?? 0;
+          altMaxBatch = Math.min(altMaxBatch, Math.floor(avail / Math.max(perBatch, 1)));
+        }
+        const altCargoCap = ctx.ship.cargoCapacity;
+        if (altCargoCap > 0) {
+          for (const [, perBatch] of altRawMatsForCount) {
+            if (perBatch > 0) {
+              altMaxBatch = Math.min(altMaxBatch, Math.floor(altCargoCap / perBatch));
+            }
+          }
+        }
+        count = Math.max(1, altMaxBatch);
         chain = ctx.crafting.buildChain(recipeId, count);
         rawMaterials = ctx.crafting.getRawMaterials(recipeId, count);
-        yield `switching to: ${alt.recipe.name} (profit ${alt.profit}cr, materials ${Math.round(alt.availability * 100)}%)`;
+        yield `switching to: ${alt.recipe.name} x${count} (profit ${alt.profit}cr, materials ${Math.round(alt.availability * 100)}%)`;
         foundAlt = true;
         break;
       }
