@@ -167,11 +167,6 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
       const excludeIds = new Set([...facilityOnlyRecipes, ...failedRecipes, ...globalNoDemand]);
       const sourced = ctx.crafting.findBestSourceableRecipe(ctx.player.skills, factionInventory, excludeIds);
       if (!sourced) {
-        if (failedRecipes.size > 0) {
-          failedRecipes.clear();
-          unavailableMaterials.clear();
-          yield "all recipes failed — clearing blacklist, will retry";
-        }
         break;
       }
       // Check if recipe chain requires any unavailable materials
@@ -445,15 +440,9 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
         break;
       }
       if (!foundAlt) {
-        if (failedRecipes.size > 0) {
-          failedRecipes.clear();
-          unavailableMaterials.clear();
-          yield "all recipes failed — clearing blacklist, will retry next cycle";
-        } else {
-          yield "no alternative recipes available";
-          yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
-          return;
-        }
+        yield `all recipes exhausted (${failedRecipes.size} failed) — stopping until next eval`;
+        yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
+        return;
       }
       yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "crafter" });
       continue;
