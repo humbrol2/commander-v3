@@ -387,6 +387,16 @@ export class OrderEngine {
         });
       }
 
+      // Cargo full: return home to deposit
+      if (bot.cargoPct >= 90 && !bot.docked) {
+        orders.push({
+          type: "deliver", targetId: "return_home",
+          description: `${bot.username} cargo full (${Math.round(bot.cargoPct)}%) — return to deposit`,
+          priority: PRI.MAINTENANCE, reason: "cargo_full",
+          routineHint: "return_home",
+        });
+      }
+
       // High credits: above maximum — deposit excess to faction treasury
       const maxCredits = 100_000; // TODO: make configurable
       if (bot.credits > maxCredits && bot.docked) {
