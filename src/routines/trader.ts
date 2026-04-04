@@ -1510,11 +1510,17 @@ async function* factionSellLoop(
 
       const stationItems: typeof stationBids[0]["items"] = [];
       let revenue = 0;
+      const cargoCap = ctx.ship.cargoCapacity;
+      let cargoUsed = 0;
       for (const si of nonOreStorage) {
         const priceData = prices.find((p) => p.itemId === si.itemId);
         if (priceData?.buyPrice && priceData.buyPrice > 0 && priceData.buyVolume > 0) {
-          // Cap quantity by buyVolume (actual buy order volume) — don't assume infinite demand
-          const qty = Math.min(si.quantity, priceData.buyVolume);
+          // Skip near-worthless items (not worth the trip)
+          if (priceData.buyPrice < 5) continue;
+          // Cap quantity by buyVolume AND available cargo space
+          const qty = Math.min(si.quantity, priceData.buyVolume, Math.max(0, cargoCap - cargoUsed));
+          if (qty <= 0) continue;
+          cargoUsed += qty;
           const total = priceData.buyPrice * qty;
           revenue += total;
           stationItems.push({ itemId: si.itemId, name: ctx.crafting.getItemName(si.itemId), qty, price: priceData.buyPrice });
