@@ -966,6 +966,17 @@ export class GameCache {
     return (await this.getTimed(`recipe_failed:${recipeId}`)) !== null;
   }
 
+  /** Get all currently-failed recipe IDs (respects TTL) */
+  async getFailedRecipes(): Promise<string[]> {
+    const prefix = "recipe_failed:";
+    const rows = await this.db.select({ key: timedCache.key, fetchedAt: timedCache.fetchedAt, ttlMs: timedCache.ttlMs })
+      .from(timedCache).where(and(like(timedCache.key, `${prefix}%`), eq(timedCache.tenantId, this.tenantId)));
+    const now = Date.now();
+    return rows
+      .filter((r) => now - r.fetchedAt <= r.ttlMs)
+      .map((r) => r.key.replace(prefix, ""));
+  }
+
   // ── Material Unavailability (per-bot, persists across routine restarts) ──
 
   /** Mark a material as unavailable for a specific bot (10 min TTL) */

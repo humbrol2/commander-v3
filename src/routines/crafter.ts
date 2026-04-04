@@ -78,7 +78,11 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
   // Seed from persistent cache so we never retry known facility-only recipes
   const facilityOnlyRecipes = new Set<string>(await ctx.cache.getFacilityOnlyRecipes());
   // Track recipes that failed due to missing materials — skip them for a while
-  const failedRecipes = new Set<string>();
+  // Seeded from persistent cache so blacklist survives routine restarts
+  const failedRecipes = new Set<string>(await ctx.cache.getFailedRecipes());
+  if (failedRecipes.size > 0) {
+    console.log(`[${ctx.botId}] crafter: restored ${failedRecipes.size} failed recipes from cache: ${[...failedRecipes].join(", ")}`);
+  }
   // Track materials that couldn't be sourced — skip any recipe needing them
   // Seeded from persistent cache so blacklist survives routine restarts
   const unavailableMaterials = new Set<string>(await ctx.cache.getUnavailableMaterials(ctx.botId));
@@ -123,12 +127,21 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
       if (needsRecipe && !facilityOnlyRecipes.has(needsRecipe.id)) {
         recipeId = needsRecipe.id;
         const needed = facilityNeeds.get(needsRecipe.outputItem) ?? 0;
-        // Batch size: craft as many as materials allow (up to 10)
+        // Batch size: craft as many as materials + cargo capacity allow (up to 10)
         const rawMats = ctx.crafting.getRawMaterials(needsRecipe.id, 1);
         let maxBatch = 10;
         for (const [matId, perBatch] of rawMats) {
           const available = factionInventory.get(matId) ?? 0;
           maxBatch = Math.min(maxBatch, Math.floor(available / Math.max(perBatch, 1)));
+        }
+        // Cap by cargo capacity
+        const facCargoCapacity = ctx.ship.cargoCapacity;
+        if (facCargoCapacity > 0) {
+          for (const [, perBatch] of rawMats) {
+            if (perBatch > 0) {
+              maxBatch = Math.min(maxBatch, Math.floor(facCargoCapacity / perBatch));
+            }
+          }
         }
         count = Math.max(1, Math.min(maxBatch, Math.ceil(needed / (needsRecipe.outputQuantity || 1))));
         yield `facility needs ${needed}x ${ctx.crafting.getItemName(needsRecipe.outputItem)} — crafting ${count}x ${needsRecipe.name}`;
@@ -170,12 +183,21 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
         continue; // Try next recipe
       }
       recipeId = sourced.recipe.id;
-      // Calculate batch count from available materials (up to 10)
+      // Calculate batch count from available materials AND cargo capacity (up to 10)
       const srcRawMats = ctx.crafting.getRawMaterials(sourced.recipe.id, 1);
       let srcMaxBatch = 10;
       for (const [matId, perBatch] of srcRawMats) {
         const avail = factionInventory.get(matId) ?? 0;
         srcMaxBatch = Math.min(srcMaxBatch, Math.floor(avail / Math.max(perBatch, 1)));
+      }
+      // Cap by cargo capacity: largest single raw material per batch must fit in ship
+      const cargoCapacity = ctx.ship.cargoCapacity;
+      if (cargoCapacity > 0) {
+        for (const [, perBatch] of srcRawMats) {
+          if (perBatch > 0) {
+            srcMaxBatch = Math.min(srcMaxBatch, Math.floor(cargoCapacity / perBatch));
+          }
+        }
       }
       count = Math.max(1, srcMaxBatch);
       yield `target recipe: ${sourced.recipe.name} x${count} (profit ${sourced.profit}cr, materials ${Math.round(sourced.availability * 100)}% available, ${failedRecipes.size} skipped)`;
@@ -608,32 +630,32 @@ async function sourceMaterials(
             messages.push(`skipped ${ctx.crafting.getItemName(ing.itemId)} from storage (not at faction station)`);
             continue;
           }
-          try {
-            if (isFaction) {
-              await withdrawFromFaction(ctx, ing.itemId, safeQty);
-            } else {
-              await ctx.api.withdrawItems(ing.itemId, safeQty);
-            }
-            got += safeQty;
-            messages.push(`withdrew ${safeQty} ${ctx.crafting.getItemName(ing.itemId)} from ${isFaction ? "faction" : "personal"} storage`);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            // cargo_full: item weighs more than 1 per unit — retry with halved qty
-            if (msg.includes("cargo_full") && safeQty > 1) {
-              const retryQty = Math.max(1, Math.floor(safeQty / 2));
-              try {
-                if (isFaction) {
-                  await withdrawFromFaction(ctx, ing.itemId, retryQty);
-                } else {
-                  await ctx.api.withdrawItems(ing.itemId, retryQty);
-                }
-                got += retryQty;
-                messages.push(`withdrew ${retryQty} ${ctx.crafting.getItemName(ing.itemId)} (retry, item heavier than expected)`);
-              } catch {
-                console.warn(`[${ctx.botId}] storage withdraw retry failed for ${ing.itemId}`);
+          // Binary-search withdrawal: if cargo_full, item weighs more than 1 per unit
+          // Halve quantity repeatedly until it fits or we can't reduce further
+          let withdrawQty = safeQty;
+          let withdrawn = false;
+          while (withdrawQty > 0 && !withdrawn) {
+            try {
+              if (isFaction) {
+                await withdrawFromFaction(ctx, ing.itemId, withdrawQty);
+              } else {
+                await ctx.api.withdrawItems(ing.itemId, withdrawQty);
               }
-            } else {
-              console.warn(`[${ctx.botId}] storage withdraw failed for ${ing.itemId}: ${msg}`);
+              got += withdrawQty;
+              if (withdrawQty < safeQty) {
+                messages.push(`withdrew ${withdrawQty} ${ctx.crafting.getItemName(ing.itemId)} (reduced — item heavier than expected)`);
+              } else {
+                messages.push(`withdrew ${withdrawQty} ${ctx.crafting.getItemName(ing.itemId)} from ${isFaction ? "faction" : "personal"} storage`);
+              }
+              withdrawn = true;
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              if (msg.includes("cargo_full") && withdrawQty > 1) {
+                withdrawQty = Math.floor(withdrawQty / 2);
+              } else {
+                console.warn(`[${ctx.botId}] storage withdraw failed for ${ing.itemId}: ${msg}`);
+                break;
+              }
             }
           }
         }
@@ -703,8 +725,10 @@ async function sourceMaterials(
                 }
               }
               await ctx.refreshState();
-              // Retry withdraw after clearing cargo
-              const retryQty = Math.min(shortfall, ctx.cargo.freeSpace(ctx.ship));
+              // Retry withdraw after clearing cargo — account for item weight
+              const retryItemSize = ctx.cargo.getItemSize(ctx.ship, ing.itemId);
+              const retryFree = ctx.cargo.freeSpace(ctx.ship);
+              const retryQty = Math.min(shortfall, Math.floor(retryFree / Math.max(1, retryItemSize)));
               if (retryQty > 0) {
                 await withdrawFromFaction(ctx, ing.itemId, retryQty);
                 got += retryQty;

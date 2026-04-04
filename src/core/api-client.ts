@@ -1749,6 +1749,7 @@ export function normalizeCatalogItem(raw: Record<string, unknown>): CatalogItem 
   const slotType = str(raw.slot_type ?? raw.slotType ?? raw.slot ?? "");
   const extractedBy = str(raw.extracted_by ?? raw.extractedBy ?? "");
   const miningPower = num(raw.mining_power ?? raw.miningPower ?? raw.harvest_power ?? 0);
+  const size = num(raw.size ?? 1) || 1;
   return {
     id: str(raw.id ?? raw.item_id),
     name: str(raw.name),
@@ -1756,6 +1757,7 @@ export function normalizeCatalogItem(raw: Record<string, unknown>): CatalogItem 
     description: str(raw.description),
     basePrice: num(raw.base_price ?? raw.basePrice ?? raw.price),
     stackSize: num(raw.stack_size ?? raw.stackSize ?? 100) || 100,
+    ...(size > 1 ? { size } : {}),
     ...(cpuCost > 0 ? { cpuCost } : {}),
     ...(powerCost > 0 ? { powerCost } : {}),
     ...(slotType ? { slotType } : {}),

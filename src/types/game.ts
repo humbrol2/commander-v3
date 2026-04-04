@@ -194,6 +194,8 @@ export interface CatalogItem {
   description: string;
   basePrice: number;
   stackSize: number;
+  /** Per-unit cargo weight (default 1) */
+  size?: number;
   /** Module-specific: CPU cost to install */
   cpuCost?: number;
   /** Module-specific: Power cost to install */
