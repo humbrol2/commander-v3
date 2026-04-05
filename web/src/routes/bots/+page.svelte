@@ -162,12 +162,22 @@
 							<span class="text-plasma-cyan text-[10px] px-1.5 py-0.5 rounded bg-plasma-cyan/10 border border-plasma-cyan/20">{roleDisplayName(bot.role)}</span>
 						</div>
 						{/if}
+						{#if bot.orderDescription}
 						<div class="flex justify-between">
-							<span class="text-chrome-silver">Routine</span>
-							{#if bot.routine}
-								<span style="color: var(--color-routine-{bot.routine})">{bot.routine}</span>
+							<span class="text-chrome-silver">Order</span>
+							<span class="text-warning-yellow text-[10px] truncate max-w-[160px]" title={bot.orderDescription}>{bot.orderDescription}</span>
+						</div>
+						{/if}
+						<div class="flex justify-between">
+							<span class="text-chrome-silver">State</span>
+							{#if bot.jumpProgress}
+								<span class="text-plasma-cyan">Jumping <span class="text-hull-grey">{bot.jumpProgress}</span>{#if bot.destination} → {bot.destination}{/if}</span>
+							{:else if bot.routineState}
+								<span class="text-star-white text-[10px] truncate max-w-[160px]" title={bot.routineState}>{bot.routineState}</span>
+							{:else if bot.status === "running"}
+								<span class="text-hull-grey">Working</span>
 							{:else}
-								<span class="text-hull-grey">None</span>
+								<span class="text-hull-grey">{bot.status}</span>
 							{/if}
 						</div>
 						<div class="flex justify-between">
@@ -176,14 +186,8 @@
 						</div>
 						<div class="flex justify-between">
 							<span class="text-chrome-silver">Location</span>
-							<span class="text-star-white">{bot.systemName ?? "Unknown"}{#if bot.poiName} - {bot.poiName}{/if}</span>
+							<span class="text-star-white text-[10px]">{bot.systemName ?? "Unknown"}{#if bot.poiName} - {bot.poiName}{/if}{#if bot.docked} <span class="text-bio-green">⚓</span>{/if}</span>
 						</div>
-						{#if bot.destination}
-							<div class="flex justify-between">
-								<span class="text-chrome-silver">Destination</span>
-								<span class="text-plasma-cyan">{bot.destination}{#if bot.jumpsRemaining != null} <span class="text-hull-grey">({bot.jumpsRemaining}J)</span>{/if}</span>
-							</div>
-						{/if}
 
 						<!-- Fuel/Cargo bars -->
 						<div class="pt-1">

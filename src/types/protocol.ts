@@ -79,8 +79,10 @@ export interface BotSummary {
     powerUsed: number; powerCapacity: number;
   } | null;
   docked: boolean;
+  orderDescription: string | null; // Current work order (e.g., "Mine iron ore", "Craft fuel cells")
   destination: string | null; // Human-readable destination from routine params
   jumpsRemaining: number | null; // Jumps to reach destination system
+  jumpProgress: string | null; // e.g., "3/10" when navigating multi-jump routes
   error: string | null;
   uptime: number; // ms since login
   uptimePct: number; // % of session time actively running a routine (0-100)

@@ -334,8 +334,10 @@ export class Bot {
         powerUsed: this._ship.powerUsed, powerCapacity: this._ship.powerCapacity,
       } : null,
       docked: this._player?.dockedAtBase !== null && this._player?.dockedAtBase !== undefined,
+      orderDescription: this.resolveOrderDescription(),
       destination: this.resolveDestination(),
       jumpsRemaining: this.resolveJumpsRemaining(),
+      jumpProgress: this.resolveJumpProgress(),
       error: this._error,
       uptime: this.uptime,
       uptimePct: this.computeUptimePct(),
@@ -449,6 +451,24 @@ export class Bot {
     }
 
     return null;
+  }
+
+  /** Resolve current work order description from WorkOrderManager */
+  private resolveOrderDescription(): string | null {
+    const wom = this.deps?.workOrderManager;
+    if (!wom) return null;
+    const orders = wom.getForBot(this.id)
+      .filter(o => o.status === "claimed" || o.status === "in_progress")
+      .sort((a, b) => b.priority - a.priority);
+    return orders[0]?.description ?? null;
+  }
+
+  /** Parse jump progress from routineState (e.g., "jumping to sirius (3/10)" → "3/10") */
+  private resolveJumpProgress(): string | null {
+    const state = this._routineState;
+    if (!state) return null;
+    const match = state.match(/\((\d+)\/(\d+)\)/);
+    return match ? `${match[1]}/${match[2]}` : null;
   }
 
   /** Build skills summary from stored data */
