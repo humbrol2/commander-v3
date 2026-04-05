@@ -267,7 +267,10 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
     }
 
     // ── Navigate to belt ──
-    yield "traveling to belt";
+    const beltInfo = ctx.galaxy.getPoi(targetBelt);
+    const beltLabel = beltInfo?.name ?? targetBelt;
+    const oreLabel = targetOre ? targetOre.replace(/_/g, " ") : "";
+    yield `traveling to ${beltLabel}${oreLabel ? ` (${oreLabel})` : ""}`;
     try {
       await navigateToPoi(ctx, targetBelt);
     } catch (err) {
