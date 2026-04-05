@@ -32,14 +32,14 @@ export function registerTradeTracker(bus: EventBus, logger: TrainingLogger): voi
     // Financial event logged by broadcast loop's credit delta tracking (single source of truth)
   });
 
+  // Craft events logged to ledger (not trade_log — crafting isn't a trade)
   bus.on("craft", (event) => {
-    logger.logTrade({
+    logger.logLedger?.({
+      type: "craft",
       botId: event.botId,
-      action: "craft",
       itemId: event.outputItem,
       quantity: event.outputQuantity,
-      priceEach: 0,
-      total: 0,
-    });
+      details: `Crafted ${event.outputQuantity}x via ${event.recipeId}`,
+    }).catch(() => {});
   });
 }

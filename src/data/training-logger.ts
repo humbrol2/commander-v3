@@ -207,6 +207,30 @@ export class TrainingLogger {
     });
   }
 
+  /** Log any financial/inventory transaction to the accounting ledger */
+  async logLedger(entry: {
+    type: string;
+    botId?: string;
+    itemId?: string;
+    itemName?: string;
+    quantity?: number;
+    credits?: number;
+    details?: string;
+  }): Promise<void> {
+    await this.db.insert(factionTransactions).values({
+      tenantId: this.tenantId,
+      timestamp: Date.now(),
+      type: entry.type,
+      botId: entry.botId ?? null,
+      itemId: entry.itemId ?? null,
+      itemName: entry.itemName ?? null,
+      quantity: entry.quantity ?? null,
+      credits: entry.credits ?? null,
+      details: entry.details ?? null,
+    });
+  }
+
+
   async getFinancialHistory(sinceMs: number, bucketMs: number): Promise<Array<{
     timestamp: number; revenue: number; cost: number; profit: number;
   }>> {

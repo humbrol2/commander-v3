@@ -906,6 +906,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
             if (orderPrice) {
               await ctx.api.factionCreateSellOrder(item, orderPrice, qty);
               yield `sell order placed: ${qty}x @ ${orderPrice}cr`;
+              ctx.logger.logLedger?.({ type: "sell_order_create", botId: ctx.botId, itemId: item, itemName: item, quantity: qty, credits: orderPrice * qty, details: `trader sell order @ ${orderPrice}cr/ea` }).catch(() => {});
               try { const stn = getStationName(ctx); await ctx.api.chat("system", `Selling ${qty}x ${item} @ ${orderPrice}cr${stn ? ` at ${stn}` : ""}`); } catch { /* best effort */ }
             } else {
               const result = await ctx.api.sell(item, qty);
@@ -1356,6 +1357,7 @@ async function* insightGatedArbitrageTrip(
       recordSellResult(ctx, route.sellStationId, route.itemId, route.itemName, result.priceEach, result.quantity);
       const actualPrice = result.priceEach > 0 ? result.priceEach : liveSellPrice;
       yield `arbitrage: sold ${result.quantity} ${route.itemName} @ ${actualPrice}cr each (${result.total}cr)`;
+      ctx.logger.logLedger?.({ type: "npc_sell", botId: ctx.botId, itemId: route.itemId, itemName: route.itemName, quantity: result.quantity, credits: result.total, details: `arbitrage sell @ ${actualPrice}cr/ea at ${route.sellStationId}` }).catch(() => {});
     } else {
       // Sell returned 0 — buy order was ghost/filled. Deposit to faction instead of wasting the trip.
       yield `arbitrage: sell returned 0 for ${route.itemName} — buy order gone, depositing to faction`;
@@ -1722,6 +1724,7 @@ async function* factionSellLoop(
           if (result.total > 0) {
             yield `sold ${result.quantity} ${wi.name} @ ${result.priceEach}cr (${result.total}cr) — home station direct`;
             recordSellResult(ctx, factionStation, wi.itemId, wi.itemId, result.priceEach, result.quantity);
+            ctx.logger.logLedger?.({ type: "npc_sell", botId: ctx.botId, itemId: wi.itemId, itemName: wi.name, quantity: result.quantity, credits: result.total, details: `trader home sell @ ${result.priceEach}cr/ea` }).catch(() => {});
             sold = true;
           }
         } catch (err) {
@@ -1765,6 +1768,7 @@ async function* factionSellLoop(
           if (result.total > 0) {
             yield `sold ${result.quantity} ${wi.itemId} @ ${result.priceEach}cr (total: ${result.total}cr)`;
             recordSellResult(ctx, bid.stationId, wi.itemId, wi.itemId, result.priceEach, result.quantity);
+            ctx.logger.logLedger?.({ type: "npc_sell", botId: ctx.botId, itemId: wi.itemId, itemName: wi.name, quantity: result.quantity, credits: result.total, details: `trader sell @ ${result.priceEach}cr/ea at ${bid.stationId}` }).catch(() => {});
             stationSoldAny = true;
           } else {
             yield `no demand for ${wi.name} at this station`;
@@ -1822,6 +1826,7 @@ async function* factionSellLoop(
           await ctx.refreshState();
           const itemName = ctx.crafting.getItemName(c.itemId) || c.itemId;
           yield `listed ${c.quantity} ${itemName} @ ${pricing.listPrice}cr (sell order fallback)`;
+          ctx.logger.logLedger?.({ type: "sell_order_create", botId: ctx.botId, itemId: c.itemId, itemName, quantity: c.quantity, credits: pricing.listPrice * c.quantity, details: `trader sell order fallback @ ${pricing.listPrice}cr/ea` }).catch(() => {});
           sold = true;
         } catch (err) {
           yield `sell order failed: ${err instanceof Error ? err.message : String(err)}`;

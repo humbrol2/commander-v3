@@ -487,6 +487,7 @@ async function* manageFactionSales(
       trackedSellOrders.delete(orderId);
       listedItems.delete(order.itemId);
       yield `sell order filled/cancelled: ${order.itemName} x${order.quantity}`;
+      ctx.logger.logLedger?.({ type: "sell_order_fill", botId: ctx.botId, itemId: order.itemId, itemName: order.itemName, quantity: order.quantity, credits: order.priceEach * order.quantity, details: `sell order filled/cancelled @ ${order.priceEach}cr/ea` }).catch(() => {});
     }
   }
 
@@ -619,6 +620,7 @@ async function* manageFactionSales(
           await ctx.refreshState();
           const margin = cheapestElsewhere > 0 ? listPrice - cheapestElsewhere : listPrice - effectiveCostBasis;
           yield `listed ${directListQty} ${itemName} @ ${listPrice}cr/ea (+${margin}cr margin) (faction direct — too heavy for cargo)`;
+          ctx.logger.logLedger?.({ type: "sell_order_create", botId: ctx.botId, itemId: item.itemId, itemName, quantity: directListQty, credits: listPrice * directListQty, details: `sell order @ ${listPrice}cr/ea (heavy item, faction direct)` }).catch(() => {});
           listedItems.add(item.itemId);
           ordersCreated++;
         } catch (err) {
@@ -685,6 +687,7 @@ async function* manageFactionSales(
           priceEach: directResult.priceEach, total: directResult.total,
           stationId: ctx.player.dockedAtBase ?? "",
         });
+        ctx.logger.logLedger?.({ type: "npc_sell", botId: ctx.botId, itemId: item.itemId, itemName, quantity: directResult.quantity, credits: directResult.total, details: `QM direct sell @ ${directResult.priceEach}cr/ea` }).catch(() => {});
 
         // Re-deposit leftover (partial fill or cargo items)
         const remaining = ctx.cargo.getItemQuantity(ctx.ship, item.itemId);
@@ -737,6 +740,7 @@ async function* manageFactionSales(
             ? ` (${Math.round(undercutPct * 100)}% below ${cheapestElsewhere}cr elsewhere)`
             : "";
           yield `listed ${sellQty} ${itemName} @ ${listPrice}cr/ea (+${margin}cr margin)${vsCompetitor}`;
+          ctx.logger.logLedger?.({ type: "sell_order_create", botId: ctx.botId, itemId: item.itemId, itemName, quantity: sellQty, credits: listPrice * sellQty, details: `sell order @ ${listPrice}cr/ea` }).catch(() => {});
 
           listedItems.add(item.itemId);
           ordersCreated++;
@@ -1172,6 +1176,7 @@ async function* manageMaterialBuyOrders(
       newOrdersPlaced++;
 
       yield `placed buy order: ${buyQty}x ${target.itemName} @ ${target.recommendedPrice}cr (${orderCost}cr total)`;
+      ctx.logger.logLedger?.({ type: "buy_order_create", botId: ctx.botId, itemId: target.itemId, itemName: target.itemName, quantity: buyQty, credits: -orderCost, details: `buy order @ ${target.recommendedPrice}cr/ea` }).catch(() => {});
       await advertiseInChat(ctx, `Buying ${buyQty}x ${target.itemName} @ ${target.recommendedPrice}cr`, adState);
     } catch (err) {
       yield `buy order failed for ${target.itemName}: ${err instanceof Error ? err.message : String(err)}`;

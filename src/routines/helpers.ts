@@ -476,8 +476,13 @@ export async function refuelIfNeeded(ctx: BotContext, threshold = FUEL_REFUEL_TH
   // Station refuel (costs credits, only works docked)
   if (ctx.player.dockedAtBase) {
     try {
+      const creditsBefore = ctx.player.credits;
       await ctx.api.refuel();
       await ctx.refreshState();
+      const fuelCost = creditsBefore - ctx.player.credits;
+      if (fuelCost > 0) {
+        ctx.logger.logLedger?.({ type: "fuel_purchase", botId: ctx.botId, credits: -fuelCost, details: `station refuel at ${ctx.player.dockedAtBase}` }).catch(() => {});
+      }
     } catch (err) {
       logWarn(ctx, `refuel failed: ${err instanceof Error ? err.message : err}`);
     }
@@ -869,6 +874,7 @@ export async function depositItem(ctx: BotContext, itemId: string): Promise<void
       type: "deposit", botId: ctx.botId, itemId, quantity: qty,
       target: "faction", stationId: ctx.player.dockedAtBase ?? "",
     });
+    ctx.logger.logLedger?.({ type: "item_deposit", botId: ctx.botId, itemId, itemName: ctx.crafting?.getItemName(itemId) || itemId, quantity: qty, details: "faction deposit" }).catch(() => {});
   } else {
     await ctx.api.depositItems(itemId, qty);
   }
@@ -886,6 +892,7 @@ export async function withdrawFromFaction(ctx: BotContext, itemId: string, quant
     type: "withdraw", botId: ctx.botId, itemId, quantity,
     source: "faction", stationId: ctx.player.dockedAtBase ?? "",
   });
+  ctx.logger.logLedger?.({ type: "item_withdraw", botId: ctx.botId, itemId, itemName: ctx.crafting?.getItemName(itemId) || itemId, quantity, details: "faction withdraw" }).catch(() => {});
 }
 
 /**
@@ -1724,6 +1731,7 @@ export async function payFactionTax(ctx: BotContext, earned: number): Promise<{ 
     ctx.recordFactionDeposit(taxAmount); // Exclude from cost tracking
     // Log to faction transactions via logger (if available)
     ctx.logger.logFactionCreditTx?.("credit_deposit", ctx.botId, taxAmount, `tax ${pct}%`);
+    ctx.logger.logLedger?.({ type: "tax", botId: ctx.botId, credits: -taxAmount, details: `faction tax ${pct}% on ${earned}cr earnings` }).catch(() => {});
     return { deposited: taxAmount, message: `faction tax: deposited ${taxAmount}cr (${pct}%)` };
   } catch (err) {
     log(ctx, `faction tax failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1748,6 +1756,7 @@ export async function ensureMinCredits(ctx: BotContext): Promise<{ withdrawn: nu
     await ctx.api.factionWithdrawCredits(deficit);
     await ctx.refreshState();
     ctx.logger.logFactionCreditTx?.("credit_withdraw", ctx.botId, deficit, `min credits top-up`);
+    ctx.logger.logLedger?.({ type: "credit_withdraw", botId: ctx.botId, credits: deficit, details: `min credits top-up (below ${minCredits}cr)` }).catch(() => {});
     ctx.recordFactionWithdrawal(deficit); // Exclude from revenue tracking
     return { withdrawn: deficit, message: `withdrew ${deficit}cr from faction treasury (credits were below ${minCredits}cr minimum)` };
   } catch (err) {
@@ -1774,6 +1783,7 @@ export async function depositExcessCredits(ctx: BotContext): Promise<{ deposited
     await ctx.refreshState();
     ctx.recordFactionDeposit(excess); // Exclude from cost tracking
     ctx.logger.logFactionCreditTx?.("credit_deposit", ctx.botId, excess, `max credits cap`);
+    ctx.logger.logLedger?.({ type: "credit_deposit", botId: ctx.botId, credits: -excess, details: `max credits cap (exceeded ${maxCredits}cr)` }).catch(() => {});
     return { deposited: excess, message: `deposited ${excess}cr to faction treasury (credits exceeded ${maxCredits}cr cap)` };
   } catch (err) {
     log(ctx, `faction deposit failed: ${err instanceof Error ? err.message : String(err)}`);

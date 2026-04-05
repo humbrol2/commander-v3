@@ -412,27 +412,39 @@ async function handleDecisionsRoute(url: URL, db: DB): Promise<Response> {
 /** GET /api/faction/transactions?range=1d&limit=200 */
 async function handleFactionTransactionsRoute(url: URL, db: DB): Promise<Response> {
   const range = url.searchParams.get("range") ?? "1d";
-  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "200") || 200, 1000);
+  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "500") || 500, 2000);
+  const botFilter = url.searchParams.get("bot") ?? "";
+  const typeFilter = url.searchParams.get("type") ?? "";
   const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
   const since = Date.now() - ms;
 
+  const conditions = [gt(factionTransactions.timestamp, since)];
+  if (botFilter) conditions.push(eq(factionTransactions.botId, botFilter));
+  if (typeFilter) conditions.push(eq(factionTransactions.type, typeFilter));
+
   const rows = await db.select().from(factionTransactions)
-    .where(gt(factionTransactions.timestamp, since))
+    .where(and(...conditions))
     .orderBy(desc(factionTransactions.timestamp))
     .limit(limit);
 
-  return Response.json(
-    rows.map(r => ({
-      timestamp: r.timestamp,
-      botId: r.botId,
-      type: r.type,
-      itemId: r.itemId,
-      itemName: r.itemName,
-      quantity: r.quantity,
-      credits: r.credits,
-      details: r.details,
-    }))
-  );
+  const entries = rows.map(r => ({
+    timestamp: r.timestamp,
+    botId: r.botId,
+    type: r.type,
+    itemId: r.itemId,
+    itemName: r.itemName,
+    quantity: r.quantity,
+    credits: r.credits,
+    details: r.details,
+  }));
+
+  const totalIncome = entries.filter(e => (e.credits ?? 0) > 0).reduce((s, e) => s + (e.credits ?? 0), 0);
+  const totalExpense = entries.filter(e => (e.credits ?? 0) < 0).reduce((s, e) => s + (e.credits ?? 0), 0);
+
+  return Response.json({
+    entries,
+    summary: { totalIncome, totalExpense, net: totalIncome + totalExpense, count: entries.length },
+  });
 }
 
 /** GET /api/economy/bot-breakdown?range=1d — revenue/cost per bot */
