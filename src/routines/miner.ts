@@ -36,13 +36,13 @@ import {
 } from "./helpers";
 
 export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void, void> {
-  let targetBelt = getParam(ctx, "targetBelt", "");
-  let sellStation = getParam(ctx, "sellStation", "");
-  let targetOre = getParam(ctx, "targetOre", "");
+  let targetBelt = "";
+  let sellStation = "";
+  let targetOre = "";
   // Crystal miners always deposit to faction storage (crystals are strategic, not for sale)
   const depositToStorage = ctx.settings.role === "crystal_miner" ? true : getParam(ctx, "depositToStorage", false);
 
-  // ── Check for work orders (mine specific ore) ──
+  // ── Claim highest-priority mine work order (strict priority) ──
   let activeWorkOrder: string | null = null;
   try {
     const { claimWorkOrder, startWorkOrder, completeWorkOrder } = await import("./work-order-helper");
@@ -50,8 +50,8 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
     if (order) {
       activeWorkOrder = order.id;
       startWorkOrder(ctx, order.id);
-      // Override target ore with work order target
-      if (order.targetId && !targetOre) {
+      // Work order specifies target ore — always use it (priority is authoritative)
+      if (order.targetId) {
         targetOre = order.targetId;
         yield `work order: mine ${order.targetId.replace(/_/g, " ")} (priority ${order.priority})`;
         // Try to find a belt with this specific ore

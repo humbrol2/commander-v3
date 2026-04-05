@@ -1134,7 +1134,6 @@ export class OrderEngine {
       if (!claimed) continue;
 
       const routine = this.wom.getRoutineForOrder(claimed);
-      const params = this.wom.getParamsForOrder(claimed);
 
       // Don't reassign bot already running the matching routine
       if (bot.routine === routine && bot.status === "running") {
@@ -1142,10 +1141,12 @@ export class OrderEngine {
         continue;
       }
 
+      // Don't pass order-specific params — let the routine claim its own order
+      // from the work order list (strict priority). Commander only assigns the routine type.
       assignments.push({
         botId: bot.botId,
         routine,
-        params,
+        params: {},
         orderId: claimed.id,
         orderDescription: claimed.description,
         orderPriority: claimed.priority,
@@ -1189,11 +1190,14 @@ export class OrderEngine {
     return bestOrder ? { order: bestOrder, score: bestScore } : null;
   }
 
-  /** Score how well a bot fits an order */
+  /** Score how well a bot fits an order.
+   * Priority is dominant — bonuses are capped so they can only break ties
+   * within the same priority tier, never override a higher-priority order. */
   private scoreFitness(bot: FleetBotInfo, order: PersistentWorkOrder, routine: string): number {
-    let score = order.priority; // Base: order importance
+    // Priority is king: multiply by 3 so bonuses (max ~20) can't jump tiers (gaps of 5-15)
+    let score = order.priority * 3;
 
-    // Role affinity: +40 if bot's role aligns with order type
+    // Role affinity: +8 if bot's role aligns with order type (tiebreaker, not tier-jumper)
     const ROLE_ORDER_AFFINITY: Record<string, string[]> = {
       ore_miner: ["mine"], crystal_miner: ["mine"],
       gas_harvester: ["mine"], ice_harvester: ["mine"],
@@ -1202,38 +1206,31 @@ export class OrderEngine {
       quartermaster: ["buy", "sell"],
       explorer: ["explore"],
       scout: ["scan"],
-      hunter: ["explore"], // hunters can explore to find targets
+      hunter: ["explore"],
       mission_runner: ["deliver", "mine", "craft"],
     };
     const affinityTypes = ROLE_ORDER_AFFINITY[bot.role ?? ""] ?? [];
-    if (affinityTypes.includes(order.type)) score += 40;
+    if (affinityTypes.includes(order.type)) score += 8;
 
-    // Proximity: -3 per jump to order location
+    // Proximity: -2 per jump (capped at -10 so distance doesn't override priority)
     if (order.stationId && bot.systemId) {
       const distance = this.estimateDistance(bot.systemId, order.stationId);
-      score -= distance * 3;
+      score -= Math.min(distance * 2, 10);
     }
 
     // Fuel feasibility: -999 if can't reach target
     if (bot.fuelPct < 10) score -= 999;
 
-    // Continuity: +25 if bot already running matching routine (prevent thrashing)
+    // Continuity: +5 if bot already running matching routine (prevent thrashing)
     if (bot.routine === routine && bot.status === "running") {
-      score += 25;
+      score += 5;
     }
 
-    // Cargo capacity: +10 if sufficient for order quantity
+    // Cargo capacity: +3 if sufficient, -5 if insufficient
     if (order.quantity) {
       const cargoFree = Math.round((bot.cargoCapacity ?? 50) * (1 - (bot.cargoPct ?? 0) / 100));
-      if (cargoFree >= order.quantity) score += 10;
-      else if (cargoFree < order.quantity * 0.3) score -= 20;
-    }
-
-    // Performance bonus: if bot historically does well in the target system
-    const perf = this.botPerformance.get(bot.botId);
-    if (perf && order.stationId) {
-      const systemCpm = perf.systemCpm.get(order.stationId);
-      if (systemCpm && systemCpm > 0) score += Math.min(systemCpm / 100, 15); // Cap +15
+      if (cargoFree >= order.quantity) score += 3;
+      else if (cargoFree < order.quantity * 0.3) score -= 5;
     }
 
     return score;

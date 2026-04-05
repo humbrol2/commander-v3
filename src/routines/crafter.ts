@@ -39,12 +39,11 @@ import {
 } from "./helpers";
 
 export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, void, void> {
-  let recipeId = getParam(ctx, "recipeId", "");
-  let count = getParam(ctx, "count", 1);
+  let recipeId = "";
+  let count = 1;
   const craftStation = getParam(ctx, "craftStation", "");
-  console.log(`[${ctx.botId}] crafter: params recipeId=${recipeId || "(empty)"}, count=${count}, keys=${Object.keys(ctx.params).join(",") || "none"}`);
 
-  // ── Check for craft work orders ──
+  // ── Claim highest-priority craft work order (strict priority) ──
   let activeWorkOrder: string | null = null;
   try {
     const { claimWorkOrder, startWorkOrder } = await import("./work-order-helper");
@@ -52,15 +51,14 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
     if (order) {
       activeWorkOrder = order.id;
       startWorkOrder(ctx, order.id);
-      // Work order targetId can be a recipe ID (e.g., "spin_optical_fiber") or item ID
-      if (order.targetId && !recipeId) {
-        // Try as recipe ID first (order engine sends recipe IDs)
+      if (order.quantity) count = order.quantity;
+      // Work order targetId is a recipe ID or item ID — always use it (priority is authoritative)
+      if (order.targetId) {
         const directRecipe = ctx.crafting.getRecipe(order.targetId);
         if (directRecipe) {
           recipeId = directRecipe.id;
           yield `work order: craft via ${directRecipe.name ?? directRecipe.id} (priority ${order.priority})`;
         } else {
-          // Try as item ID — find recipe that produces this item
           const recipes = ctx.crafting.findRecipesForItem(order.targetId);
           if (recipes.length > 0) {
             recipeId = recipes[0].id;
@@ -217,9 +215,9 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
   }
 
   // Build the crafting chain (ordered steps, deepest deps first)
-  // When recipe is directly specified via work order params, don't expand chain —
+  // When recipe is directly specified via work order, don't expand chain —
   // craft the recipe as-is with materials from storage (avoids 9-step chains for simple recipes)
-  const directRecipe = getParam(ctx, "recipeId", "");
+  const directRecipe = activeWorkOrder ? recipeId : "";
   let chain = directRecipe
     ? [{ recipeId, recipeName: recipe.name, batchCount: count,
          inputs: recipe.ingredients.map(i => ({ itemId: i.itemId, itemName: ctx.crafting.getItemName(i.itemId), quantity: i.quantity * count, isRaw: ctx.crafting.isRawMaterial(i.itemId) })),

@@ -136,15 +136,15 @@ function findAlternateBuyer(ctx: BotContext, failedStation: string): string | nu
 }
 
 export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, void, void> {
-  let buyStation = getParam(ctx, "buyStation", "");
-  let sellStation = getParam(ctx, "sellStation", "");
-  let item = getParam(ctx, "item", "");
-  let maxBuyPrice = getParam(ctx, "maxBuyPrice", Infinity);
-  let minSellPrice = getParam(ctx, "minSellPrice", 0);
+  let buyStation = "";
+  let sellStation = "";
+  let item = "";
+  let maxBuyPrice = Infinity;
+  let minSellPrice = 0;
 
-  let sellFromFaction = getParam(ctx, "sellFromFaction", false);
+  let sellFromFaction = false;
 
-  // ── Check for work orders (sell/buy/deliver) ──
+  // ── Claim highest-priority work order (strict priority) ──
   let activeWorkOrder: string | null = null;
   try {
     const { claimWorkOrder, startWorkOrder } = await import("./work-order-helper");
