@@ -27,7 +27,10 @@
 	let typeFilter = $state("");
 	let ledgerMode = $state<"all" | "credits" | "items">("credits");
 
-	const CREDIT_TYPES = new Set(["credit_deposit", "credit_withdraw", "npc_sell", "npc_buy", "sell_order_fill", "buy_order_fill", "sell_order_create", "buy_order_create", "fuel_purchase", "module_purchase", "insurance", "tax"]);
+	// Only count realized revenue/costs — not pending orders
+	const CREDIT_TYPES = new Set(["credit_deposit", "credit_withdraw", "npc_sell", "npc_buy", "sell_order_fill", "buy_order_fill", "fuel_purchase", "module_purchase", "insurance", "tax"]);
+	// Pending orders shown separately (informational, not counted in balance)
+	const PENDING_TYPES = new Set(["sell_order_create", "buy_order_create"]);
 	const ITEM_TYPES = new Set(["item_deposit", "item_withdraw", "craft"]);
 
 	const TYPE_LABELS: Record<string, string> = {
@@ -73,7 +76,7 @@
 	}
 
 	const filteredEntries = $derived.by(() => {
-		if (ledgerMode === "credits") return entries.filter(e => CREDIT_TYPES.has(e.type));
+		if (ledgerMode === "credits") return entries.filter(e => CREDIT_TYPES.has(e.type) || PENDING_TYPES.has(e.type));
 		if (ledgerMode === "items") return entries.filter(e => ITEM_TYPES.has(e.type));
 		return entries;
 	});
@@ -83,9 +86,10 @@
 	const totalBotCredits = $derived($fleetStats?.totalCredits ?? 0);
 	const totalBalance = $derived(currentTreasury + totalBotCredits);
 
-	// Filtered totals (from displayed entries, not API summary)
-	const filteredDebits = $derived(filteredEntries.reduce((s, e) => s + (e.credits != null && e.credits < 0 ? Math.abs(e.credits) : 0), 0));
-	const filteredCredits = $derived(filteredEntries.reduce((s, e) => s + (e.credits != null && e.credits > 0 ? e.credits : 0), 0));
+	// Filtered totals — only realized transactions, not pending orders
+	const realizedEntries = $derived(filteredEntries.filter(e => !PENDING_TYPES.has(e.type)));
+	const filteredDebits = $derived(realizedEntries.reduce((s, e) => s + (e.credits != null && e.credits < 0 ? Math.abs(e.credits) : 0), 0));
+	const filteredCredits = $derived(realizedEntries.reduce((s, e) => s + (e.credits != null && e.credits > 0 ? e.credits : 0), 0));
 	const filteredNet = $derived(filteredCredits - filteredDebits);
 
 	// Balance tracks total fleet (bots + treasury), not just treasury
@@ -93,19 +97,23 @@
 	const startingBalance = $derived(endingBalance - filteredNet);
 
 	const entriesWithBalance = $derived.by(() => {
-		if (ledgerMode !== "credits") return filteredEntries.map(e => ({ ...e, balance: null as number | null, debit: null as number | null, credit: null as number | null }));
+		const isPending = (type: string) => PENDING_TYPES.has(type);
+		if (ledgerMode !== "credits") return filteredEntries.map(e => ({ ...e, balance: null as number | null, debit: null as number | null, credit: null as number | null, pending: isPending(e.type) }));
 		// Build running balance: start from ending (newest) and work backwards
-		// Entries are newest-first, so subtract each entry's credits to go back in time
+		// Pending orders don't affect running balance
 		let balance = endingBalance;
 		return filteredEntries.map(e => {
-			const amt = e.credits ?? 0;
+			const pending = isPending(e.type);
+			const amt = pending ? 0 : (e.credits ?? 0); // Pending doesn't move balance
+			const displayAmt = e.credits ?? 0;
 			const row = {
 				...e,
-				debit: amt < 0 ? Math.abs(amt) : null,
-				credit: amt > 0 ? amt : null,
-				balance,
+				debit: displayAmt < 0 ? Math.abs(displayAmt) : null,
+				credit: displayAmt > 0 ? displayAmt : null,
+				balance: pending ? null : balance, // No balance shown for pending
+				pending,
 			};
-			balance -= amt; // Undo this transaction to get previous balance
+			balance -= amt;
 			return row;
 		});
 	});
@@ -140,7 +148,7 @@
 
 	const uniqueTypes = $derived.by(() => {
 		const types = [...new Set(entries.map(e => e.type))].sort();
-		if (ledgerMode === "credits") return types.filter(t => CREDIT_TYPES.has(t));
+		if (ledgerMode === "credits") return types.filter(t => CREDIT_TYPES.has(t) || PENDING_TYPES.has(t));
 		if (ledgerMode === "items") return types.filter(t => ITEM_TYPES.has(t));
 		return types;
 	});
@@ -289,7 +297,7 @@
 							</tr>
 						{/if}
 						{#each entriesWithBalance as entry}
-							<tr class="hover:bg-nebula-blue/20 transition-colors">
+							<tr class="hover:bg-nebula-blue/20 transition-colors {entry.pending ? 'opacity-40' : ''}">
 								<td class="py-1.5 pr-3 text-xs text-hull-grey whitespace-nowrap">{formatTime(entry.timestamp)}</td>
 								<td class="py-1.5 pr-3 text-xs text-star-white">{botName(entry.botId)}</td>
 								<td class="py-1.5 pr-3 text-xs {typeColor(entry.type)}">
