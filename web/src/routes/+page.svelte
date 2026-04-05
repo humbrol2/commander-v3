@@ -44,6 +44,20 @@
 		return ROLE_LABELS[role] ?? role.replace(/_/g, " ");
 	}
 
+	function poiIcon(name: string | null): string {
+		if (!name) return "";
+		const n = name.toLowerCase();
+		if (n.includes("station") || n.includes("central") || n.includes("hub") || n.includes("exchange") || n.includes("command") || n.includes("relay") || n.includes("memorial") || n.includes("citadel") || n.includes("outpost") || n.includes("rest")) return "🏛";
+		if (n.includes("belt") || n.includes("asteroid") || n.includes("extraction") || n.includes("vein")) return "⛏";
+		if (n.includes("ice") || n.includes("frost")) return "🧊";
+		if (n.includes("gas") || n.includes("vapor") || n.includes("pocket") || n.includes("plume")) return "💨";
+		if (n.includes("nebula") || n.includes("scatter") || n.includes("prism")) return "🌌";
+		if (n.includes("star") || n.includes("sun")) return "☀";
+		if (n.includes("planet") || n.includes("world")) return "🪐";
+		if (n.includes("wreck") || n.includes("debris")) return "💀";
+		return "📍";
+	}
+
 	// Derive top trades from activity log (merged from Activity page)
 	const topTrades = $derived.by(() => {
 		return $activityLog
@@ -222,21 +236,22 @@
 						<table class="w-full text-sm">
 							<thead>
 								<tr class="text-left text-xs text-chrome-silver uppercase tracking-wider border-b border-hull-grey/30">
-									<th class="pb-2 pr-4">Bot</th>
-									<th class="pb-2 pr-4">Order</th>
-									<th class="pb-2 pr-4">State</th>
-									<th class="pb-2 pr-4">Location</th>
-									<th class="pb-2 pr-4 text-right">Credits</th>
-									<th class="pb-2 pr-4 text-right">24h Rev</th>
-									<th class="pb-2 pr-4 text-right">Fuel</th>
+									<th class="pb-2 pr-3">Bot</th>
+									<th class="pb-2 pr-3">System</th>
+									<th class="pb-2 pr-3">POI</th>
+									<th class="pb-2 pr-3">Order</th>
+									<th class="pb-2 pr-3">State</th>
+									<th class="pb-2 pr-3 text-right">Credits</th>
+									<th class="pb-2 pr-3 text-right">24h</th>
+									<th class="pb-2 pr-3 text-right">Fuel</th>
 									<th class="pb-2 text-right">Cargo</th>
 								</tr>
 							</thead>
 							<tbody class="divide-y divide-hull-grey/20">
 								{#each $bots as bot}
 									<tr class="hover:bg-nebula-blue/20 transition-colors">
-										<td class="py-2 pr-4">
-											<div class="flex items-center gap-2">
+										<td class="py-1.5 pr-3">
+											<div class="flex items-center gap-1.5">
 												<span
 													class="status-dot flex-shrink-0"
 													class:active={bot.status === "running"}
@@ -244,16 +259,26 @@
 													class:error={bot.status === "error"}
 													class:offline={bot.status === "stopping"}
 												></span>
-												<a href="/bots/{bot.id}" class="text-star-white hover:text-plasma-cyan font-medium">
+												<a href="/bots/{bot.id}" class="text-star-white hover:text-plasma-cyan font-medium text-xs">
 													{bot.username}
 												</a>
 												{#if bot.role}
-													<span class="text-plasma-cyan text-[9px] px-1 py-0.5 rounded bg-plasma-cyan/10 border border-plasma-cyan/20 whitespace-nowrap">{roleLabel(bot.role)}</span>
+													<span class="text-plasma-cyan text-[8px] px-1 py-0.5 rounded bg-plasma-cyan/10 border border-plasma-cyan/20 whitespace-nowrap">{roleLabel(bot.role)}</span>
 												{/if}
-												<span class="text-hull-grey text-[9px]">{bot.shipClass ?? ""}</span>
+												<span class="text-hull-grey text-[8px]">{bot.shipClass ?? ""}</span>
 											</div>
 										</td>
-										<td class="py-2 pr-4 text-xs max-w-[220px]">
+										<td class="py-1.5 pr-3 text-xs text-chrome-silver whitespace-nowrap">
+											{bot.systemName ?? "?"}{#if bot.docked}<span class="text-bio-green ml-1">⚓</span>{/if}
+										</td>
+										<td class="py-1.5 pr-3 text-xs max-w-[180px]">
+											{#if bot.poiName}
+												<span class="text-star-white truncate block" title={bot.poiName}>{poiIcon(bot.poiName)} {bot.poiName}</span>
+											{:else}
+												<span class="text-hull-grey">--</span>
+											{/if}
+										</td>
+										<td class="py-1.5 pr-3 text-[11px] max-w-[200px]">
 											{#if bot.orderDescription}
 												<span class="text-warning-yellow truncate block" title={bot.orderDescription}>{bot.orderDescription}</span>
 											{:else if bot.routine}
@@ -262,7 +287,7 @@
 												<span class="text-hull-grey">--</span>
 											{/if}
 										</td>
-										<td class="py-2 pr-4 text-xs max-w-[250px]">
+										<td class="py-1.5 pr-3 text-[11px] max-w-[220px]">
 											{#if bot.jumpProgress}
 												<span class="text-plasma-cyan">Jump {bot.jumpProgress}{#if bot.destination} <span class="text-hull-grey">→</span> {bot.destination}{/if}</span>
 											{:else if bot.routineState}
@@ -271,21 +296,18 @@
 												<span class="text-hull-grey">{bot.status}</span>
 											{/if}
 										</td>
-										<td class="py-2 pr-4 text-chrome-silver text-xs">
-											{bot.systemName ?? "?"}{#if bot.docked}<span class="text-bio-green ml-1">⚓</span>{/if}
-										</td>
-										<td class="py-2 pr-4 text-right mono text-star-white text-xs">
+										<td class="py-1.5 pr-3 text-right mono text-star-white text-xs">
 											{bot.credits.toLocaleString()}
 										</td>
-										<td class="py-2 pr-4 text-right mono text-xs {(botRevenue24h[bot.id] ?? 0) >= 0 ? 'text-bio-green' : 'text-claw-red'}">
+										<td class="py-1.5 pr-3 text-right mono text-xs {(botRevenue24h[bot.id] ?? 0) >= 0 ? 'text-bio-green' : 'text-claw-red'}">
 											{(botRevenue24h[bot.id] ?? 0) >= 0 ? "+" : ""}{(botRevenue24h[bot.id] ?? 0).toLocaleString()}
 										</td>
-										<td class="py-2 pr-4 text-right mono text-xs">
+										<td class="py-1.5 pr-3 text-right mono text-xs">
 											<span class={bot.fuelPct < 20 ? "text-claw-red" : bot.fuelPct < 50 ? "text-warning-yellow" : "text-star-white"}>
 												{Math.round(bot.fuelPct)}%
 											</span>
 										</td>
-										<td class="py-2 text-right mono text-xs">
+										<td class="py-1.5 text-right mono text-xs">
 											<span class="text-star-white">{Math.round(bot.cargoPct)}%</span>
 										</td>
 									</tr>
