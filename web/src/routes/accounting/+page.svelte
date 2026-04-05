@@ -76,9 +76,12 @@
 	}
 
 	const filteredEntries = $derived.by(() => {
-		if (ledgerMode === "credits") return entries.filter(e => CREDIT_TYPES.has(e.type));
-		if (ledgerMode === "items") return entries.filter(e => ITEM_TYPES.has(e.type));
-		return entries;
+		let result = entries;
+		if (ledgerMode === "credits") result = result.filter(e => CREDIT_TYPES.has(e.type));
+		else if (ledgerMode === "items") result = result.filter(e => ITEM_TYPES.has(e.type));
+		// Client-side faction filter (API can't filter for null botId)
+		if (botFilter === "__faction__") result = result.filter(e => !e.botId);
+		return result;
 	});
 
 	// Live balances from WebSocket
@@ -122,7 +125,7 @@
 		loading = true;
 		try {
 			const params = new URLSearchParams({ range });
-			if (botFilter) params.set("bot", botFilter);
+			if (botFilter && botFilter !== "__faction__") params.set("bot", botFilter);
 			if (typeFilter) params.set("type", typeFilter);
 			const res = await fetch(`/api/faction/transactions?${params}`, { headers: getAuthHeaders() });
 			if (!res.ok) return;
@@ -240,6 +243,7 @@
 				<label class="text-xs text-chrome-silver uppercase">Account</label>
 				<select class="bg-deep-void border border-hull-grey/30 rounded px-2 py-1 text-xs text-star-white" bind:value={botFilter}>
 					<option value="">All</option>
+					<option value="__faction__">Faction Treasury</option>
 					{#each uniqueBots as bid}
 						<option value={bid}>{botName(bid)}</option>
 					{/each}
