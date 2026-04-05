@@ -378,15 +378,36 @@ async function* manageFactionSales(
   // Get facility material needs — don't sell items needed for facility builds
   const facilityNeeds = ctx.cache.getFacilityMaterialNeeds();
 
+  // Get active craft order material needs — don't sell items bots are about to withdraw
+  const craftReserves = new Map<string, number>();
+  if (ctx.workOrderManager) {
+    const activeOrders = ctx.workOrderManager.getAll().filter(
+      o => (o.status === "claimed" || o.status === "in_progress") && o.type === "craft"
+    );
+    for (const order of activeOrders) {
+      // Strip slot suffix and look up recipe inputs
+      const recipeId = order.targetId.replace(/#\d+$/, "");
+      const recipe = ctx.crafting.getRecipe(recipeId);
+      if (recipe) {
+        const batchCount = order.quantity ?? 1;
+        for (const ing of recipe.ingredients) {
+          craftReserves.set(ing.itemId, (craftReserves.get(ing.itemId) ?? 0) + ing.quantity * batchCount);
+        }
+      }
+    }
+  }
+
   // Filter for sellable goods (not raw ores unless 5000+; modules only if excess above fleet targets)
   const sellable: Array<{ itemId: string; quantity: number }> = [];
   for (let s of storageItems) {
     // Reserve items needed for facility builds
     const facilityReserve = facilityNeeds.get(s.itemId) ?? 0;
-    if (facilityReserve > 0) {
-      const available = s.quantity - facilityReserve;
-      if (available <= 0) continue; // All reserved for facility build
-      // Only sell the excess above what's reserved
+    // Reserve items needed for active craft orders
+    const craftReserve = craftReserves.get(s.itemId) ?? 0;
+    const totalReserve = facilityReserve + craftReserve;
+    if (totalReserve > 0) {
+      const available = s.quantity - totalReserve;
+      if (available <= 0) continue;
       s = { ...s, quantity: available };
     }
 
