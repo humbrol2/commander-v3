@@ -120,8 +120,9 @@ function findAlternateBuyer(ctx: BotContext, failedStation: string): string | nu
     let revenue = 0;
     for (const cargo of cargoItems) {
       const price = prices.find((p) => p.itemId === cargo.itemId);
-      if (price?.buyPrice && price.buyPrice > 0 && price.buyVolume > 0) {
-        revenue += price.buyPrice * Math.min(cargo.quantity, price.buyVolume);
+      // sellPrice = highest buy order (what buyers pay us)
+      if (price?.sellPrice && price.sellPrice > 0 && price.sellVolume > 0) {
+        revenue += price.sellPrice * Math.min(cargo.quantity, price.sellVolume);
       }
     }
 
@@ -293,13 +294,14 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
               if (stationId === factionStation) continue;
               const prices = ctx.cache.getMarketPrices(stationId);
               const priceEntry = prices?.find((p) => p.itemId === si.itemId);
-              const buyPrice = (priceEntry?.buyPrice && priceEntry.buyVolume > 0) ? priceEntry.buyPrice : 0;
-              const totalValue = buyPrice * Math.min(si.quantity, priceEntry?.buyVolume ?? 0);
+              // sellPrice = highest buy order (what buyers pay us)
+              const sellPrice = (priceEntry?.sellPrice && priceEntry.sellVolume > 0) ? priceEntry.sellPrice : 0;
+              const totalValue = sellPrice * Math.min(si.quantity, priceEntry?.sellVolume ?? 0);
               if (totalValue > bestTotalValue) {
                 bestTotalValue = totalValue;
                 bestItemName = ctx.crafting.getItemName(si.itemId);
                 bestItemQty = si.quantity;
-                bestItemPrice = buyPrice;
+                bestItemPrice = sellPrice;
               }
             }
           }
@@ -1470,7 +1472,7 @@ async function* factionSellLoop(
     }
 
     // ── Pre-select sell station BEFORE withdrawing ──
-    // Only consider items with KNOWN buyers (cached buyPrice > 0 at some station).
+    // Only consider items with KNOWN buyers (cached sellPrice > 0 = buy orders exist).
     // This prevents blind withdrawals that end up re-deposited.
     const cachedStations = ctx.cache.getAllMarketFreshness().map((f) => f.stationId);
     // Prioritize refined/crafted goods — ore is worth far more processed
@@ -1514,16 +1516,18 @@ async function* factionSellLoop(
       let cargoUsed = 0;
       for (const si of nonOreStorage) {
         const priceData = prices.find((p) => p.itemId === si.itemId);
-        if (priceData?.buyPrice && priceData.buyPrice > 0 && priceData.buyVolume > 0) {
+        // sellPrice = highest buy order price (what buyers pay us)
+        // sellVolume = total buy order volume (how many buyers want)
+        if (priceData?.sellPrice && priceData.sellPrice > 0 && priceData.sellVolume > 0) {
           // Skip near-worthless items (not worth the trip)
-          if (priceData.buyPrice < 5) continue;
-          // Cap quantity by buyVolume AND available cargo space
-          const qty = Math.min(si.quantity, priceData.buyVolume, Math.max(0, cargoCap - cargoUsed));
+          if (priceData.sellPrice < 5) continue;
+          // Cap quantity by sellVolume (buyer demand) AND available cargo space
+          const qty = Math.min(si.quantity, priceData.sellVolume, Math.max(0, cargoCap - cargoUsed));
           if (qty <= 0) continue;
           cargoUsed += qty;
-          const total = priceData.buyPrice * qty;
+          const total = priceData.sellPrice * qty;
           revenue += total;
-          stationItems.push({ itemId: si.itemId, name: ctx.crafting.getItemName(si.itemId), qty, price: priceData.buyPrice });
+          stationItems.push({ itemId: si.itemId, name: ctx.crafting.getItemName(si.itemId), qty, price: priceData.sellPrice });
         }
       }
 
