@@ -591,30 +591,43 @@ async function* manageFactionSales(
     // Bulk sell: up to 200 for cheap items, 50 for expensive ones
     const maxSellQty = listPrice <= 10 ? 200 : 50;
     let listQty = Math.min(item.quantity, maxSellQty, maxBySpace);
-    if (listQty <= 0) continue; // Item too heavy for remaining space
+    // Heavy items that won't fit in cargo — list directly from faction storage
+    if (listQty <= 0) {
+      const directListQty = Math.min(item.quantity, maxSellQty);
+      if (directListQty > 0 && listPrice > 0) {
+        try {
+          await ctx.api.factionCreateSellOrder(item.itemId, listPrice, directListQty);
+          await ctx.refreshState();
+          const margin = cheapestElsewhere > 0 ? listPrice - cheapestElsewhere : listPrice - effectiveCostBasis;
+          yield `listed ${directListQty} ${itemName} @ ${listPrice}cr/ea (+${margin}cr margin) (faction direct — too heavy for cargo)`;
+          listedItems.add(item.itemId);
+          ordersCreated++;
+        } catch (err) {
+          yield `faction list failed for ${itemName}: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+      continue;
+    }
     try {
       try {
         await withdrawFromFaction(ctx, item.itemId, listQty);
       } catch (wErr: unknown) {
-        // Item heavier than expected (size unknown until in cargo) — retry with less
+        // Item heavier than expected (size unknown until in cargo) — list from faction directly
         if (wErr instanceof Error && wErr.message.includes("cargo_full")) {
-          if (listQty <= 1) {
-            // Even 1 unit doesn't fit — permanently skip this item
-            oversizedItems.add(item.itemId);
-            yield `${itemName} too heavy for cargo (${freeSpace} free) — skipping`;
-            continue;
-          }
-          listQty = Math.max(1, Math.floor(listQty / 3));
-          try {
-            await withdrawFromFaction(ctx, item.itemId, listQty);
-          } catch (wErr2: unknown) {
-            if (wErr2 instanceof Error && wErr2.message.includes("cargo_full")) {
-              oversizedItems.add(item.itemId);
-              yield `${itemName} too heavy for cargo — skipping`;
-              continue;
+          const directQty = Math.min(item.quantity, maxSellQty);
+          if (directQty > 0 && listPrice > 0) {
+            try {
+              await ctx.api.factionCreateSellOrder(item.itemId, listPrice, directQty);
+              await ctx.refreshState();
+              const margin = cheapestElsewhere > 0 ? listPrice - cheapestElsewhere : listPrice - effectiveCostBasis;
+              yield `listed ${directQty} ${itemName} @ ${listPrice}cr/ea (+${margin}cr margin) (faction direct — cargo full)`;
+              listedItems.add(item.itemId);
+              ordersCreated++;
+            } catch (fErr) {
+              yield `faction list failed for ${itemName}: ${fErr instanceof Error ? fErr.message : String(fErr)}`;
             }
-            throw wErr2;
           }
+          continue;
         } else if (wErr instanceof Error && (
           wErr.message.includes("insufficient_storage") ||
           wErr.message.includes("insufficient_items")
