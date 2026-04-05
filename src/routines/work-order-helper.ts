@@ -17,14 +17,21 @@ export async function claimWorkOrder(
   const wom = ctx.workOrderManager;
   if (!wom) return null;
 
-  const botRole = ctx.settings.role ?? "generalist";
+  const typeSet = new Set(orderTypes);
 
-  // Find best matching pending order for this bot's role
+  // 1. Check for orders already claimed by this bot (from Commander's matchAndClaim)
+  const myOrders = wom.getForBot(ctx.botId)
+    .filter(o => (o.status === "claimed" || o.status === "in_progress") && typeSet.has(o.type))
+    .sort((a, b) => b.priority - a.priority);
+  if (myOrders.length > 0) {
+    return myOrders[0]; // Highest priority order already assigned to us
+  }
+
+  // 2. Fall back to claiming from pending list (strict priority order)
   for (const type of orderTypes) {
     const pending = wom.getPending(type);
     if (pending.length === 0) continue;
 
-    // Try to claim the highest priority one
     for (const order of pending) {
       const claimed = await wom.claim(order.id, ctx.botId);
       if (claimed) {

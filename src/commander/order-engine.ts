@@ -1143,6 +1143,7 @@ export class OrderEngine {
 
       // Don't pass order-specific params — let the routine claim its own order
       // from the work order list (strict priority). Commander only assigns the routine type.
+      // The order stays claimed by this bot — the routine will find it via getForBot().
       assignments.push({
         botId: bot.botId,
         routine,
