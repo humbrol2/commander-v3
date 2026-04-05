@@ -395,7 +395,7 @@ async function* manageFactionSales(
 
     // Consumable reserves — keep minimum stock, only sell excess
     const CONSUMABLE_RESERVES: Record<string, number> = {
-      fuel_cell: 200, fuel_cell_premium: 50, repair_kit: 100,
+      fuel_cell: 500, fuel_cell_premium: 50, repair_kit: 100,
       purified_water: 500, // Bio facilities consume water each cycle (v0.257.0)
     };
     if (s.itemId in CONSUMABLE_RESERVES) {
@@ -1417,8 +1417,9 @@ function calculateBuyPrice(
 /** Items that should never be sold — needed for crafting/facilities */
 const QM_DO_NOT_SELL = new Set([
   "energy_crystal", "silicon_ore", "circuit_board", "optical_fiber_bundle",
-  "fuel_cell", "repair_kit", "trade_cipher", "trade_crystal",
+  "repair_kit", "trade_cipher", "trade_crystal",
   "flex_polymer", "steel_plate",  // Needed for facility builds
+  // fuel_cell handled by CONSUMABLE_RESERVES (500 reserve, sell excess)
 ]);
 
 /**

@@ -632,6 +632,32 @@ export class OrderEngine {
       });
     }
 
+    // ── 1b. FUEL CELL CRAFTING — high priority until reserve met, then sell excess ──
+    const FUEL_CELL_RESERVE = 500;
+    const fuelCells = this.factionInventory.get("fuel_cell") ?? 0;
+    const steelPlates = this.factionInventory.get("steel_plate") ?? 0;
+    // assemble_fuel_cells: 1x energy_crystal + 1x steel_plate → 5x fuel_cell
+    if (energyCrystal >= 1 && steelPlates >= 1) {
+      const canCraft = Math.min(Math.floor(energyCrystal), Math.floor(steelPlates), 10);
+      if (fuelCells < FUEL_CELL_RESERVE) {
+        // High priority: build reserve for fleet operations
+        orders.push({
+          type: "craft", targetId: "assemble_fuel_cells",
+          description: `CRITICAL: craft fuel cells (${fuelCells}/${FUEL_CELL_RESERVE} reserve)`,
+          priority: PRI.FACILITY, reason: "fuel_cell_reserve",
+          quantity: canCraft,
+        });
+      } else {
+        // Reserve met: craft to sell for profit
+        orders.push({
+          type: "craft", targetId: "assemble_fuel_cells",
+          description: `Craft fuel cells for sale (${fuelCells} in stock, ${FUEL_CELL_RESERVE} reserved)`,
+          priority: PRI.CRAFT, reason: "fuel_cell_sell",
+          quantity: canCraft,
+        });
+      }
+    }
+
     // ── 2. SUPPLY CHAIN CRAFTING (pri 68-72) — ore surplus → refined goods ──
     for (const [oreId, config] of Object.entries(SUPPLY_CHAIN_ORES)) {
       const oreStock = this.factionInventory.get(oreId) ?? 0;
