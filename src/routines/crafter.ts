@@ -42,9 +42,7 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
   let recipeId = getParam(ctx, "recipeId", "");
   let count = getParam(ctx, "count", 1);
   const craftStation = getParam(ctx, "craftStation", "");
-  if (recipeId) {
-    console.log(`[${ctx.botId}] crafter: params recipeId=${recipeId}, count=${count}`);
-  }
+  console.log(`[${ctx.botId}] crafter: params recipeId=${recipeId || "(empty)"}, count=${count}, keys=${Object.keys(ctx.params).join(",") || "none"}`);
 
   // ── Check for craft work orders ──
   let activeWorkOrder: string | null = null;
