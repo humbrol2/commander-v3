@@ -313,7 +313,7 @@ export class OrderEngine {
     this.generateEmergencyOrders(activeBots, orders);
 
     // ── TIER 2: MAINTENANCE ──
-    this.generateMaintenanceOrders(activeBots, orders);
+    this.generateMaintenanceOrders(activeBots, orders, ctx);
 
     // ── TIER 3: FACILITY BUILD ──
     this.generateFacilityOrders(ctx, orders);
@@ -421,10 +421,10 @@ export class OrderEngine {
 
   // ── Tier 2: Maintenance ──
 
-  private generateMaintenanceOrders(bots: FleetBotInfo[], orders: FleetWorkOrder[]): void {
-    // Only refit if fleet has enough credits (avoid going broke on module purchases)
-    const REFIT_MIN_FLEET_CREDITS = 1_000_000;
-    const fleetCredits = bots.reduce((sum, b) => sum + b.credits, 0);
+  private generateMaintenanceOrders(bots: FleetBotInfo[], orders: FleetWorkOrder[], ctx: OrderContext): void {
+    // Only refit if faction treasury has enough credits (avoid going broke on module purchases)
+    const REFIT_MIN_FACTION_CREDITS = 1_000_000;
+    const factionCredits = ctx.cache.getFactionCredits();
 
     for (const bot of bots) {
       const role = parseBotRole(bot.role);
@@ -436,7 +436,7 @@ export class OrderEngine {
 
       // Simple check: if bot has fewer modules than expected and isn't already refitting
       // Only refit when fleet is wealthy enough
-      if (botModuleTypes.length < expectedModules.length && bot.routine !== "refit" && fleetCredits >= REFIT_MIN_FLEET_CREDITS) {
+      if (botModuleTypes.length < expectedModules.length && bot.routine !== "refit" && factionCredits >= REFIT_MIN_FACTION_CREDITS) {
         const missing = expectedModules.length - botModuleTypes.length;
         orders.push({
           type: "deliver", targetId: `refit:${bot.botId}`,

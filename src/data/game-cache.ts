@@ -796,6 +796,11 @@ export class GameCache {
     return this._factionStorage;
   }
 
+  /** Get cached faction treasury credits (from last storage fetch) */
+  getFactionCredits(): number {
+    return this.factionStorageCache?.credits ?? 0;
+  }
+
   /** Load persisted faction state (survives restarts) */
   async getPersistedFactionState(): Promise<any | null> {
     const cached = await this.getTimed("faction_state");
