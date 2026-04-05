@@ -2006,8 +2006,8 @@ export function calculateSellPrice(
     listPrice = bestEstimate > 0 ? Math.ceil(bestEstimate * 1.25 * demandBoost) : 0;
   }
 
-  // Floor: never sell below cost basis or 80% of catalog value
-  const catalogFloor = ctx.crafting.getItemBasePrice(itemId) * 0.8;
+  // Floor: never sell below cost basis or 95% of catalog value (competitive but profitable)
+  const catalogFloor = ctx.crafting.getItemBasePrice(itemId) * 0.95;
   const minPrice = Math.max(1, Math.ceil(costBasis * 0.90), Math.ceil(catalogFloor));
   if (listPrice < minPrice && minPrice > 0) {
     listPrice = minPrice;
