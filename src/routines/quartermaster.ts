@@ -58,14 +58,15 @@ const MODULE_MIN_PRICES: Record<string, number> = {
 
 // Strategic crafting materials — never sell from faction storage
 const PROTECTED_MATERIALS = new Set([
-  "energy_crystal", "phase_crystal", "quantum_fragments",
   "focused_crystal", "circuit_board", "titanium_alloy",
-  "steel_plate", "copper_wiring", "sensor_array",
-  "thruster_nozzle", "power_battery", "ceramite_plating",
+  "steel_plate", "copper_wiring",
+  "power_battery", "ceramite_plating",
   "silver_wiring", "premium_fuel_cell",
   "trade_cipher", "trade_crystal", "optical_fiber_bundle",
   "flex_polymer", "silicon_ore",
   "compressed_hydrogen", "liquid_hydrogen",
+  // phase_crystal, quantum_fragments: moved to CONSUMABLE_RESERVES (sell excess above reserve)
+  // sensor_array, thruster_nozzle: removed — these are high-value crafted goods for sale
 ]);
 
 // Items that look like ship modules (don't sell these from faction storage)
@@ -396,7 +397,10 @@ async function* manageFactionSales(
     // Consumable reserves — keep minimum stock, only sell excess
     const CONSUMABLE_RESERVES: Record<string, number> = {
       fuel_cell: 500, fuel_cell_premium: 50, repair_kit: 100,
-      purified_water: 500, // Bio facilities consume water each cycle (v0.257.0)
+      purified_water: 500,
+      phase_crystal: 200,      // Reserve for crafting, sell excess (NPC buys at 5150cr!)
+      quantum_fragments: 200,  // Reserve for crafting, sell excess (NPC buys at 465cr)
+      energy_crystal: 300,     // Reserve for fuel cells + circuit boards, sell excess
     };
     if (s.itemId in CONSUMABLE_RESERVES) {
       const reserve = CONSUMABLE_RESERVES[s.itemId];
