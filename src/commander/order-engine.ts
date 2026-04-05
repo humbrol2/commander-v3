@@ -48,7 +48,9 @@ const PRI = {
 /** Tier 1: Strategic — gates facility builds and high-value crafting */
 const STRATEGIC_ORES: Record<string, { minStock: number; reason: string; craftInto?: string; recipe?: string; canBuy?: boolean }> = {
   silicon_ore:    { minStock: 600, reason: "CRITICAL: optical fiber → Intel Terminal", craftInto: "optical_fiber_bundle", recipe: "spin_optical_fiber", canBuy: true },
-  energy_crystal: { minStock: 500, reason: "optical fiber + circuit boards + focused crystals", craftInto: "optical_fiber_bundle", recipe: "spin_optical_fiber" },
+  energy_crystal: { minStock: 500, reason: "optical fiber + circuit boards + fuel cells", craftInto: "optical_fiber_bundle", recipe: "spin_optical_fiber" },
+  palladium_ore:  { minStock: 200, reason: "superconductor (560cr) + sensor array (760cr)", craftInto: "superconductor", recipe: "create_superconductor" },
+  iridium_ore:    { minStock: 100, reason: "superconductor (560cr)", craftInto: "superconductor", recipe: "create_superconductor" },
 };
 
 /** Items to search for at other stations (bots should check markets for these) */

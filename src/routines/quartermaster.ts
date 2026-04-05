@@ -1985,13 +1985,16 @@ export function calculateSellPrice(
     // No buyer data — use competitor pricing (but only if reasonable vs cost)
     listPrice = Math.floor(cheapestElsewhere * demandBoost * (1 - undercutPct));
   } else {
-    // No market data — price at 125% of cost basis
-    listPrice = Math.ceil(costBasis * 1.25 * demandBoost);
+    // No market data — price at 125% of cost basis, or base catalog value
+    const catalogPrice = ctx.crafting.getItemBasePrice(itemId);
+    const bestEstimate = Math.max(costBasis, catalogPrice);
+    listPrice = bestEstimate > 0 ? Math.ceil(bestEstimate * 1.25 * demandBoost) : 0;
   }
 
-  // Floor: never sell below cost basis (break even minimum)
-  const minPrice = Math.max(1, Math.ceil(costBasis * 0.90));
-  if (listPrice < minPrice && costBasis > 0) {
+  // Floor: never sell below cost basis or 80% of catalog value
+  const catalogFloor = ctx.crafting.getItemBasePrice(itemId) * 0.8;
+  const minPrice = Math.max(1, Math.ceil(costBasis * 0.90), Math.ceil(catalogFloor));
+  if (listPrice < minPrice && minPrice > 0) {
     listPrice = minPrice;
   }
 
