@@ -644,7 +644,7 @@ export class OrderEngine {
         orders.push({
           type: "craft", targetId: "assemble_fuel_cells",
           description: `CRITICAL: craft fuel cells (${fuelCells}/${FUEL_CELL_RESERVE} reserve)`,
-          priority: PRI.FACILITY, reason: "fuel_cell_reserve",
+          priority: PRI.MAINTENANCE + 5, reason: "fuel_cell_reserve",
           quantity: canCraft,
         });
       } else {
