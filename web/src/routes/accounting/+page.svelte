@@ -83,9 +83,14 @@
 	const totalBotCredits = $derived($fleetStats?.totalCredits ?? 0);
 	const totalBalance = $derived(currentTreasury + totalBotCredits);
 
-	// Ending balance = current treasury. Starting = ending - net change in period.
+	// Filtered totals (from displayed entries, not API summary)
+	const filteredDebits = $derived(filteredEntries.reduce((s, e) => s + (e.credits != null && e.credits < 0 ? Math.abs(e.credits) : 0), 0));
+	const filteredCredits = $derived(filteredEntries.reduce((s, e) => s + (e.credits != null && e.credits > 0 ? e.credits : 0), 0));
+	const filteredNet = $derived(filteredCredits - filteredDebits);
+
+	// Ending balance = current treasury. Starting = ending - net change in filtered period.
 	const endingBalance = $derived(currentTreasury);
-	const startingBalance = $derived(endingBalance - summary.net);
+	const startingBalance = $derived(endingBalance - filteredNet);
 
 	const entriesWithBalance = $derived.by(() => {
 		if (ledgerMode !== "credits") return filteredEntries.map(e => ({ ...e, balance: null as number | null, debit: null as number | null, credit: null as number | null }));
@@ -179,11 +184,11 @@
 			</div>
 			<div class="card p-3">
 				<p class="text-[10px] text-chrome-silver uppercase tracking-wider">Debits</p>
-				<p class="text-sm font-bold mono text-claw-red mt-1">-{Math.abs(summary.totalExpense).toLocaleString()} cr</p>
+				<p class="text-sm font-bold mono text-claw-red mt-1">-{filteredDebits.toLocaleString()} cr</p>
 			</div>
 			<div class="card p-3">
 				<p class="text-[10px] text-chrome-silver uppercase tracking-wider">Credits</p>
-				<p class="text-sm font-bold mono text-bio-green mt-1">+{summary.totalIncome.toLocaleString()} cr</p>
+				<p class="text-sm font-bold mono text-bio-green mt-1">+{filteredCredits.toLocaleString()} cr</p>
 			</div>
 			<div class="card p-3">
 				<p class="text-[10px] text-chrome-silver uppercase tracking-wider">Period End</p>
@@ -307,11 +312,11 @@
 							</tr>
 						{/each}
 						{#if ledgerMode === "credits"}
-							<!-- Ending balance row -->
-							<tr class="bg-nebula-blue/10 border-t border-hull-grey/30">
-								<td class="py-2 pr-3 text-xs font-semibold text-star-white" colspan="3">Ending Balance</td>
-								<td class="py-2 pr-3 text-xs text-right mono font-semibold text-claw-red">{Math.abs(summary.totalExpense).toLocaleString()}</td>
-								<td class="py-2 pr-3 text-xs text-right mono font-semibold text-bio-green">{summary.totalIncome.toLocaleString()}</td>
+							<!-- Totals row -->
+							<tr class="bg-nebula-blue/10 border-t-2 border-hull-grey/40">
+								<td class="py-2 pr-3 text-xs font-semibold text-star-white" colspan="3">Totals</td>
+								<td class="py-2 pr-3 text-xs text-right mono font-semibold text-claw-red">{filteredDebits.toLocaleString()}</td>
+								<td class="py-2 pr-3 text-xs text-right mono font-semibold text-bio-green">{filteredCredits.toLocaleString()}</td>
 								<td class="py-2 pr-3 text-xs text-right mono font-semibold {endingBalance >= 0 ? 'text-star-white' : 'text-claw-red'}">{endingBalance.toLocaleString()}</td>
 								<td class="py-2"></td>
 							</tr>
