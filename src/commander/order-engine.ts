@@ -422,6 +422,10 @@ export class OrderEngine {
   // ── Tier 2: Maintenance ──
 
   private generateMaintenanceOrders(bots: FleetBotInfo[], orders: FleetWorkOrder[]): void {
+    // Only refit if fleet has enough credits (avoid going broke on module purchases)
+    const REFIT_MIN_FLEET_CREDITS = 1_000_000;
+    const fleetCredits = bots.reduce((sum, b) => sum + b.credits, 0);
+
     for (const bot of bots) {
       const role = parseBotRole(bot.role);
       if (!role) continue;
@@ -431,7 +435,8 @@ export class OrderEngine {
       const botModuleTypes = bot.moduleIds ?? [];
 
       // Simple check: if bot has fewer modules than expected and isn't already refitting
-      if (botModuleTypes.length < expectedModules.length && bot.routine !== "refit") {
+      // Only refit when fleet is wealthy enough
+      if (botModuleTypes.length < expectedModules.length && bot.routine !== "refit" && fleetCredits >= REFIT_MIN_FLEET_CREDITS) {
         const missing = expectedModules.length - botModuleTypes.length;
         orders.push({
           type: "deliver", targetId: `refit:${bot.botId}`,
