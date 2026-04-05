@@ -353,7 +353,7 @@ export class OrderEngine {
       // Stranded: fuel critical and not docked
       if (bot.fuelPct < 15 && !bot.docked) {
         orders.push({
-          type: "deliver", targetId: "return_home",
+          type: "deliver", targetId: `return_home:${bot.botId}`,
           description: `EMERGENCY: ${bot.username} fuel critical (${bot.fuelPct}%)`,
           priority: PRI.EMERGENCY, reason: "fuel_critical",
           routineHint: "return_home",
@@ -371,7 +371,7 @@ export class OrderEngine {
       // Damaged: hull critical
       if (bot.hullPct < 30 && !bot.docked) {
         orders.push({
-          type: "deliver", targetId: "return_home",
+          type: "deliver", targetId: `return_home:${bot.botId}`,
           description: `EMERGENCY: ${bot.username} hull critical (${bot.hullPct}%)`,
           priority: PRI.EMERGENCY - 1, reason: "hull_critical",
           routineHint: "return_home",
@@ -380,17 +380,17 @@ export class OrderEngine {
       // Low credits: below minimum — return home to withdraw
       if (bot.credits < (this.config.minBotCredits || 0) && this.config.minBotCredits > 0) {
         orders.push({
-          type: "deliver", targetId: "return_home",
+          type: "deliver", targetId: `return_home:${bot.botId}`,
           description: `${bot.username} low credits (${bot.credits}/${this.config.minBotCredits})`,
           priority: PRI.EMERGENCY - 5, reason: "low_credits",
           routineHint: "return_home",
         });
       }
 
-      // Cargo full: return home to deposit
+      // Cargo full: return home to deposit (bot-specific order)
       if (bot.cargoPct >= 90 && !bot.docked) {
         orders.push({
-          type: "deliver", targetId: "return_home",
+          type: "deliver", targetId: `return_home:${bot.botId}`,
           description: `${bot.username} cargo full (${Math.round(bot.cargoPct)}%) — return to deposit`,
           priority: PRI.MAINTENANCE, reason: "cargo_full",
           routineHint: "return_home",
