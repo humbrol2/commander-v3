@@ -320,7 +320,7 @@ export class OrderEngine {
     this.generateMaintenanceOrders(activeBots, orders, ctx);
 
     // ── TIER 3: FACILITY BUILD ──
-    this.generateFacilityOrders(ctx, orders);
+    this.generateFacilityOrders(ctx, orders, activeBots);
 
     // ── TIER 4: SUPPLY CHAIN ──
     this.generateSupplyOrders(activeBots, ctx, orders);
@@ -454,7 +454,8 @@ export class OrderEngine {
 
   // ── Tier 3: Facility Build ──
 
-  private generateFacilityOrders(ctx: OrderContext, orders: FleetWorkOrder[]): void {
+  private generateFacilityOrders(ctx: OrderContext, orders: FleetWorkOrder[], bots: FleetBotInfo[]): void {
+    const crafterSlots = Math.max(1, this.countAvailableCrafters(bots));
     // Facility material needs (from getFacilityMaterialNeeds)
     for (const [itemId, needed] of this.facilityMaterialNeeds) {
       const have = this.factionInventory.get(itemId) ?? 0;
@@ -483,7 +484,8 @@ export class OrderEngine {
             type: "craft", targetId: recipe.id,
             description: `Craft ${deficit} ${itemId} for facility build`,
             priority: PRI.FACILITY, reason: "facility_material",
-            quantity: deficit,
+            quantity: Math.min(deficit, 10), // Cap batch — small ships can't hold full deficit
+            maxConcurrent: crafterSlots,
           });
         }
       }
@@ -690,7 +692,7 @@ export class OrderEngine {
       recipe: string; outputItem: string; description: string; value: number; priority: number;
       inputs: Array<{ id: string; qty: number }>;
     }> = [
-      { recipe: "build_power_cell", outputItem: "power_cell", description: "Power Cell", value: 2000, priority: PRI.CRAFT + 8,
+      { recipe: "build_power_cell", outputItem: "power_cell", description: "Power Cell", value: 2000, priority: PRI.FACILITY + 1,
         inputs: [{ id: "circuit_board", qty: 2 }, { id: "energy_crystal", qty: 3 }, { id: "copper_wiring", qty: 2 }] },
       { recipe: "create_superconductor", outputItem: "superconductor", description: "Superconductor", value: 560, priority: PRI.CRAFT + 6,
         inputs: [{ id: "palladium_ore", qty: 2 }, { id: "iridium_ore", qty: 1 }, { id: "copper_wiring", qty: 3 }] },
