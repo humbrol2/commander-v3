@@ -377,15 +377,20 @@ export class OrderEngine {
           routineHint: "return_home",
         });
       }
-      // Low credits: below minimum — return home to withdraw
-      // Skip for traders/crafters — they earn credits by working, not by withdrawing
+      // Low credits: return home to withdraw from faction treasury
+      // Earner roles (trader/crafter/QM) skip unless critically low (<5000)
       const earnerRoles = new Set(["trader", "crafter", "quartermaster"]);
       const botRole = bot.role ?? "";
-      if (bot.credits < (this.config.minBotCredits || 0) && this.config.minBotCredits > 0 && !earnerRoles.has(botRole)) {
+      const isEarner = earnerRoles.has(botRole);
+      const criticalThreshold = 5000;
+      const normalThreshold = this.config.minBotCredits || 0;
+      const belowCritical = bot.credits < criticalThreshold;
+      const belowNormal = bot.credits < normalThreshold && normalThreshold > 0;
+      if (belowCritical || (!isEarner && belowNormal)) {
         orders.push({
           type: "deliver", targetId: `return_home:${bot.botId}`,
-          description: `${bot.username} low credits (${bot.credits}/${this.config.minBotCredits})`,
-          priority: PRI.EMERGENCY - 5, reason: "low_credits",
+          description: `${bot.username} ${belowCritical ? "CRITICAL" : "low"} credits (${bot.credits}cr)`,
+          priority: belowCritical ? PRI.EMERGENCY - 3 : PRI.EMERGENCY - 5, reason: "low_credits",
           routineHint: "return_home",
         });
       }
