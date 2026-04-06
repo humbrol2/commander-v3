@@ -211,8 +211,8 @@ export async function* quartermaster(ctx: BotContext): AsyncGenerator<RoutineYie
     ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase);
   const moduleTarget = getParam(ctx, "moduleTarget", 4);
   const undercutPct = getParam(ctx, "undercutPct", 0.05);
-  const buyOrderBudgetPct = getParam(ctx, "buyOrderBudgetPct", 0.30);
-  const maxOrderAge = getParam(ctx, "maxOrderAge", 7_200_000); // 2 hours
+  const buyOrderBudgetPct = getParam(ctx, "buyOrderBudgetPct", 0.10);
+  const maxOrderAge = getParam(ctx, "maxOrderAge", 3_600_000); // 1 hour (was 2h)
 
   if (!homeBase) {
     yield "no faction home base configured";
@@ -589,14 +589,15 @@ async function* manageFactionSales(
     }
   }
 
-  // ── Cancel stale sell orders (>30min unfilled — was 2hr, too conservative) ──
-  // Shorter timeout frees listing slots for new items faster
+  // ── Cancel stale sell orders (>24h unfilled) ──
+  // Let orders sit — listing fee already paid, cancelling wastes it
+  const SELL_ORDER_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
   let cancelActions = 0;
   for (const [orderId, tracked] of trackedSellOrders) {
     if (ctx.shouldStop || cancelActions >= 3) break;
 
     const age = now - tracked.placedAt;
-    if (age < 1_800_000) continue; // < 30 min — keep trying
+    if (age < SELL_ORDER_MAX_AGE) continue; // Let orders work for 24h
 
     try {
       await ctx.api.cancelOrder(orderId);
@@ -604,7 +605,7 @@ async function* manageFactionSales(
       listedItems.delete(tracked.itemId);
       trackedSellOrders.delete(orderId);
       cancelActions++;
-      yield `cancelled stale sell order: ${tracked.quantity}x ${tracked.itemName} @ ${tracked.priceEach}cr (>30min unfilled)`;
+      yield `cancelled stale sell order: ${tracked.quantity}x ${tracked.itemName} @ ${tracked.priceEach}cr (>${Math.round(age / 3_600_000)}h unfilled)`;
     } catch (err) {
       yield `cancel sell order failed: ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -658,7 +659,8 @@ async function* manageFactionSales(
     const itemSize = ctx.cargo.getItemSize(ctx.ship, item.itemId);
     const maxBySpace = Math.floor(freeSpace / Math.max(1, itemSize));
     // Bulk sell: up to 200 for cheap items, 50 for expensive ones
-    const maxSellQty = listPrice <= 10 ? 200 : 50;
+    // Small batches — relist when sold, avoids tying up inventory + listing fees
+    const maxSellQty = listPrice <= 10 ? 100 : listPrice <= 100 ? 25 : 10;
     let listQty = Math.min(item.quantity, maxSellQty, maxBySpace);
     // Heavy items that won't fit in cargo — list directly from faction storage
     if (listQty <= 0) {

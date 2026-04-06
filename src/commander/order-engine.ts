@@ -476,17 +476,22 @@ export class OrderEngine {
         const FACILITY_ONLY_ITEMS = new Set(["trade_cipher"]);
         if (FACILITY_ONLY_ITEMS.has(itemId)) continue;
 
-        // Craftable material — check if we have a recipe
+        // Craftable material — check if we have a recipe AND inputs in storage
         const recipes = ctx.crafting.findRecipesForItem(itemId);
         const recipe = recipes.length > 0 ? recipes[0] : null;
         if (recipe) {
-          orders.push({
-            type: "craft", targetId: recipe.id,
-            description: `Craft ${deficit} ${itemId} for facility build`,
-            priority: PRI.FACILITY, reason: "facility_material",
-            quantity: Math.min(deficit, 10), // Cap batch — small ships can't hold full deficit
-            maxConcurrent: crafterSlots,
-          });
+          const hasInputs = recipe.ingredients.every((inp: { itemId: string; quantity: number }) =>
+            (this.factionInventory.get(inp.itemId) ?? 0) >= inp.quantity
+          );
+          if (hasInputs) {
+            orders.push({
+              type: "craft", targetId: recipe.id,
+              description: `Craft ${deficit} ${itemId} for facility build`,
+              priority: PRI.FACILITY, reason: "facility_material",
+              quantity: Math.min(deficit, 10),
+              maxConcurrent: crafterSlots,
+            });
+          }
         }
       }
     }
@@ -1121,8 +1126,13 @@ export class OrderEngine {
       // Get bot IDs for this role to create bot-specific fallback orders
       const roleBotIds = bots.filter(b => (b.role ?? "ore_miner") === role).map(b => b.botId);
 
+      // Equipment requirement per role
+      const ROLE_MODULE: Record<string, string> = {
+        ore_miner: "mining_laser", crystal_miner: "mining_laser",
+        gas_harvester: "gas_harvester", ice_harvester: "ice_harvester",
+      };
+
       for (let i = 0; i < needed; i++) {
-        // Assign fallback to specific bot if possible (prevents cross-role claiming)
         const targetBotId = roleBotIds[i % roleBotIds.length];
         orders.push({
           type: routine === "miner" || routine === "harvester" ? "mine" : "explore",
@@ -1131,6 +1141,7 @@ export class OrderEngine {
           priority: PRI.FALLBACK,
           reason: "coverage_fallback",
           routineHint: routine as RoutineName,
+          requiredModule: ROLE_MODULE[role],
         });
       }
     }
