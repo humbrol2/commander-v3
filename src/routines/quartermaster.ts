@@ -267,6 +267,22 @@ export async function* quartermaster(ctx: BotContext): AsyncGenerator<RoutineYie
     }
 
     // Scan local market
+    // ── Fund treasury if low — QM needs credits for listing fees ──
+    try {
+      const factionData = await ctx.api.viewFactionStorageFull();
+      const treasuryBalance = factionData.credits;
+      if (treasuryBalance < 10_000 && ctx.player.credits > 20_000) {
+        const deposit = Math.min(ctx.player.credits - 10_000, 50_000);
+        if (deposit > 0) {
+          await ctx.api.factionDepositCredits(deposit);
+          // Exclude from revenue tracking (internal transfer)
+          await ctx.refreshState();
+          yield `funded treasury: ${deposit}cr (was ${treasuryBalance}cr)`;
+          ctx.logger.logLedger?.({ type: "credit_deposit", botId: ctx.botId, credits: -deposit, details: `QM funded treasury (was ${treasuryBalance}cr)` }).catch(() => {});
+        }
+      }
+    } catch { /* best effort */ }
+
     let market: MarketOrder[] = [];
     try {
       market = await ctx.api.viewMarket();
