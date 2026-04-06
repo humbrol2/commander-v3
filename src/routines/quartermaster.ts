@@ -1554,26 +1554,9 @@ async function* reviewStaleSellOrders(
         continue;
       }
 
-      // Reprice if market price shifted significantly (>30%) — but never below catalog floor
-      const priceInfo = priceIndex.get(itemId);
-      if (priceInfo && priceEach > 0) {
-        const marketPrice = priceInfo.medianSell > 0 ? priceInfo.medianSell : 0;
-        if (marketPrice > 0) {
-          const priceDiff = Math.abs(marketPrice - priceEach) / priceEach;
-          if (priceDiff > 0.3) {
-            const catalogBase = ctx.crafting.getItemBasePrice(itemId);
-            const floor = Math.max(1, Math.ceil(catalogBase * 0.90)); // Never below 90% catalog
-            const newPrice = Math.max(floor, Math.round(marketPrice * 0.95));
-            if (newPrice !== priceEach) {
-              try {
-                await ctx.api.modifyOrder(orderId, newPrice);
-                actions++;
-                yield `repriced sell order: ${itemId} ${priceEach}cr → ${newPrice}cr (market shifted ${Math.round(priceDiff * 100)}%)`;
-              } catch { /* modify may fail */ }
-            }
-          }
-        }
-      }
+      // Don't reprice — listing fee already paid, let orders sit for 24h.
+      // Repricing cancels the old order (losing the fee) and creates a new one (paying again).
+      // Only cancel truly stale orders (>24h) via STALE_AGE_MS check above.
     }
 
     // Also check faction sell orders
