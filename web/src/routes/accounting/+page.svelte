@@ -28,7 +28,7 @@
 	let ledgerMode = $state<"all" | "credits" | "items">("credits");
 
 	// Only count realized revenue/costs — not pending orders
-	const CREDIT_TYPES = new Set(["credit_deposit", "credit_withdraw", "npc_sell", "npc_buy", "sell_order_fill", "buy_order_fill", "fuel_purchase", "module_purchase", "insurance", "tax"]);
+	const CREDIT_TYPES = new Set(["credit_deposit", "credit_withdraw", "npc_sell", "npc_buy", "sell_order_fill", "buy_order_fill", "buy_order_create", "fuel_purchase", "module_purchase", "insurance", "tax"]);
 	// Pending orders shown separately (informational, not counted in balance)
 	const PENDING_TYPES = new Set(["sell_order_create", "buy_order_create"]);
 	const ITEM_TYPES = new Set(["item_deposit", "item_withdraw", "craft"]);
