@@ -266,7 +266,7 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
 
   // ── Faction supply chain mode (hybrid: faction sell + optional arbitrage) ──
   if (sellFromFaction) {
-    yield* factionSellLoop(ctx, maxRoundTrips, blacklistedItems);
+    yield* factionSellLoop(ctx, maxRoundTrips, blacklistedItems, item || undefined, sellStation || undefined);
     // Hybrid: attempt 1 arbitrage trip after faction sell if insights exist
     if (enableArbitrage && !ctx.shouldStop && ctx.cargo.freeSpace(ctx.ship) > 0) {
       yield "faction sell complete — checking arbitrage opportunities";
@@ -1409,6 +1409,8 @@ async function* factionSellLoop(
   ctx: BotContext,
   maxTrips: number,
   blacklistedItems: Set<string> = new Set(),
+  targetItem?: string,
+  targetStation?: string,
 ): AsyncGenerator<RoutineYield, void, void> {
   let tripCount = 0;
   let navFailures = 0;
@@ -1586,6 +1588,25 @@ async function* factionSellLoop(
     if (stationBids.length === 0) {
       yield "no known buyers — will try sell orders at home station";
       // Fall through: withdraw goods, skip station loop, sell order fallback handles listing
+    }
+
+    // If work order specifies a target item, prioritize withdrawing that
+    if (targetItem && targetStation) {
+      const targetStock = nonOreStorage.find(s => s.itemId === targetItem);
+      if (targetStock && targetStock.quantity > 0) {
+        const qty = Math.min(targetStock.quantity, ctx.ship.cargoCapacity);
+        const targetSystemId = ctx.galaxy.getSystemForBase(targetStation);
+        const jumps = targetSystemId ? ctx.galaxy.getDistance(ctx.player.currentSystem, targetSystemId) : -1;
+        if (jumps >= 0) {
+          stationBids.unshift({
+            stationId: targetStation,
+            revenue: qty * (ctx.crafting.getItemBasePrice(targetItem) || 100),
+            jumps,
+            items: [{ itemId: targetItem, name: ctx.crafting.getItemName(targetItem), qty, price: ctx.crafting.getItemBasePrice(targetItem) || 100 }],
+          });
+          yield `trade route: ${qty}x ${targetItem.replace(/_/g, " ")} → ${targetStation.replace(/_/g, " ")} (${jumps} jumps)`;
+        }
+      }
     }
 
     // Use the top bid's items as what to withdraw (only items with confirmed buyers)
