@@ -522,14 +522,14 @@ export class OrderEngine {
       });
     }
 
-    // Search other stations for trade ciphers (needed for Trade Ledger)
+    // Search other stations for facility materials (lower priority than trade routes)
     for (const search of SEARCH_ITEMS) {
       const have = this.factionInventory.get(search.itemId) ?? 0;
       if (have >= search.quantity) continue;
       orders.push({
         type: "trade", targetId: search.itemId,
         description: `SEARCH: find ${search.itemId.replace(/_/g, " ")} at other stations (${search.reason})`,
-        priority: PRI.SUPPLY_HIGH, reason: `search: ${search.reason}`,
+        priority: PRI.STANDING, reason: `search: ${search.reason}`,
         quantity: search.quantity - have,
       });
     }
