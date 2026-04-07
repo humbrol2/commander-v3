@@ -19,8 +19,8 @@ import {
 // Re-export for routines that import from helpers
 export { MAX_MATERIAL_BUY_PRICE, INSIGHT_GATE_PRICE };
 
-/** Items that should never be sold or deposited — kept as emergency reserves */
-const PROTECTED_ITEMS = new Set(["fuel_cell"]);
+/** Items protected from cargo disposal — empty now, CONSUMABLE_RESERVES handles stockpile */
+const PROTECTED_ITEMS = new Set<string>();
 
 /** Check if an item is protected from selling/depositing */
 export function isProtectedItem(itemId: string): boolean {
