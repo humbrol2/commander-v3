@@ -958,6 +958,20 @@ export class OrderEngine {
   // ── Tier 9: Intelligence ──
 
   private generateIntelOrders(bots: FleetBotInfo[], ctx: OrderContext, orders: FleetWorkOrder[]): void {
+    // Standing patrol orders — two routes for continuous market intel
+    orders.push({
+      type: "scan", targetId: "patrol_route_a",
+      description: "Patrol route A: core trade hubs (sol, nova_terra, sirius, nexus_prime, haven)",
+      priority: PRI.INTEL + 5, reason: "trade_hub_patrol",
+      routineHint: "scout",
+    });
+    orders.push({
+      type: "scan", targetId: "patrol_route_b",
+      description: "Patrol route B: frontier trade hubs (deep_range, gold_run, market_prime, cargo_lanes, alpha_centauri)",
+      priority: PRI.INTEL + 5, reason: "trade_hub_patrol",
+      routineHint: "scout",
+    });
+
     // Scan stale stations
     if (ctx.cache) {
       const allFreshness = ctx.cache.getAllMarketFreshness?.(1_800_000) ?? []; // 30min TTL

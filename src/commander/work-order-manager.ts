@@ -344,8 +344,11 @@ export class WorkOrderManager {
         if (order.quantity) params.count = order.quantity;
         break;
       case "scout":
-        // Scout expects: targetSystem or targetSystems
+        // Scout expects: targetSystem, targetSystems, or scoutRoute
         if (order.stationId) params.targetSystem = order.stationId;
+        // Patrol route assignment
+        if (order.targetId === "patrol_route_a") params.scoutRoute = "A";
+        else if (order.targetId === "patrol_route_b") params.scoutRoute = "B";
         break;
     }
 

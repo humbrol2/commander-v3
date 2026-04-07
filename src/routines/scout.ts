@@ -39,10 +39,17 @@ import {
  * Seed trade hub systems — always included in patrol.
  * These are known high-traffic systems that traders rely on.
  */
-const SEED_TRADE_HUBS = [
-  "sol", "nova_terra", "sirius", "procyon", "alpha_centauri", "nexus_prime",
-  "haven", "market_prime",
+// Split into two routes so each completes in <15 min (30min refresh target)
+// Route A: core hubs — assigned to first scout
+// Route B: frontier hubs — assigned to second scout (if available)
+const TRADE_HUBS_A = [
+  "sol", "nova_terra", "sirius", "nexus_prime", "haven",
 ];
+const TRADE_HUBS_B = [
+  "deep_range", "gold_run", "market_prime", "cargo_lanes", "alpha_centauri",
+];
+// Combined for single-scout fallback
+const SEED_TRADE_HUBS = [...TRADE_HUBS_A, ...TRADE_HUBS_B];
 
 /** Minimum number of market orders for a station to be considered trade-relevant */
 const MIN_ORDERS_FOR_RELEVANCE = 5;
@@ -248,20 +255,29 @@ export async function* scout(ctx: BotContext): AsyncGenerator<RoutineYield, void
 
   // ── Check for scan work orders ──
   let activeWorkOrder: string | null = null;
+  let orderRoute = "";
+  let orderTarget = "";
   try {
     const { claimWorkOrder, startWorkOrder } = await import("./work-order-helper");
     const order = await claimWorkOrder(ctx, ["scan"]);
     if (order) {
       activeWorkOrder = order.id;
       startWorkOrder(ctx, order.id);
+      // Check if this is a patrol route order
+      if (order.targetId === "patrol_route_a") orderRoute = "A";
+      else if (order.targetId === "patrol_route_b") orderRoute = "B";
+      else if (order.stationId) orderTarget = order.stationId;
       yield `work order: scan ${order.targetId?.replace(/_/g, " ") ?? "market"} (priority ${order.priority})`;
     }
   } catch { /* work orders optional */ }
 
-  // Build system visit list — params override, otherwise build dynamically
+  // Build system visit list — work order route > params > dynamic
   const targetSystemsParam = getParam<string[]>(ctx, "targetSystems", []);
-  const singleTarget = getParam(ctx, "targetSystem", "");
+  const singleTarget = orderTarget || getParam(ctx, "targetSystem", "");
   let useStaticRoute = false;
+
+  // Scout route selection — work order route takes priority
+  const scoutRoute = orderRoute || getParam(ctx, "scoutRoute", "");
 
   let systemsToVisit: string[];
   if (targetSystemsParam.length > 0) {
@@ -273,6 +289,14 @@ export async function* scout(ctx: BotContext): AsyncGenerator<RoutineYield, void
       if (!systemsToVisit.includes(hub)) systemsToVisit.push(hub);
     }
     useStaticRoute = true;
+  } else if (scoutRoute === "A") {
+    systemsToVisit = [...TRADE_HUBS_A];
+    useStaticRoute = true;
+    yield `assigned route A: core hubs (${TRADE_HUBS_A.length} systems)`;
+  } else if (scoutRoute === "B") {
+    systemsToVisit = [...TRADE_HUBS_B];
+    useStaticRoute = true;
+    yield `assigned route B: frontier hubs (${TRADE_HUBS_B.length} systems)`;
   } else {
     // Dynamic route — built fresh each loop from cached market data
     systemsToVisit = buildPatrolRoute(ctx, staleTtlMs, maxSystems);
