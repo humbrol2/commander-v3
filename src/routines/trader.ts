@@ -136,6 +136,10 @@ function findAlternateBuyer(ctx: BotContext, failedStation: string): string | nu
 }
 
 export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, void, void> {
+  // Ensure trader has operating credits before doing anything
+  const minCr = await ensureMinCredits(ctx);
+  if (minCr.message) yield minCr.message;
+
   let buyStation = "";
   let sellStation = "";
   let item = "";
