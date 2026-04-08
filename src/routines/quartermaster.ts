@@ -1643,9 +1643,12 @@ async function* manageFactionFacilities(
     return;
   }
 
+  yield `facility check: treasury ${factionCredits.toLocaleString()}cr, ${facilities.length} existing (${[...existingTypes].join(", ") || "none"})`;
+
   for (const facilityType of ESSENTIAL_FACILITIES) {
     if (ctx.shouldStop) return;
     if (existingTypes.has(facilityType)) continue;
+    yield `attempting to build: ${facilityType}`;
 
     // Check if we can afford it (query facility types for cost + materials)
     let buildCost = 0;
