@@ -490,8 +490,9 @@ export async function refuelIfNeeded(ctx: BotContext, threshold = FUEL_REFUEL_TH
     }
     if (ctx.fuel.getPercentage(ctx.ship) >= threshold) return true;
 
-    // Try withdrawing fuel cells from faction storage if still low
-    if (ctx.fuel.getPercentage(ctx.ship) < threshold) {
+    // Try withdrawing fuel cells from faction storage if still low (only at faction station)
+    const fStnFuel = ctx.fleetConfig.factionStorageStation;
+    if (ctx.fuel.getPercentage(ctx.ship) < threshold && (!fStnFuel || ctx.player.dockedAtBase === fStnFuel)) {
       if (ctx.settings.factionStorage || ctx.fleetConfig.defaultStorageMode === "faction_deposit") {
         try {
           await withdrawFromFaction(ctx, "fuel_cell", 5);
@@ -715,8 +716,10 @@ export async function ensureFuelSafety(ctx: BotContext): Promise<void> {
     if (needCells > 0 && ctx.cargo.hasSpace(ctx.ship, needCells, fuelSize)) {
       let gotFromFaction = false;
 
-      // Try faction storage first (free, no credits needed)
-      if (ctx.settings.factionStorage || ctx.fleetConfig.defaultStorageMode === "faction_deposit") {
+      // Try faction storage first (free, no credits needed) — only at faction station
+      const fStnFC = ctx.fleetConfig.factionStorageStation;
+      if ((ctx.settings.factionStorage || ctx.fleetConfig.defaultStorageMode === "faction_deposit")
+          && (!fStnFC || ctx.player.dockedAtBase === fStnFC)) {
         try {
           await withdrawFromFaction(ctx, "fuel_cell", needCells);
           await ctx.refreshState();

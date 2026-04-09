@@ -82,7 +82,10 @@ export async function* explorer(ctx: BotContext): AsyncGenerator<RoutineYield, v
     const targetCells = 5; // Carry 5 fuel cells (100 fuel restore)
     if (fuelCells < targetCells) {
       const needed = targetCells - fuelCells;
+      const fStnExp = ctx.fleetConfig.factionStorageStation;
+      const atFactionStation = !fStnExp || ctx.player.dockedAtBase === fStnExp;
       try {
+        if (!atFactionStation) throw new Error("not at faction station");
         // Try faction storage first
         const { withdrawFromFaction } = await import("./helpers");
         await withdrawFromFaction(ctx, "fuel_cell", needed);
