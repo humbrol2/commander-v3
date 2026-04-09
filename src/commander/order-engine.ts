@@ -727,15 +727,9 @@ export class OrderEngine {
         inputs: [{ id: "circuit_board", qty: 3 }, { id: "focused_crystal", qty: 1 }, { id: "palladium_ore", qty: 2 }] },
       { recipe: "hull_plating", outputItem: "hull_plating", description: "Hull Plating", value: 410, priority: PRI.CRAFT + 4,
         inputs: [{ id: "steel_plate", qty: 4 }, { id: "titanium_alloy", qty: 1 }] },
-      // v0.250+ shipyard modules — NPC demand from ship construction
-      { recipe: "mining_laser_iii", outputItem: "mining_laser_iii", description: "Mining Laser III", value: 3000, priority: PRI.CRAFT + 8,
-        inputs: [{ id: "steel_plate", qty: 3 }, { id: "circuit_board", qty: 2 }, { id: "focused_crystal", qty: 1 }] },
-      { recipe: "mining_laser_iv", outputItem: "mining_laser_iv", description: "Mining Laser IV", value: 6000, priority: PRI.CRAFT + 9,
-        inputs: [{ id: "titanium_alloy", qty: 3 }, { id: "circuit_board", qty: 3 }, { id: "focused_crystal", qty: 2 }] },
-      { recipe: "cargo_expander_ii", outputItem: "cargo_expander_ii", description: "Cargo Expander II", value: 5000, priority: PRI.CRAFT + 8,
-        inputs: [{ id: "steel_plate", qty: 5 }, { id: "titanium_alloy", qty: 2 }, { id: "circuit_board", qty: 1 }] },
-      { recipe: "shield_booster_iv", outputItem: "shield_booster_iv", description: "Shield Booster IV", value: 8000, priority: PRI.CRAFT + 9,
-        inputs: [{ id: "titanium_alloy", qty: 4 }, { id: "superconductor", qty: 2 }, { id: "circuit_board", qty: 2 }] },
+      // v0.250+ module recipes — only include if we can verify inputs from loaded recipes
+      // Mining Laser III/IV need lower-tier lasers as input (tiered upgrade), not raw materials
+      // Cargo Expander II/III have confirmed demand (85/72 wanted at stations)
     ];
 
     for (const hv of HIGH_VALUE_RECIPES) {
@@ -754,6 +748,35 @@ export class OrderEngine {
             maxConcurrent: crafterSlots,
           });
         }
+      }
+    }
+
+    // ── 2b. DYNAMIC MODULE CRAFTING — discover craftable modules with available materials ──
+    // v0.250+: shipyards buy crafted modules for construction — find recipes we can actually make
+    const MODULE_PATTERNS = ["mining_laser", "cargo_expander", "shield_booster", "gas_harvester", "ice_harvester", "survey_scanner"];
+    for (const pattern of MODULE_PATTERNS) {
+      // Find all recipes that produce modules matching this pattern
+      for (const recipe of ctx.crafting.getAvailableRecipes()) {
+        if (!recipe.outputItem.includes(pattern)) continue;
+        const outputStock = this.factionInventory.get(recipe.outputItem) ?? 0;
+        if (outputStock >= 20) continue; // Don't overproduce modules
+        // Check if ALL ingredients are in faction storage
+        const hasAll = recipe.ingredients.every(
+          (ing: { itemId: string; quantity: number }) => (this.factionInventory.get(ing.itemId) ?? 0) >= ing.quantity
+        );
+        if (!hasAll) continue;
+        const maxBatch = Math.min(5, ...recipe.ingredients.map(
+          (ing: { itemId: string; quantity: number }) => Math.floor((this.factionInventory.get(ing.itemId) ?? 0) / ing.quantity)
+        ));
+        if (maxBatch <= 0) continue;
+        orders.push({
+          type: "craft", targetId: recipe.outputItem,
+          description: `Craft ${recipe.name ?? recipe.outputItem} (module, ${maxBatch} possible)`,
+          priority: PRI.CRAFT + 7, reason: `module_craft: ${recipe.outputItem}`,
+          quantity: maxBatch,
+          maxConcurrent: Math.min(crafterSlots, 2),
+        });
+        break; // One recipe per module type
       }
     }
 
