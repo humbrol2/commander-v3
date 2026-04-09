@@ -625,8 +625,11 @@ async function* manageFactionSales(
   for (const item of sellable) {
     if (ctx.shouldStop) return;
 
-    // Skip if we already have a sell order for this item
-    if (alreadyListed.has(item.itemId) || listedItems.has(item.itemId)) continue;
+    // Skip if we already have a sell order for this item (unless large module surplus)
+    if (alreadyListed.has(item.itemId) || listedItems.has(item.itemId)) {
+      if (!isModuleItem(item.itemId) || item.quantity <= 10) continue;
+      // Large module surplus — list additional batch alongside existing order
+    }
     // Skip items known to be too heavy for our cargo
     if (oversizedItems.has(item.itemId)) continue;
 

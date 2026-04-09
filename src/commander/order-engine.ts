@@ -753,19 +753,22 @@ export class OrderEngine {
 
     // ── 2b. DYNAMIC MODULE CRAFTING — discover craftable modules with available materials ──
     // v0.250+: shipyards buy crafted modules for construction — find recipes we can actually make
-    const MODULE_PATTERNS = ["mining_laser", "cargo_expander", "shield_booster", "gas_harvester", "ice_harvester", "survey_scanner"];
-    for (const pattern of MODULE_PATTERNS) {
-      // Find all recipes that produce modules matching this pattern
+    const MOD_CRAFT_PATTERNS = ["mining_laser", "cargo_expander", "shield_booster", "gas_harvester", "ice_harvester", "survey_scanner"];
+    for (const pattern of MOD_CRAFT_PATTERNS) {
+      // Count ALL modules of this type in storage (any tier)
+      let totalPatternStock = 0;
+      for (const [itemId, qty] of this.factionInventory) {
+        if (itemId.includes(pattern)) totalPatternStock += qty;
+      }
+      if (totalPatternStock >= 10) continue; // Enough of this module type across all tiers
+
       for (const recipe of ctx.crafting.getAvailableRecipes()) {
         if (!recipe.outputItem.includes(pattern)) continue;
-        const outputStock = this.factionInventory.get(recipe.outputItem) ?? 0;
-        if (outputStock >= 20) continue; // Don't overproduce modules
-        // Check if ALL ingredients are in faction storage
         const hasAll = recipe.ingredients.every(
           (ing: { itemId: string; quantity: number }) => (this.factionInventory.get(ing.itemId) ?? 0) >= ing.quantity
         );
         if (!hasAll) continue;
-        const maxBatch = Math.min(5, ...recipe.ingredients.map(
+        const maxBatch = Math.min(3, ...recipe.ingredients.map(
           (ing: { itemId: string; quantity: number }) => Math.floor((this.factionInventory.get(ing.itemId) ?? 0) / ing.quantity)
         ));
         if (maxBatch <= 0) continue;
@@ -774,9 +777,9 @@ export class OrderEngine {
           description: `Craft ${recipe.name ?? recipe.outputItem} (module, ${maxBatch} possible)`,
           priority: PRI.CRAFT + 7, reason: `module_craft: ${recipe.outputItem}`,
           quantity: maxBatch,
-          maxConcurrent: Math.min(crafterSlots, 2),
+          maxConcurrent: 1, // Only 1 crafter on modules at a time
         });
-        break; // One recipe per module type
+        break;
       }
     }
 
