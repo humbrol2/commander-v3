@@ -448,8 +448,8 @@ async function* manageFactionSales(
     // Reserves must cover: strategic minStock + crafting pipeline buffer
     // Only sell quantities ABOVE these thresholds
     const CONSUMABLE_RESERVES: Record<string, number> = {
-      fuel_cell: 500, fuel_cell_premium: 50, repair_kit: 100,
-      purified_water: 500,
+      fuel_cell: 5000, fuel_cell_premium: 50, repair_kit: 100,
+      purified_water: 100,  // Bio facilities consume it (v0.257.0) — sell the surplus
       phase_crystal: 1000,      // Crafting (focused crystals) + strategic reserve
       quantum_fragments: 1000,  // Rare material, keep substantial buffer
       energy_crystal: 1000,     // Fuel cells (1/batch) + circuit boards (1/batch) + optical fiber
@@ -667,9 +667,9 @@ async function* manageFactionSales(
     if (freeSpace <= 0) break; // Cargo full — stop trying
     const itemSize = ctx.cargo.getItemSize(ctx.ship, item.itemId);
     const maxBySpace = Math.floor(freeSpace / Math.max(1, itemSize));
-    // Bulk sell: up to 200 for cheap items, 50 for expensive ones
-    // Small batches — relist when sold, avoids tying up inventory + listing fees
-    const maxSellQty = listPrice <= 10 ? 100 : listPrice <= 100 ? 25 : 10;
+    // Bigger batches for items we're overstocked on, smaller for expensive items
+    const overstock = item.quantity > 1000;
+    const maxSellQty = overstock ? 200 : listPrice <= 10 ? 100 : listPrice <= 100 ? 50 : 20;
     let listQty = Math.min(item.quantity, maxSellQty, maxBySpace);
     // Heavy items that won't fit in cargo — list directly from faction storage
     if (listQty <= 0) {

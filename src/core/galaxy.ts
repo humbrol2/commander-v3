@@ -14,8 +14,10 @@ export class Galaxy {
   private graph = new Map<string, SystemNode>();
   private poiIndex = new Map<string, { systemId: string; poi: PoiSummary }>();
   private baseToSystem = new Map<string, string>(); // baseId → systemId
-  /** POIs explicitly marked as depleted by miners (distinct from "never scanned") */
-  private depletedPois = new Set<string>();
+  /** POIs explicitly marked as depleted by miners with timestamp (v0.262.3: regen ~10x slower) */
+  private depletedPois = new Map<string, number>();
+  /** How long a belt stays marked depleted before retry (2 hours — regen is slow post v0.262.3) */
+  private static readonly DEPLETION_TTL_MS = 2 * 60 * 60 * 1000;
   /** Timestamp of last resource scan per POI */
   private poiScannedAt = new Map<string, number>();
   /** Resource location index: resourceId → Set<poiId> (rebuilt on load/update) */
@@ -369,12 +371,18 @@ export class Galaxy {
 
   /** Mark a POI as depleted (distinct from "never scanned" which also has empty resources) */
   markPoiDepleted(poiId: string): void {
-    this.depletedPois.add(poiId);
+    this.depletedPois.set(poiId, Date.now());
   }
 
-  /** Check if a POI has been explicitly marked as depleted */
+  /** Check if a POI has been explicitly marked as depleted (with TTL expiry) */
   isPoiDepleted(poiId: string): boolean {
-    return this.depletedPois.has(poiId);
+    const depletedAt = this.depletedPois.get(poiId);
+    if (depletedAt === undefined) return false;
+    if (Date.now() - depletedAt > Galaxy.DEPLETION_TTL_MS) {
+      this.depletedPois.delete(poiId); // Expired — allow retry
+      return false;
+    }
+    return true;
   }
 
   // ── Queries ──

@@ -687,12 +687,12 @@ export class OrderEngine {
       }
     }
 
-    // ── 1c. FUEL CELL CRAFTING — high priority until reserve met, then sell excess ──
+    // ── 1c. FUEL CELL CRAFTING — high priority until reserve met, stop at 5K ──
     const FUEL_CELL_RESERVE = 500;
+    const FUEL_CELL_CAP = 5000; // Stop crafting when we have plenty
     const fuelCells = this.factionInventory.get("fuel_cell") ?? 0;
     const steelPlates = this.factionInventory.get("steel_plate") ?? 0;
-    // assemble_fuel_cells: 1x energy_crystal + 1x steel_plate → 5x fuel_cell
-    if (energyCrystal >= 1 && steelPlates >= 1) {
+    if (energyCrystal >= 1 && steelPlates >= 1 && fuelCells < FUEL_CELL_CAP) {
       const canCraft = Math.min(Math.floor(energyCrystal), Math.floor(steelPlates), 10);
       if (fuelCells < FUEL_CELL_RESERVE) {
         orders.push({
@@ -708,7 +708,7 @@ export class OrderEngine {
           description: `Craft fuel cells for sale (${fuelCells} in stock, ${FUEL_CELL_RESERVE} reserved)`,
           priority: PRI.CRAFT, reason: "fuel_cell_sell",
           quantity: canCraft,
-          maxConcurrent: crafterSlots,
+          maxConcurrent: Math.min(crafterSlots, 1), // Only 1 crafter on fuel cells when above reserve
         });
       }
     }
@@ -718,14 +718,22 @@ export class OrderEngine {
       recipe: string; outputItem: string; description: string; value: number; priority: number;
       inputs: Array<{ id: string; qty: number }>;
     }> = [
-      { recipe: "build_power_cell", outputItem: "power_cell", description: "Power Cell", value: 2000, priority: PRI.FACILITY + 1,
+      // Use output item IDs — crafter finds best recipe via findRecipesForItem
+      { recipe: "power_cell", outputItem: "power_cell", description: "Power Cell", value: 2000, priority: PRI.FACILITY + 1,
         inputs: [{ id: "circuit_board", qty: 2 }, { id: "energy_crystal", qty: 3 }, { id: "copper_wiring", qty: 2 }] },
-      { recipe: "create_superconductor", outputItem: "superconductor", description: "Superconductor", value: 560, priority: PRI.CRAFT + 6,
+      { recipe: "superconductor", outputItem: "superconductor", description: "Superconductor", value: 560, priority: PRI.CRAFT + 6,
         inputs: [{ id: "palladium_ore", qty: 2 }, { id: "iridium_ore", qty: 1 }, { id: "copper_wiring", qty: 3 }] },
-      { recipe: "construct_sensor_array", outputItem: "sensor_array", description: "Sensor Array", value: 760, priority: PRI.CRAFT + 5,
+      { recipe: "sensor_array", outputItem: "sensor_array", description: "Sensor Array", value: 760, priority: PRI.CRAFT + 5,
         inputs: [{ id: "circuit_board", qty: 3 }, { id: "focused_crystal", qty: 1 }, { id: "palladium_ore", qty: 2 }] },
-      { recipe: "forge_hull_plating", outputItem: "hull_plating", description: "Hull Plating", value: 410, priority: PRI.CRAFT + 4,
+      { recipe: "hull_plating", outputItem: "hull_plating", description: "Hull Plating", value: 410, priority: PRI.CRAFT + 4,
         inputs: [{ id: "steel_plate", qty: 4 }, { id: "titanium_alloy", qty: 1 }] },
+      // v0.259+ new high-value module recipes
+      { recipe: "cargo_expander_ii", outputItem: "cargo_expander_ii", description: "Cargo Expander II", value: 5000, priority: PRI.CRAFT + 8,
+        inputs: [{ id: "steel_plate", qty: 5 }, { id: "titanium_alloy", qty: 2 }, { id: "circuit_board", qty: 1 }] },
+      { recipe: "graphene_sheet", outputItem: "graphene_sheet", description: "Graphene Sheet", value: 200, priority: PRI.CRAFT + 3,
+        inputs: [{ id: "carbon_ore", qty: 5 }] },
+      { recipe: "diamond_optical_fiber", outputItem: "diamond_optical_fiber", description: "Diamond Optical Fiber", value: 800, priority: PRI.CRAFT + 7,
+        inputs: [{ id: "synthetic_diamond", qty: 2 }, { id: "optical_fiber_bundle", qty: 1 }] },
     ];
 
     for (const hv of HIGH_VALUE_RECIPES) {
@@ -831,12 +839,18 @@ export class OrderEngine {
       { item: "titanium_alloy", minStock: 10, sellAt: "grand_exchange_station", priority: PRI.TRADE + 5, description: "Sell titanium alloy at Grand Exchange (148cr)" },
       // Circuit boards: Nova Terra buys at 191-200cr
       { item: "circuit_board", minStock: 50, sellAt: "nova_terra_central", priority: PRI.TRADE + 5, description: "Sell circuit boards at Nova Terra (191cr)" },
-      // Fuel cells: Gold Run buys at 71-74cr
-      { item: "fuel_cell", minStock: 100, sellAt: "gold_run_extraction_hub", priority: PRI.TRADE + 3, description: "Sell fuel cells at Gold Run (71cr)" },
+      // Fuel cells: surplus stockpile — sell at multiple stations
+      { item: "fuel_cell", minStock: 5000, sellAt: "gold_run_extraction_hub", priority: PRI.TRADE + 3, description: "Sell fuel cells at Gold Run (71cr)" },
       // Reinforced bulkheads: Deep Range buys at 1600-1965cr
       { item: "reinforced_bulkhead", minStock: 1, sellAt: "deep_range_outpost", priority: PRI.TRADE + 8, description: "Sell reinforced bulkheads at Deep Range (1600cr)" },
-      // Steel plate: Central Nexus — Marlowe buys at 10cr
-      { item: "steel_plate", minStock: 50, sellAt: "central_nexus", priority: PRI.TRADE, description: "Sell steel plate at Central Nexus (10cr)" },
+      // Purified water: bio facilities consume it (v0.257.0) — sell surplus
+      { item: "purified_water", minStock: 100, sellAt: "nova_terra_central", priority: PRI.TRADE + 4, description: "Sell purified water (bio facility consumable)" },
+      // Copper wiring: sell excess above craft reserve
+      { item: "copper_wiring", minStock: 500, sellAt: "grand_exchange_station", priority: PRI.TRADE + 3, description: "Sell copper wiring surplus" },
+      // Crimson bloodwine: treasure cache demand (v0.256.5)
+      { item: "crimson_bloodwine", minStock: 10, sellAt: "deep_range_outpost", priority: PRI.TRADE + 6, description: "Sell crimson bloodwine (smuggling demand)" },
+      // Antimatter containment cells: high value
+      { item: "antimatter_containment_cell", minStock: 50, sellAt: "nova_terra_central", priority: PRI.TRADE + 7, description: "Sell antimatter containment cells (760cr)" },
     ];
 
     for (const route of TRADE_ROUTES) {
