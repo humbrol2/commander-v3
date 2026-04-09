@@ -727,13 +727,15 @@ export class OrderEngine {
         inputs: [{ id: "circuit_board", qty: 3 }, { id: "focused_crystal", qty: 1 }, { id: "palladium_ore", qty: 2 }] },
       { recipe: "hull_plating", outputItem: "hull_plating", description: "Hull Plating", value: 410, priority: PRI.CRAFT + 4,
         inputs: [{ id: "steel_plate", qty: 4 }, { id: "titanium_alloy", qty: 1 }] },
-      // v0.259+ new high-value module recipes
+      // v0.250+ shipyard modules — NPC demand from ship construction
+      { recipe: "mining_laser_iii", outputItem: "mining_laser_iii", description: "Mining Laser III", value: 3000, priority: PRI.CRAFT + 8,
+        inputs: [{ id: "steel_plate", qty: 3 }, { id: "circuit_board", qty: 2 }, { id: "focused_crystal", qty: 1 }] },
+      { recipe: "mining_laser_iv", outputItem: "mining_laser_iv", description: "Mining Laser IV", value: 6000, priority: PRI.CRAFT + 9,
+        inputs: [{ id: "titanium_alloy", qty: 3 }, { id: "circuit_board", qty: 3 }, { id: "focused_crystal", qty: 2 }] },
       { recipe: "cargo_expander_ii", outputItem: "cargo_expander_ii", description: "Cargo Expander II", value: 5000, priority: PRI.CRAFT + 8,
         inputs: [{ id: "steel_plate", qty: 5 }, { id: "titanium_alloy", qty: 2 }, { id: "circuit_board", qty: 1 }] },
-      { recipe: "graphene_sheet", outputItem: "graphene_sheet", description: "Graphene Sheet", value: 200, priority: PRI.CRAFT + 3,
-        inputs: [{ id: "carbon_ore", qty: 5 }] },
-      { recipe: "diamond_optical_fiber", outputItem: "diamond_optical_fiber", description: "Diamond Optical Fiber", value: 800, priority: PRI.CRAFT + 7,
-        inputs: [{ id: "synthetic_diamond", qty: 2 }, { id: "optical_fiber_bundle", qty: 1 }] },
+      { recipe: "shield_booster_iv", outputItem: "shield_booster_iv", description: "Shield Booster IV", value: 8000, priority: PRI.CRAFT + 9,
+        inputs: [{ id: "titanium_alloy", qty: 4 }, { id: "superconductor", qty: 2 }, { id: "circuit_board", qty: 2 }] },
     ];
 
     for (const hv of HIGH_VALUE_RECIPES) {

@@ -3,7 +3,7 @@
  * Supports async PostgreSQL + Redis caching with tenant scoping.
  */
 
-import { eq, and, like, sql, gt } from "drizzle-orm";
+import { eq, and, like, sql, gt, max } from "drizzle-orm";
 import type { DB } from "./db";
 import type { RedisCache } from "./cache-redis";
 import type { TrainingLogger } from "./training-logger";
@@ -859,11 +859,11 @@ export class GameCache {
       const rows = await (this.db as any).select({
         stationId: marketHistory.stationId,
         itemId: marketHistory.itemId,
-        buyPrice: marketHistory.buyPrice,
-        sellPrice: marketHistory.sellPrice,
-        buyVolume: marketHistory.buyVolume,
-        sellVolume: marketHistory.sellVolume,
-        latestTick: sql<number>`MAX(${marketHistory.tick})`.as("latest_tick"),
+        buyPrice: max(marketHistory.buyPrice).as("buy_price"),
+        sellPrice: max(marketHistory.sellPrice).as("sell_price"),
+        buyVolume: max(marketHistory.buyVolume).as("buy_volume"),
+        sellVolume: max(marketHistory.sellVolume).as("sell_volume"),
+        latestTick: max(marketHistory.tick).as("latest_tick"),
       })
         .from(marketHistory)
         .where(and(

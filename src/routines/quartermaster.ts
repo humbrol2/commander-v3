@@ -1603,25 +1603,28 @@ async function* manageFactionFacilities(
 ): AsyncGenerator<RoutineYield, void, void> {
   if (!ctx.player.dockedAtBase) return;
 
-  // User-queued facilities + essential prereqs
-  // Priority order: quarters → intel terminal → trade ledger → vault (storage L2) → user queue
-  const userQueue = ctx.fleetConfig.facilityBuildQueue ?? [];
-  const CORE_FACILITIES = ["faction_quarters", "intel_terminal", "trade_ledger"];
-  // Build queue: Workshop built. Market Runner + Intel Center paused until treasury recovers.
-  const BUILD_QUEUE: string[] = [];
-  // TODO: add "market_runner", "intel_center" once treasury > 1M and IDs confirmed
-  const ESSENTIAL_FACILITIES = [
-    ...CORE_FACILITIES,
-    ...BUILD_QUEUE,
-    ...userQueue.filter(f => !CORE_FACILITIES.includes(f) && !BUILD_QUEUE.includes(f)),
-  ];
-
-  // Check faction treasury (direct API call, not cached — upgrades need current balance)
+  // Check faction treasury first (needed for build queue decisions)
   let factionCredits = 0;
   try {
     const factionData = await ctx.api.viewFactionStorageFull();
     factionCredits = factionData.credits;
   } catch { /* ok */ }
+
+  // User-queued facilities + essential prereqs
+  // Priority order: quarters → intel terminal → trade ledger → vault (storage L2) → user queue
+  const userQueue = ctx.fleetConfig.facilityBuildQueue ?? [];
+  const CORE_FACILITIES = ["faction_quarters", "intel_terminal", "trade_ledger"];
+  // Build queue: auto-build when treasury can afford it (keep 50K reserve)
+  const BUILD_QUEUE: string[] = [];
+  // Market Runner enables faction sell orders at this station (~150K cost)
+  if (factionCredits > 200_000) BUILD_QUEUE.push("market_runner");
+  // Intel Center enables advanced intel queries (~750K cost)
+  if (factionCredits > 800_000) BUILD_QUEUE.push("intel_center");
+  const ESSENTIAL_FACILITIES = [
+    ...CORE_FACILITIES,
+    ...BUILD_QUEUE,
+    ...userQueue.filter(f => !CORE_FACILITIES.includes(f) && !BUILD_QUEUE.includes(f)),
+  ];
 
   // List existing faction facilities at this station
   let facilities: Array<Record<string, unknown>> = [];
