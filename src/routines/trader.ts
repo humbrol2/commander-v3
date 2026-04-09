@@ -49,6 +49,12 @@ import {
 } from "./helpers";
 import { calculateSellPrice, estimateCostBasis } from "./quartermaster";
 
+/** Check if bot is docked at a station with faction storage */
+function canUseFactionStorage(ctx: BotContext): boolean {
+  const fStn = ctx.fleetConfig.factionStorageStation;
+  return !fStn || ctx.player.dockedAtBase === fStn;
+}
+
 /** Check if item is an ore (game uses both ore_X and X_ore patterns, plus raw variants) */
 function isOre(itemId: string): boolean {
   return itemId.startsWith("ore_") || itemId.endsWith("_ore") || itemId.includes("_ore_");
@@ -245,7 +251,8 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
           await ctx.refreshState();
           continue;
         }
-        // Deposit to faction storage
+        // Deposit to faction storage (only at faction station)
+        if (!canUseFactionStorage(ctx)) continue;
         try {
           await ctx.api.factionDepositItems(c.itemId, c.quantity);
           ctx.cache.invalidateFactionStorage();
@@ -559,8 +566,8 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
             yield `sell failed for ${other.itemId}: ${err instanceof Error ? err.message : String(err)}`;
           }
 
-          // Try faction deposit if sell didn't work
-          if (!disposed) {
+          // Try faction deposit if sell didn't work (only at faction station)
+          if (!disposed && canUseFactionStorage(ctx)) {
             try {
               await ctx.api.factionDepositItems(other.itemId, other.quantity);
               ctx.cache.invalidateFactionStorage();
@@ -862,8 +869,8 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
         const factionStation = ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase;
         let deposited = false;
 
-        // If we're at a station with faction storage, deposit directly
-        if (ctx.player.dockedAtBase) {
+        // If we're at faction station, deposit directly
+        if (ctx.player.dockedAtBase && canUseFactionStorage(ctx)) {
           try {
             await ctx.api.factionDepositItems(item, qty);
             ctx.cache.invalidateFactionStorage();
@@ -963,10 +970,10 @@ export async function* trader(ctx: BotContext): AsyncGenerator<RoutineYield, voi
                   }
                 }
 
-                // Last resort: deposit to faction storage
+                // Last resort: deposit to faction storage (only at faction station)
                 if (!soldElsewhere) {
                   const finalQty = ctx.cargo.getItemQuantity(ctx.ship, item);
-                  if (finalQty > 0 && ctx.player.dockedAtBase) {
+                  if (finalQty > 0 && ctx.player.dockedAtBase && canUseFactionStorage(ctx)) {
                     try {
                       await ctx.api.factionDepositItems(item, finalQty);
                       ctx.cache.invalidateFactionStorage();
@@ -1367,7 +1374,7 @@ async function* insightGatedArbitrageTrip(
       yield `arbitrage: sell returned 0 for ${route.itemName} — buy order gone, depositing to faction`;
       adjustMarketCache(ctx, route.sellStationId, route.itemId, "sell", 0, { zeroDemand: true });
       const remainingQty = ctx.cargo.getItemQuantity(ctx.ship, route.itemId);
-      if (remainingQty > 0) {
+      if (remainingQty > 0 && canUseFactionStorage(ctx)) {
         try {
           await ctx.api.factionDepositItems(route.itemId, remainingQty);
           ctx.cache.invalidateFactionStorage();
@@ -1646,6 +1653,7 @@ async function* factionSellLoop(
       for (const c of [...ctx.ship.cargo]) {
         if (isProtectedItem(c.itemId)) continue;
         // Deposit to faction storage first (free, keeps goods in supply chain)
+        if (!canUseFactionStorage(ctx)) break;
         try {
           await ctx.api.factionDepositItems(c.itemId, c.quantity);
           ctx.cache.invalidateFactionStorage();

@@ -62,7 +62,20 @@ export async function* crafter(ctx: BotContext): AsyncGenerator<RoutineYield, vo
           recipeId = directRecipe.id;
           yield `work order: craft via ${directRecipe.name ?? directRecipe.id} (priority ${order.priority})`;
         } else {
-          const recipes = ctx.crafting.findRecipesForItem(orderTarget);
+          // Filter recipes: exclude facility-only and previously failed, prefer ones with available materials
+          const knownFacilityOnly = new Set<string>(await ctx.cache.getFacilityOnlyRecipes());
+          const knownFailed = new Set<string>(await ctx.cache.getFailedRecipes());
+          const cachedStorage = ctx.cache.getFactionStorageSync();
+          const storageMap = new Map<string, number>();
+          for (const s of cachedStorage) storageMap.set(s.itemId, (storageMap.get(s.itemId) ?? 0) + s.quantity);
+
+          const allRecipes = ctx.crafting.findRecipesForItem(orderTarget)
+            .filter(r => !knownFacilityOnly.has(r.id) && !knownFailed.has(r.id));
+          // Prefer recipes where all ingredients are in storage
+          const viable = allRecipes.filter(r =>
+            r.ingredients.every(ing => (storageMap.get(ing.itemId) ?? 0) >= ing.quantity)
+          );
+          const recipes = viable.length > 0 ? viable : allRecipes;
           if (recipes.length > 0) {
             // Pick most efficient recipe: highest output per input unit
             const best = recipes.reduce((a, b) => {
