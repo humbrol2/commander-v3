@@ -642,7 +642,10 @@ async function* manageFactionSales(
     if (costBasis <= 0) {
       // Fallback: use any known market price as cost basis
       const fallbackCost = bestKnownPrice(ctx, item.itemId, priceIndex);
-      if (fallbackCost <= 0) continue; // Truly unknown — can't price it
+      // Items with CONSUMABLE_RESERVES entries have known value — use 1cr floor
+      const hasReserve = item.itemId in { purified_water: 1, fuel_cell: 1, repair_kit: 1, fuel_cell_premium: 1 };
+      if (fallbackCost <= 0 && !hasReserve) continue; // Truly unknown — can't price it
+      if (fallbackCost <= 0 && hasReserve) costBasis = 1; // Minimum floor for consumables
     }
 
     const effectiveCostBasis = costBasis > 0 ? costBasis : bestKnownPrice(ctx, item.itemId, priceIndex);
