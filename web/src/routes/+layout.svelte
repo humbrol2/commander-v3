@@ -53,10 +53,9 @@
 		{ href: "/commander", label: "Orders", key: "3" },
 		{ href: "/galaxy", label: "Map", key: "4" },
 		{ href: "/economy", label: "Economy", key: "5" },
-		{ href: "/accounting", label: "Accounting", key: "" },
-		{ href: "/faction", label: "Faction", key: "6" },
-		{ href: "/social", label: "Social", key: "7" },
-		{ href: "/quartermaster", label: "QM", key: "8" },
+		{ href: "/accounting", label: "Accounting", key: "6" },
+		{ href: "/faction", label: "Faction", key: "7" },
+		{ href: "/social", label: "Social", key: "8" },
 		{ href: "/manual", label: "Manual", key: "9" },
 	];
 

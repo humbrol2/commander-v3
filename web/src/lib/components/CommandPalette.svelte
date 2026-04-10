@@ -27,8 +27,9 @@
 		{ id: "p-social", label: "Social", category: "page", description: "LLM thoughts, memory, stuck bots", action: () => goto("/social") },
 		{ id: "p-economy", label: "Economy", category: "page", description: "Revenue, costs, supply chain", action: () => goto("/economy") },
 		{ id: "p-faction", label: "Faction", category: "page", description: "Members, storage, diplomacy", action: () => goto("/faction") },
-		{ id: "p-market", label: "Market", category: "page", description: "Prices and arbitrage", action: () => goto("/market") },
-		{ id: "p-training", label: "Training Data", category: "page", description: "Stats and exports", action: () => goto("/training") },
+		{ id: "p-galaxy", label: "Galaxy Map", category: "page", description: "Spatial fleet view", action: () => goto("/galaxy") },
+		{ id: "p-accounting", label: "Accounting", category: "page", description: "Ledger and balance", action: () => goto("/accounting") },
+		{ id: "p-manual", label: "Manual", category: "page", description: "Game reference guide", action: () => goto("/manual") },
 		{ id: "p-settings", label: "Settings", category: "page", description: "Goals, config, cache", action: () => goto("/settings") },
 	];
 
