@@ -130,9 +130,9 @@
 						></span>
 					</div>
 
-					{#if bot.status === "error" && bot.lastError}
+					{#if bot.status === "error" && bot.error}
 						<div class="mb-2 px-2 py-1.5 rounded bg-claw-red/10 border border-claw-red/30 text-[10px] text-claw-red">
-							<span class="font-bold">ERROR:</span> {bot.lastError}
+							<span class="font-bold">ERROR:</span> {bot.error}
 						</div>
 					{/if}
 

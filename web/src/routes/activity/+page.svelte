@@ -1,16 +1,19 @@
 <script lang="ts">
 	import { activityLog } from "$stores/websocket";
 
-	// Use typed event filtering instead of fragile string matching
+	// Match on canonical message prefixes (more reliable than substring search)
+	const TRADE_PATTERNS = [/\bsold \d/, /sell order filled/];
+	const CRAFT_PATTERNS = [/\bcrafted \d/, /\bcrafting \d/];
+
 	const recentTrades = $derived.by(() => {
 		return $activityLog
-			.filter(e => e.eventType === "npc_sell" || e.eventType === "sell_order_fill")
+			.filter(e => TRADE_PATTERNS.some(re => re.test(e.message)))
 			.slice(0, 8);
 	});
 
 	const recentCrafts = $derived.by(() => {
 		return $activityLog
-			.filter(e => e.eventType === "craft" || e.eventType === "crafted")
+			.filter(e => CRAFT_PATTERNS.some(re => re.test(e.message)))
 			.slice(0, 8);
 	});
 </script>
