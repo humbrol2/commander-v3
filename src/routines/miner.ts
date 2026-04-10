@@ -348,6 +348,12 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
           const errMsg = err instanceof Error ? err.message : String(err);
           ctx.circuitBreaker?.recordFailure("mine", errMsg);
           yield `mining error: ${errMsg}`;
+          // no_equipment = wrong modules for this resource — return home for refit
+          if (errMsg.includes("no_equipment")) {
+            yield "wrong equipment for this resource — returning home for refit";
+            yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "miner" });
+            return;
+          }
           // cargo_full is NOT belt depletion — just means we need to sell
           if (!errMsg.includes("cargo_full")) {
             beltDepleted = true;

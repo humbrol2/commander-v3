@@ -1623,12 +1623,9 @@ async function* manageFactionFacilities(
   // Priority order: quarters → intel terminal → trade ledger → vault (storage L2) → user queue
   const userQueue = ctx.fleetConfig.facilityBuildQueue ?? [];
   const CORE_FACILITIES = ["faction_quarters", "intel_terminal", "trade_ledger"];
-  // Build queue: auto-build when treasury can afford it (keep 50K reserve)
+  // Build queue: PAUSED — Market Runner attempts drain credits without completing
+  // TODO: investigate why factionFacilityBuild("market_runner") silently fails
   const BUILD_QUEUE: string[] = [];
-  // Market Runner enables faction sell orders at this station (~150K cost)
-  if (factionCredits > 200_000) BUILD_QUEUE.push("market_runner");
-  // Intel Center enables advanced intel queries (~750K cost)
-  if (factionCredits > 800_000) BUILD_QUEUE.push("intel_center");
   const ESSENTIAL_FACILITIES = [
     ...CORE_FACILITIES,
     ...BUILD_QUEUE,
@@ -1884,6 +1881,9 @@ async function* manageFactionFacilities(
         }
         continue;
       }
+
+      // Log ALL build errors so we can diagnose
+      yield `build failed for ${facilityType.replace(/_/g, " ")}: ${msg}`;
 
       // Skip if already exists (another bot built it) or if we lack permissions
       if (msg.includes("already") || msg.includes("exists")) {
