@@ -1623,9 +1623,11 @@ async function* manageFactionFacilities(
   // Priority order: quarters → intel terminal → trade ledger → vault (storage L2) → user queue
   const userQueue = ctx.fleetConfig.facilityBuildQueue ?? [];
   const CORE_FACILITIES = ["faction_quarters", "intel_terminal", "trade_ledger"];
-  // Build queue: PAUSED — Market Runner attempts drain credits without completing
-  // TODO: investigate why factionFacilityBuild("market_runner") silently fails
+  // Build queue: auto-build when treasury can afford it (keep 100K reserve)
+  // Error logging added — previous silent failures now visible
   const BUILD_QUEUE: string[] = [];
+  if (factionCredits > 250_000) BUILD_QUEUE.push("market_runner");
+  if (factionCredits > 850_000) BUILD_QUEUE.push("intel_center");
   const ESSENTIAL_FACILITIES = [
     ...CORE_FACILITIES,
     ...BUILD_QUEUE,

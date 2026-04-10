@@ -170,7 +170,8 @@ export async function startup(config: AppConfig): Promise<AppServices> {
   if (savedFleetSettings) {
     botManager.fleetConfig.factionTaxPercent = savedFleetSettings.factionTaxPercent;
     botManager.fleetConfig.minBotCredits = savedFleetSettings.minBotCredits;
-    botManager.fleetConfig.maxBotCredits = savedFleetSettings.maxBotCredits;
+    // Raise max to 250K so bots can afford ship upgrades (archimedes ~50K, meridian ~200K)
+    botManager.fleetConfig.maxBotCredits = Math.max(savedFleetSettings.maxBotCredits, 250_000);
     if (savedFleetSettings.homeSystem) botManager.fleetConfig.homeSystem = savedFleetSettings.homeSystem;
     if (savedFleetSettings.homeBase) botManager.fleetConfig.homeBase = savedFleetSettings.homeBase;
     if (savedFleetSettings.defaultStorageMode) botManager.fleetConfig.defaultStorageMode = savedFleetSettings.defaultStorageMode as "sell" | "deposit" | "faction_deposit";

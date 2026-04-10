@@ -492,8 +492,19 @@ export class Commander {
       }
     }
 
-    // Remainder → ore_miner
-    for (const botId of unassigned) assignments.push({ botId, role: "ore_miner" });
+    // Remainder → assign based on ship type if possible, else ore_miner
+    for (const botId of unassigned) {
+      const bot = fleet.bots.find(b => b.botId === botId);
+      const shipClass = bot?.shipClass ?? "";
+      // Match ship to appropriate role
+      let role: BotRole = "ore_miner";
+      if (shipClass.includes("sampler") || shipClass.includes("aether") || shipClass.includes("nebulae")) role = "gas_harvester";
+      else if (shipClass.includes("glacius") || shipClass.includes("cryo") || shipClass.includes("zero")) role = "ice_harvester";
+      else if (shipClass.includes("freighter") || shipClass.includes("logistics") || shipClass.includes("compendium")) role = "trader";
+      else if (shipClass.includes("datum") || shipClass.includes("lemma") || shipClass.includes("hypothesis")) role = "explorer";
+      else if (shipClass.includes("axiom") || shipClass.includes("corollary") || shipClass.includes("theorem")) role = "hunter";
+      assignments.push({ botId, role });
+    }
     return assignments;
   }
 
