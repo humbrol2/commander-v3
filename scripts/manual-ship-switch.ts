@@ -1,35 +1,53 @@
 /**
- * Manual ship switch — uses the existing ApiClient.
+ * Manual ship switch — uses existing ApiClient + SessionStore (DB-backed).
  *
- * Usage: bun run scripts/manual-ship-switch.ts <username> <password> <target_class>
+ * Reuses the existing bot session from PostgreSQL. Run with the service stopped.
+ *
+ * Usage: bun run scripts/manual-ship-switch.ts <username> <target_class>
  */
 
 import { ApiClient } from "../src/core/api-client";
-import type { SessionStore } from "../src/core/session-store";
+import { SessionStore } from "../src/data/session-store";
+import { createDatabase } from "../src/data/db";
 
-// Stub session store (no persistence)
-const stubStore: SessionStore = {
-	getBot: async () => null,
-	updateSession: async () => {},
-	clearSession: async () => {},
-} as any;
+const TENANT_ID = "46662032-87fa-42c7-9b94-0083086bbd46";
+const DATABASE_URL = "postgresql://humbrol2:3e1779ab4980bd4c7133eb457f8d3a0b@10.0.0.54:5432/commander";
 
 async function main() {
-	const [username, password, targetClass] = process.argv.slice(2);
-	if (!username || !password || !targetClass) {
-		console.error("Usage: bun run manual-ship-switch.ts <username> <password> <target_class>");
+	const [username, targetClass] = process.argv.slice(2);
+	if (!username || !targetClass) {
+		console.error("Usage: bun run manual-ship-switch.ts <username> <target_class>");
 		process.exit(1);
 	}
 
-	const api = new ApiClient(username, stubStore);
+	console.log(`[1] Connecting to DB...`);
+	const conn = createDatabase(DATABASE_URL);
+	const db = conn.db;
+	const sessionStore = new SessionStore(db, TENANT_ID);
 
-	console.log(`[1] Logging in as ${username}...`);
-	await api.login(password);
-	console.log(`[1] Logged in.`);
+	const bot = await sessionStore.getBot(username);
+	if (!bot) {
+		console.error(`[!] No bot named '${username}' in DB`);
+		process.exit(1);
+	}
+	console.log(`[1] Found bot — has session: ${!!bot.sessionId}`);
 
-	console.log(`[2] Listing owned ships...`);
+	console.log(`[2] Creating API client and restoring session...`);
+	const api = new ApiClient(username, sessionStore);
+	await api.restoreSession();
+
+	console.log(`[3] Logging in (or refreshing existing session)...`);
+	try {
+		await api.login();
+		console.log(`[3] Logged in.`);
+	} catch (err: any) {
+		console.error(`[!] Login failed: ${err.message ?? err}`);
+		process.exit(1);
+	}
+
+	console.log(`[4] Listing owned ships...`);
 	const ships = await api.listShips();
-	console.log(`[2] Owns ${ships.length} ships:`);
+	console.log(`[4] Owns ${ships.length} ships:`);
 	for (const s of ships as any[]) {
 		console.log(`    - id=${s.id ?? s.ship_id} class=${s.classId ?? s.class_id} name=${s.name ?? "(none)"} loc=${s.location ?? s.docked_at ?? "?"}`);
 	}
@@ -41,10 +59,12 @@ async function main() {
 	}
 
 	const shipId = targetShip.id ?? targetShip.ship_id;
-	console.log(`[3] Switching to ${shipId} (${targetClass})...`);
+	console.log(`[5] Switching to ${shipId} (${targetClass})...`);
 	const result = await api.switchShip(shipId);
-	console.log(`[3] Switch result:`, JSON.stringify(result, null, 2));
+	console.log(`[5] Switch result:`, JSON.stringify(result, null, 2));
 	console.log(`[DONE] ${username} now flying ${targetClass}`);
+
+	process.exit(0);
 }
 
 main().catch(err => {
