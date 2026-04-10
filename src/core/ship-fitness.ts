@@ -194,7 +194,13 @@ export function describeUpgrade(current: ShipClass, upgrade: ShipClass): string 
 
 /** Get the tier of a ship from its extra data (0-5) */
 export function getShipTier(ship: ShipClass): number {
-  return typeof ship.extra?.tier === "number" ? ship.extra.tier : 0;
+  if (typeof ship.extra?.tier === "number") return ship.extra.tier;
+  // Fallback: estimate tier from price (0=free/starter, 1=<50K, 2=<200K, 3=<500K, 4+=500K+)
+  if (ship.basePrice <= 0) return 0;
+  if (ship.basePrice < 50_000) return 1;
+  if (ship.basePrice < 200_000) return 2;
+  if (ship.basePrice < 500_000) return 3;
+  return 4;
 }
 
 /** Get the faction of a ship from its extra data */
