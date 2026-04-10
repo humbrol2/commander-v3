@@ -329,10 +329,10 @@ export class Commander {
       if (bot && bot.routine === a.routine && bot.status === "running") continue;
       // Don't interrupt protected routines
       if (bot && bot.status === "running" && bot.routine && ["ship_upgrade", "refit", "return_home", "scout"].includes(bot.routine)) continue;
-      // Naked bot (no modules) — send home for refit, don't assign work
-      if (bot && (bot.moduleIds ?? []).length === 0 && a.routine !== "return_home" && a.routine !== "refit") {
-        console.log(`[Commander] ${a.botId} has no modules — sending home for refit`);
-        a.routine = "return_home";
+      // Naked bot (no modules) — run refit routine, don't assign work
+      if (bot && (bot.moduleIds ?? []).length === 0 && a.routine !== "refit") {
+        console.log(`[Commander] ${a.botId} has no modules — assigning refit`);
+        a.routine = "refit";
         a.params = {};
       }
 
@@ -624,20 +624,19 @@ export class Commander {
         }
       }
 
-      // Priority 2: Buy upgrade from shipyard
+      // Priority 2: Buy upgrade from shipyard (silent — no noise unless successful)
       const budget = bot.credits - minReserve;
-      if (budget <= 0) { console.log(`[Commander] ${bot.botId}: skip upgrade — low budget (${bot.credits}cr, reserve ${minReserve})`); continue; }
+      if (budget <= 0) continue;
       const available = catalog.filter(s => !this.shipBlacklist.has(s.id));
-      // Try all viable candidates in ROI order — pick first one with a known shipyard
       const candidates = findUpgradeCandidates(currentClass.id, role, available, budget, bot.skills);
-      if (candidates.length === 0) { console.log(`[Commander] ${bot.botId}: no upgrade found for ${currentClass.id} (role=${role}, budget=${budget}cr)`); continue; }
+      if (candidates.length === 0) continue;
       let upgrade: typeof candidates[0] | null = null;
       let shipyard: { stationId: string; price: number } | null = null;
       for (const candidate of candidates) {
         const yard = this.deps.cache.findShipyardForClass(candidate.id);
         if (yard) { upgrade = candidate; shipyard = yard; break; }
       }
-      if (!upgrade || !shipyard) { console.log(`[Commander] ${bot.botId}: no shipyard for any of ${candidates.length} upgrade candidates (best: ${candidates[0].id})`); continue; }
+      if (!upgrade || !shipyard) continue; // No shipyard known — silently skip
 
       this.pendingUpgrades.set(bot.botId, {
         targetShipClass: upgrade.id, targetPrice: upgrade.basePrice, role,
