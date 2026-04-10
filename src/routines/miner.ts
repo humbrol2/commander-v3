@@ -348,9 +348,9 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
           const errMsg = err instanceof Error ? err.message : String(err);
           ctx.circuitBreaker?.recordFailure("mine", errMsg);
           yield `mining error: ${errMsg}`;
-          // no_equipment = wrong modules for this resource — return home for refit
-          if (errMsg.includes("no_equipment")) {
-            yield "wrong equipment for this resource — returning home for refit";
+          // no_equipment/no_mining = wrong or missing modules — return home for refit
+          if (errMsg.includes("no_equipment") || errMsg.includes("no_mining")) {
+            yield "missing equipment — returning home for refit";
             yield typedYield("cycle_complete", { type: "cycle_complete", botId: ctx.botId, routine: "miner" });
             return;
           }
