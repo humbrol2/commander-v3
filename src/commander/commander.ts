@@ -28,7 +28,7 @@ import { StuckDetector } from "./stuck-detector";
 import { PerformanceTracker } from "./performance-tracker";
 import { evaluateFleetHealth, type FleetHealth } from "../core/fleet-health";
 import { type BotRole, type RolePoolConfig, DEFAULT_POOL_CONFIG, parseBotRole } from "./roles";
-import { findBestUpgrade, calculateROI, scoreShipForRole, checkSkillRequirements, describeUpgrade, LEGACY_SHIPS } from "../core/ship-fitness";
+import { findUpgradeCandidates, calculateROI, scoreShipForRole, checkSkillRequirements, describeUpgrade, LEGACY_SHIPS } from "../core/ship-fitness";
 
 // ── Config & Dependencies ──
 
@@ -628,12 +628,16 @@ export class Commander {
       const budget = bot.credits - minReserve;
       if (budget <= 0) { console.log(`[Commander] ${bot.botId}: skip upgrade — low budget (${bot.credits}cr, reserve ${minReserve})`); continue; }
       const available = catalog.filter(s => !this.shipBlacklist.has(s.id));
-      const upgrade = findBestUpgrade(currentClass.id, role, available, budget, bot.skills);
-      if (!upgrade) { console.log(`[Commander] ${bot.botId}: no upgrade found for ${currentClass.id} (role=${role}, budget=${budget}cr)`); continue; }
-      const skillCheck = checkSkillRequirements(upgrade, bot.skills);
-      if (!skillCheck.met) { console.log(`[Commander] ${bot.botId}: skill requirements not met for ${upgrade.id}`); continue; }
-      const shipyard = this.deps.cache.findShipyardForClass(upgrade.id);
-      if (!shipyard) { console.log(`[Commander] ${bot.botId}: no shipyard found selling ${upgrade.id}`); continue; }
+      // Try all viable candidates in ROI order — pick first one with a known shipyard
+      const candidates = findUpgradeCandidates(currentClass.id, role, available, budget, bot.skills);
+      if (candidates.length === 0) { console.log(`[Commander] ${bot.botId}: no upgrade found for ${currentClass.id} (role=${role}, budget=${budget}cr)`); continue; }
+      let upgrade: typeof candidates[0] | null = null;
+      let shipyard: { stationId: string; price: number } | null = null;
+      for (const candidate of candidates) {
+        const yard = this.deps.cache.findShipyardForClass(candidate.id);
+        if (yard) { upgrade = candidate; shipyard = yard; break; }
+      }
+      if (!upgrade || !shipyard) { console.log(`[Commander] ${bot.botId}: no shipyard for any of ${candidates.length} upgrade candidates (best: ${candidates[0].id})`); continue; }
 
       this.pendingUpgrades.set(bot.botId, {
         targetShipClass: upgrade.id, targetPrice: upgrade.basePrice, role,

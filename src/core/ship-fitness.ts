@@ -220,15 +220,26 @@ export function findBestUpgrade(
   maxPrice: number,
   botSkills?: Record<string, number>,
 ): ShipClass | null {
+  const candidates = findUpgradeCandidates(currentClassId, role, catalog, maxPrice, botSkills);
+  return candidates.length > 0 ? candidates[0] : null;
+}
+
+/** Return all viable upgrades sorted by ROI descending */
+export function findUpgradeCandidates(
+  currentClassId: string,
+  role: string,
+  catalog: ShipClass[],
+  maxPrice: number,
+  botSkills?: Record<string, number>,
+): ShipClass[] {
   const current = catalog.find((s) => s.id === currentClassId);
-  if (!current) return null;
+  if (!current) return [];
 
   const currentScore = scoreShipForRole(current, role);
   const currentTier = getShipTier(current);
   const currentFaction = getShipFaction(current);
 
-  let bestCandidate: ShipClass | null = null;
-  let bestROI = 0;
+  const scored: Array<{ ship: ShipClass; roi: number }> = [];
 
   for (const ship of catalog) {
     if (ship.id === currentClassId) continue;
@@ -240,28 +251,22 @@ export function findBestUpgrade(
 
     // Only consider ships 1 tier above current (no skipping tiers)
     const shipTier = getShipTier(ship);
-    if (shipTier <= currentTier) continue; // Don't downgrade or stay same tier
-    if (shipTier > currentTier + 1) continue; // Don't skip tiers
+    if (shipTier <= currentTier) continue;
+    if (shipTier > currentTier + 1) continue;
 
-    // Skill gate: skip ships the bot can't fly
     if (botSkills) {
       const { met } = checkSkillRequirements(ship, botSkills);
       if (!met) continue;
     }
 
     const score = scoreShipForRole(ship, role);
-    // Must be at least 2 points better for the role (relaxed from 5 — tier-up is usually good)
     if (score <= currentScore + 2) continue;
-
-    // Must be an acceptable upgrade (allows speed regression for industrial ships)
     if (!isStrictUpgrade(current, ship)) continue;
 
     const roi = calculateROI(current, ship, role);
-    if (roi > bestROI) {
-      bestROI = roi;
-      bestCandidate = ship;
-    }
+    scored.push({ ship, roi });
   }
 
-  return bestCandidate;
+  scored.sort((a, b) => b.roi - a.roi);
+  return scored.map(s => s.ship);
 }
