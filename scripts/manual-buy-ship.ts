@@ -36,21 +36,9 @@ async function main() {
 		process.exit(1);
 	}
 
-	const ships = await api.shipyardShowroom();
-	console.log(`[3] Shipyard has ${ships.length} ships available:`);
-	for (const s of ships.slice(0, 20) as any[]) {
-		console.log(`    - ${s.class_id ?? s.classId} | ${s.name} | ${(s.price ?? s.base_price ?? 0).toLocaleString()}cr`);
-	}
-
-	const target = (ships as any[]).find((s: any) => (s.class_id ?? s.classId) === targetClass);
-	if (!target) {
-		console.error(`[!] No ${targetClass} at this shipyard. Available classes: ${(ships as any[]).map((s: any) => s.class_id ?? s.classId).slice(0, 20).join(", ")}`);
-		process.exit(1);
-	}
-
-	console.log(`[4] Buying ${targetClass} for ${(target.price ?? target.base_price).toLocaleString()}cr...`);
+	console.log(`[3] Buying ${targetClass} (using commission_ship)...`);
 	const buyResult = await api.commissionShip(targetClass);
-	console.log(`[4] Buy result:`, JSON.stringify(buyResult, null, 2));
+	console.log(`[3] Buy result:`, JSON.stringify(buyResult, null, 2));
 
 	const newShipId = (buyResult as any).ship_id ?? (buyResult as any).shipId;
 	if (newShipId) {
