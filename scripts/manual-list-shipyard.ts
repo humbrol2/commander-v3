@@ -31,16 +31,24 @@ async function main() {
 		console.log(`[2] Help failed: ${err.message}`);
 	}
 
-	// Try various known names
-	const cmds = ["list_shipyard", "shipyard_list", "shipyard", "view_shipyard", "shipyard_browse", "browse_shipyard"];
-	for (const cmd of cmds) {
+	// Try shipyard with action params
+	const actions = ["showroom", "browse", "list", "view"];
+	for (const action of actions) {
 		try {
-			const result: any = await (api as any).query(cmd);
-			console.log(`[OK] ${cmd}:`, JSON.stringify(result, null, 2).slice(0, 1000));
+			const result: any = await (api as any).query("shipyard", { action });
+			console.log(`[OK] shipyard ${action}:`, JSON.stringify(result, null, 2).slice(0, 2000));
 			break;
 		} catch (err: any) {
-			console.log(`[--] ${cmd}: ${err.message?.slice(0, 80)}`);
+			console.log(`[--] shipyard ${action}: ${err.message?.slice(0, 100)}`);
 		}
+	}
+
+	// Help on shipyard command
+	try {
+		const help: any = await (api as any).query("help", { command: "shipyard" });
+		console.log(`[HELP] shipyard:`, JSON.stringify(help, null, 2).slice(0, 1500));
+	} catch (err: any) {
+		console.log(`[--] help shipyard: ${err.message}`);
 	}
 
 	process.exit(0);
