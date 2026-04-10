@@ -31,24 +31,24 @@ async function main() {
 		console.log(`[2] Help failed: ${err.message}`);
 	}
 
-	// Try shipyard with action params
-	const actions = ["showroom", "browse", "list", "view"];
-	for (const action of actions) {
-		try {
-			const result: any = await (api as any).query("shipyard", { action });
-			console.log(`[OK] shipyard ${action}:`, JSON.stringify(result, null, 2).slice(0, 2000));
-			break;
-		} catch (err: any) {
-			console.log(`[--] shipyard ${action}: ${err.message?.slice(0, 100)}`);
-		}
+	// Help on commission_ship
+	try {
+		const help: any = await (api as any).query("help", { command: "commission_ship" });
+		console.log(`[HELP] commission_ship:`, JSON.stringify(help, null, 2).slice(0, 2000));
+	} catch (err: any) {
+		console.log(`[--] help commission_ship: ${err.message}`);
 	}
 
-	// Help on shipyard command
+	// Get ship_catalog (the loaded list)
 	try {
-		const help: any = await (api as any).query("help", { command: "shipyard" });
-		console.log(`[HELP] shipyard:`, JSON.stringify(help, null, 2).slice(0, 1500));
+		const catalog: any = await (api as any).query("ship_catalog");
+		const ships = catalog?.ships ?? catalog;
+		console.log(`[CATALOG] ${Array.isArray(ships) ? ships.length : 'N/A'} ship classes total`);
+		if (Array.isArray(ships) && ships.length) {
+			console.log("First 5:", ships.slice(0, 5));
+		}
 	} catch (err: any) {
-		console.log(`[--] help shipyard: ${err.message}`);
+		console.log(`[--] ship_catalog: ${err.message?.slice(0, 100)}`);
 	}
 
 	process.exit(0);
