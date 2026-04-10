@@ -626,14 +626,14 @@ export class Commander {
 
       // Priority 2: Buy upgrade from shipyard
       const budget = bot.credits - minReserve;
-      if (budget <= 0) continue;
+      if (budget <= 0) { console.log(`[Commander] ${bot.botId}: skip upgrade — low budget (${bot.credits}cr, reserve ${minReserve})`); continue; }
       const available = catalog.filter(s => !this.shipBlacklist.has(s.id));
       const upgrade = findBestUpgrade(currentClass.id, role, available, budget, bot.skills);
-      if (!upgrade) continue;
+      if (!upgrade) { console.log(`[Commander] ${bot.botId}: no upgrade found for ${currentClass.id} (role=${role}, budget=${budget}cr)`); continue; }
       const skillCheck = checkSkillRequirements(upgrade, bot.skills);
-      if (!skillCheck.met) continue;
+      if (!skillCheck.met) { console.log(`[Commander] ${bot.botId}: skill requirements not met for ${upgrade.id}`); continue; }
       const shipyard = this.deps.cache.findShipyardForClass(upgrade.id);
-      if (!shipyard) continue;
+      if (!shipyard) { console.log(`[Commander] ${bot.botId}: no shipyard found selling ${upgrade.id}`); continue; }
 
       this.pendingUpgrades.set(bot.botId, {
         targetShipClass: upgrade.id, targetPrice: upgrade.basePrice, role,
