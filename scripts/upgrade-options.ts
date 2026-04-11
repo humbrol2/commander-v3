@@ -49,8 +49,8 @@ async function main() {
 
 	// List all bots and query their ship (with rate-limit retry)
 	const bots = await sessionStore.listBots();
-	console.log(`${"Bot".padEnd(18)} ${"Ship".padEnd(20)} ${"Cgo".padStart(5)} ${"T".padEnd(2)} ${"Role".padEnd(16)} ${"Credits".padStart(11)}  Upgrades (id / price / cargo / Δcargo)`);
-	console.log("-".repeat(160));
+	console.log(`${"Bot".padEnd(18)} ${"Ship".padEnd(20)} ${"Cgo".padStart(5)} ${"Spd".padStart(4)} ${"T".padEnd(2)} ${"Role".padEnd(16)} ${"Credits".padStart(11)}  Upgrades (id / price / cargo Δ / speed Δ)`);
+	console.log("-".repeat(170));
 
 	async function processBot(bot: any): Promise<void> {
 		const api = new ApiClient({ username: bot.username, sessionStore, logger: stubLogger });
@@ -73,6 +73,7 @@ async function main() {
 		const currentClass = catalog.find(s => s.id === shipClass) ?? LEGACY_SHIPS.find(s => s.id === shipClass);
 		const tier = currentClass ? getShipTier(currentClass) : -1;
 		const currCargo = currentClass?.cargoCapacity ?? 0;
+		const currSpeed = currentClass?.speed ?? 0;
 
 		let candidatesStr = "(unknown ship)";
 		if (currentClass) {
@@ -81,15 +82,16 @@ async function main() {
 				candidatesStr = "(no better options)";
 			} else {
 				candidatesStr = candidates.slice(0, 5).map(c => {
-					const cgo = c.cargoCapacity;
-					const delta = cgo - currCargo;
-					const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
-					return `${c.id}(${(c.basePrice/1000).toFixed(0)}K/${cgo}cgo/${deltaStr})`;
+					const cgoD = c.cargoCapacity - currCargo;
+					const spdD = c.speed - currSpeed;
+					const cs = cgoD >= 0 ? `+${cgoD}` : `${cgoD}`;
+					const ss = spdD >= 0 ? `+${spdD}` : `${spdD}`;
+					return `${c.id}(${(c.basePrice/1000).toFixed(0)}K/cgo${cs}/spd${ss})`;
 				}).join(", ");
 			}
 		}
 
-		console.log(`${bot.username.padEnd(18)} ${shipClass.padEnd(20)} ${String(currCargo).padStart(5)} ${String(tier).padEnd(2)} ${role.padEnd(16)} ${credits.toLocaleString().padStart(11)}  ${candidatesStr}`);
+		console.log(`${bot.username.padEnd(18)} ${shipClass.padEnd(20)} ${String(currCargo).padStart(5)} ${String(currSpeed).padStart(4)} ${String(tier).padEnd(2)} ${role.padEnd(16)} ${credits.toLocaleString().padStart(11)}  ${candidatesStr}`);
 	}
 
 	for (const bot of bots) {
