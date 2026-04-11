@@ -112,7 +112,11 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
         const hasMiningLaser = ctx.ship.modules.some((m) =>
           m.moduleId.includes("mining_laser") || m.name.toLowerCase().includes("mining laser")
         );
-        const mineablePois = system.pois.filter((p) =>
+        // Skip mining in the home/faction station system — it's overcrowded
+        // (Sol's Main Belt depletes constantly, miners should travel to remote belts)
+        const homeSystem = ctx.fleetConfig.homeSystem;
+        const skipLocal = homeSystem && system.id === homeSystem;
+        const mineablePois = skipLocal ? [] : system.pois.filter((p) =>
           !ctx.galaxy.isPoiDepleted(p.id) && (
             p.type === "asteroid_belt" || p.type === "asteroid"
             || (p.type === "ice_field" && hasIceHarvester)
@@ -120,6 +124,7 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
             || (p.type === "nebula" && (hasGasHarvester || hasMiningLaser))
           )
         );
+        if (skipLocal) yield `skipping local belts in home system ${system.id} (overcrowded)`;
         // Crystal miners prefer nebulae (sort them first)
         if (ctx.settings.role === "crystal_miner") {
           mineablePois.sort((a, b) => (a.type === "nebula" ? -1 : 1) - (b.type === "nebula" ? -1 : 1));
