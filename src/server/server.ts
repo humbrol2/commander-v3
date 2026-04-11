@@ -9,7 +9,8 @@ import type { ServerMessage, ClientMessage } from "../types/protocol";
 import type { DB } from "../data/db";
 import type { TrainingLogger } from "../data/training-logger";
 import { gt, desc, sql, eq, and } from "drizzle-orm";
-import { creditHistory, marketHistory, activityLog, commanderLog as commanderLogTable, factionTransactions, financialEvents, users, botCreditSnapshots } from "../data/schema";
+import { creditHistory, marketHistory, activityLog, commanderLog as commanderLogTable, factionTransactions, financialEvents, users, botCreditSnapshots, creditMovements, creditDiscrepancies } from "../data/schema";
+import { detectDiscrepancies } from "../data/credit-ledger";
 import { verifyToken, extractToken, createToken, hashPassword, verifyPassword, type TokenPayload } from "../auth/jwt";
 
 const RANGE_MS: Record<string, number> = {
@@ -267,6 +268,18 @@ async function handleApiRoute(url: URL, opts: ServerOptions): Promise<Response> 
     return handleFactionTransactionsRoute(url, opts.db);
   }
 
+  if (path === "accounting/discrepancies" && opts.db) {
+    return handleDiscrepanciesRoute(url, opts.db);
+  }
+
+  if (path === "accounting/discrepancies/reconcile" && opts.db) {
+    return handleReconcileRoute(url, opts.db, opts.tenantId ?? "");
+  }
+
+  if (path === "accounting/movements" && opts.db) {
+    return handleCreditMovementsRoute(url, opts.db);
+  }
+
   if (path === "economy/bot-breakdown" && opts.db) {
     return handleBotBreakdownRoute(url, opts.db);
   }
@@ -465,6 +478,97 @@ async function handleFactionTransactionsRoute(url: URL, db: DB): Promise<Respons
     entries,
     summary: { totalIncome, totalExpense, net: totalIncome + totalExpense, count: entries.length },
   });
+}
+
+/** GET /api/accounting/discrepancies?range=7d&open=1 — flagged credit reconciliation gaps */
+async function handleDiscrepanciesRoute(url: URL, db: DB): Promise<Response> {
+  const range = url.searchParams.get("range") ?? "7d";
+  const onlyOpen = url.searchParams.get("open") !== "0";
+  const ms = RANGE_MS[range] ?? RANGE_MS["7d"];
+  const since = Date.now() - ms;
+
+  let where = gt(creditDiscrepancies.detectedAt, since);
+  if (onlyOpen) {
+    where = and(where, eq(creditDiscrepancies.reviewed, 0))!;
+  }
+
+  const rows: any[] = await (db as any)
+    .select()
+    .from(creditDiscrepancies)
+    .where(where)
+    .orderBy(desc(creditDiscrepancies.detectedAt))
+    .limit(500);
+
+  const entries = rows.map((r: any) => ({
+    id: r.id,
+    detectedAt: Number(r.detectedAt),
+    account: r.account,
+    windowStart: Number(r.windowStart),
+    windowEnd: Number(r.windowEnd),
+    expectedDelta: Number(r.expectedDelta),
+    actualDelta: Number(r.actualDelta),
+    unaccounted: Number(r.unaccounted),
+    reviewed: r.reviewed === 1,
+    notes: r.notes,
+  }));
+
+  const openCount = entries.filter(e => !e.reviewed).length;
+  const totalUnaccounted = entries.filter(e => !e.reviewed).reduce((s, e) => s + e.unaccounted, 0);
+  const positiveLeak = entries.filter(e => !e.reviewed && e.unaccounted > 0).reduce((s, e) => s + e.unaccounted, 0);
+  const negativeLeak = entries.filter(e => !e.reviewed && e.unaccounted < 0).reduce((s, e) => s + e.unaccounted, 0);
+
+  return Response.json({
+    entries,
+    summary: {
+      total: entries.length,
+      open: openCount,
+      totalUnaccounted,
+      positiveLeak, // unexpected gains
+      negativeLeak, // unexpected losses
+    },
+  });
+}
+
+/** POST /api/accounting/discrepancies/reconcile?hours=24&threshold=1000 — run detection */
+async function handleReconcileRoute(url: URL, db: DB, tenantId: string): Promise<Response> {
+  const hours = parseInt(url.searchParams.get("hours") ?? "24");
+  const threshold = parseInt(url.searchParams.get("threshold") ?? "1000");
+  const since = Date.now() - hours * 3600 * 1000;
+  const flagged = await detectDiscrepancies(db, tenantId, since, threshold);
+  return Response.json({ flagged, hours, threshold });
+}
+
+/** GET /api/accounting/movements?range=1d&account=foo&limit=500 — credit movement ledger */
+async function handleCreditMovementsRoute(url: URL, db: DB): Promise<Response> {
+  const range = url.searchParams.get("range") ?? "1d";
+  const account = url.searchParams.get("account") ?? "";
+  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "500"), 2000);
+  const ms = RANGE_MS[range] ?? RANGE_MS["1d"];
+  const since = Date.now() - ms;
+
+  let where = gt(creditMovements.timestamp, since);
+  if (account) where = and(where, eq(creditMovements.account, account))!;
+
+  const rows: any[] = await (db as any)
+    .select()
+    .from(creditMovements)
+    .where(where)
+    .orderBy(desc(creditMovements.timestamp))
+    .limit(limit);
+
+  const entries = rows.map((r: any) => ({
+    id: r.id,
+    timestamp: Number(r.timestamp),
+    account: r.account,
+    type: r.type,
+    delta: Number(r.delta),
+    balanceBefore: r.balanceBefore != null ? Number(r.balanceBefore) : null,
+    balanceAfter: r.balanceAfter != null ? Number(r.balanceAfter) : null,
+    source: r.source,
+    details: r.details,
+  }));
+
+  return Response.json({ entries, count: entries.length });
 }
 
 /** GET /api/economy/bot-breakdown?range=1d — revenue/cost per bot */

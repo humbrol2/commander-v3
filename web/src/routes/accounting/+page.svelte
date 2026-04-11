@@ -136,10 +136,53 @@
 		loading = false;
 	}
 
+	// ── Discrepancies ──
+	interface Discrepancy {
+		id: number;
+		detectedAt: number;
+		account: string;
+		windowStart: number;
+		windowEnd: number;
+		expectedDelta: number;
+		actualDelta: number;
+		unaccounted: number;
+		reviewed: boolean;
+		notes: string | null;
+	}
+	interface DiscrepanciesResponse {
+		entries: Discrepancy[];
+		summary: { total: number; open: number; totalUnaccounted: number; positiveLeak: number; negativeLeak: number };
+	}
+
+	let discrepancies = $state<Discrepancy[]>([]);
+	let discSummary = $state<DiscrepanciesResponse["summary"]>({ total: 0, open: 0, totalUnaccounted: 0, positiveLeak: 0, negativeLeak: 0 });
+	let discExpanded = $state(false);
+	let reconciling = $state(false);
+
+	async function fetchDiscrepancies() {
+		try {
+			const res = await fetch(`/api/accounting/discrepancies?range=7d&open=1`, { headers: getAuthHeaders() });
+			if (!res.ok) return;
+			const data: DiscrepanciesResponse = await res.json();
+			discrepancies = data.entries;
+			discSummary = data.summary;
+		} catch { /* non-critical */ }
+	}
+
+	async function runReconcile() {
+		reconciling = true;
+		try {
+			const res = await fetch(`/api/accounting/discrepancies/reconcile?hours=24&threshold=5000`, { method: "POST", headers: getAuthHeaders() });
+			if (res.ok) await fetchDiscrepancies();
+		} catch { /* non-critical */ }
+		reconciling = false;
+	}
+
 	let mounted = $state(false);
 	onMount(() => {
 		mounted = true;
-		const interval = setInterval(fetchLedger, 30000);
+		fetchDiscrepancies();
+		const interval = setInterval(() => { fetchLedger(); fetchDiscrepancies(); }, 30000);
 		return () => clearInterval(interval);
 	});
 
@@ -205,6 +248,92 @@
 				<p class="text-[10px] text-chrome-silver uppercase tracking-wider">Range Close Bal.</p>
 				<p class="text-sm font-bold mono text-star-white mt-1">{endingBalance.toLocaleString()} cr</p>
 			</div>
+		</div>
+
+		<!-- Credit Discrepancies card -->
+		<div class="card p-4 {discSummary.open > 0 ? 'border-warning-yellow/40' : 'border-hull-grey/20'}">
+			<div class="flex items-center justify-between mb-3">
+				<div class="flex items-center gap-3">
+					<h2 class="text-sm font-semibold uppercase tracking-wider {discSummary.open > 0 ? 'text-warning-yellow' : 'text-chrome-silver'}">
+						Credit Discrepancies
+					</h2>
+					{#if discSummary.open > 0}
+						<span class="px-2 py-0.5 text-[10px] font-bold rounded bg-warning-yellow/20 text-warning-yellow">{discSummary.open} OPEN</span>
+					{:else}
+						<span class="px-2 py-0.5 text-[10px] rounded bg-bio-green/20 text-bio-green">CLEAN</span>
+					{/if}
+				</div>
+				<div class="flex items-center gap-2">
+					<button
+						class="px-2 py-1 text-[10px] rounded bg-nebula-blue/30 text-plasma-cyan hover:bg-nebula-blue/50 transition-colors disabled:opacity-50"
+						onclick={runReconcile}
+						disabled={reconciling}
+						title="Run reconciliation now (compares snapshots vs movements, last 24h)"
+					>
+						{reconciling ? "Running..." : "Run Now"}
+					</button>
+					{#if discrepancies.length > 0}
+						<button
+							class="px-2 py-1 text-[10px] rounded bg-deep-void text-chrome-silver hover:bg-nebula-blue/30 transition-colors"
+							onclick={() => discExpanded = !discExpanded}
+						>
+							{discExpanded ? "Hide" : "Show"}
+						</button>
+					{/if}
+				</div>
+			</div>
+
+			{#if discSummary.open > 0}
+				<div class="grid grid-cols-3 gap-3 mb-3">
+					<div>
+						<p class="text-[10px] text-chrome-silver uppercase">Total Unaccounted</p>
+						<p class="text-lg font-bold mono {discSummary.totalUnaccounted >= 0 ? 'text-warning-yellow' : 'text-claw-red'}">
+							{discSummary.totalUnaccounted >= 0 ? '+' : ''}{discSummary.totalUnaccounted.toLocaleString()} cr
+						</p>
+					</div>
+					<div>
+						<p class="text-[10px] text-chrome-silver uppercase" title="Credits that appeared without a logged event">Unexplained Gains</p>
+						<p class="text-lg font-bold mono text-bio-green">+{discSummary.positiveLeak.toLocaleString()} cr</p>
+					</div>
+					<div>
+						<p class="text-[10px] text-chrome-silver uppercase" title="Credits that vanished without a logged event">Unexplained Losses</p>
+						<p class="text-lg font-bold mono text-claw-red">{discSummary.negativeLeak.toLocaleString()} cr</p>
+					</div>
+				</div>
+			{:else}
+				<p class="text-xs text-hull-grey">All credit movements accounted for in the last 7 days. Run reconciliation to scan again.</p>
+			{/if}
+
+			{#if discExpanded && discrepancies.length > 0}
+				<div class="overflow-x-auto mt-2 max-h-80 overflow-y-auto border-t border-hull-grey/20 pt-2">
+					<table class="w-full text-xs">
+						<thead class="sticky top-0 bg-deep-void">
+							<tr class="text-left text-chrome-silver uppercase tracking-wider">
+								<th class="py-1 pr-3">When</th>
+								<th class="py-1 pr-3">Account</th>
+								<th class="py-1 pr-3 text-right">Expected</th>
+								<th class="py-1 pr-3 text-right">Actual</th>
+								<th class="py-1 pr-3 text-right">Unaccounted</th>
+								<th class="py-1">Notes</th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-hull-grey/10">
+							{#each discrepancies.slice(0, 100) as d}
+								<tr class="hover:bg-nebula-blue/10">
+									<td class="py-1 pr-3 text-hull-grey mono">{formatTime(d.detectedAt)}</td>
+									<td class="py-1 pr-3 text-star-white">{d.account}</td>
+									<td class="py-1 pr-3 text-right mono text-chrome-silver">{d.expectedDelta.toLocaleString()}</td>
+									<td class="py-1 pr-3 text-right mono text-chrome-silver">{d.actualDelta.toLocaleString()}</td>
+									<td class="py-1 pr-3 text-right mono font-bold {d.unaccounted > 0 ? 'text-bio-green' : 'text-claw-red'}">
+										{d.unaccounted > 0 ? '+' : ''}{d.unaccounted.toLocaleString()}
+									</td>
+									<td class="py-1 text-hull-grey truncate max-w-xs" title={d.notes ?? ""}>{d.notes ?? ""}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<div class="grid grid-cols-2 md:grid-cols-4 gap-3">
