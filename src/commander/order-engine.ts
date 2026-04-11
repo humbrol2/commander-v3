@@ -1080,14 +1080,24 @@ export class OrderEngine {
     const homeStation = this.config.factionStorageStation ?? this.config.homeBase;
 
     // ── MINERS: standing mine orders for common ores ──
-    const oreTypes = ["iron_ore", "copper_ore", "silicon_ore", "titanium_ore", "gold_ore", "platinum_ore"];
+    const oreTypes = [
+      "iron_ore", "copper_ore", "silicon_ore", "titanium_ore",
+      "gold_ore", "platinum_ore", "cobalt_ore", "palladium_ore",
+      "aluminum_ore", "nickel_ore", "iridium_ore",
+    ];
     for (const ore of oreTypes) {
       // Boost silicon priority (needed for optical fiber bundles → facilities)
-      const pri = ore === "silicon_ore" ? PRI.STANDING + 10 : PRI.STANDING;
+      // Boost cobalt/palladium when stock is low (we're paying market rate to buy these)
+      const stock = this.factionInventory.get(ore) ?? 0;
+      let pri = PRI.STANDING;
+      if (ore === "silicon_ore") pri = PRI.STANDING + 10;
+      else if ((ore === "cobalt_ore" || ore === "palladium_ore" || ore === "gold_ore") && stock < 5_000) {
+        pri = PRI.STANDING + 8; // Low stock — prioritize over generic mining
+      }
       orders.push({
         type: "mine", targetId: ore,
-        description: `Mine ${ore.replace("_ore", "")} (standing)`,
-        priority: pri, reason: "standing_mine",
+        description: `Mine ${ore.replace("_ore", "")} (${stock < 5_000 ? "LOW STOCK" : "standing"})`,
+        priority: pri, reason: stock < 5_000 ? "low_stock_mine" : "standing_mine",
         requiredModule: "mining_laser",
       });
     }

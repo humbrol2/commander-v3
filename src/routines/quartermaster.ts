@@ -1374,9 +1374,10 @@ function identifyBuyOrderTargets(
 
   // ── Ore buy orders: buy ores at ~50% market rate when stock is low ──
   // Use % of faction storage cap (100K per item type)
+  // Lowered from 5%/10% — miners should fill ore stocks. Only buy when truly empty.
   const STORAGE_CAP = 100_000;
-  const ORE_LOW_PCT = 0.05;    // Below 5% cap → place buy orders
-  const ORE_TARGET_PCT = 0.10; // Buy up to 10% cap
+  const ORE_LOW_PCT = 0.02;    // Below 2% cap (2K units) → place buy orders
+  const ORE_TARGET_PCT = 0.05; // Buy up to 5% cap (5K units)
   const ORE_PRICE_FRACTION = 0.50;
 
   for (const [oreId, recipeMargin] of oreRecipeMargins) {
