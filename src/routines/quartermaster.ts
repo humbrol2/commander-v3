@@ -1382,12 +1382,14 @@ function identifyBuyOrderTargets(
 
   // Items our miners produce — don't place buy orders for these (we'd be buying from
   // ourselves, paying tax on the internal transfer). The order engine has standing
-  // mine orders for: iron, copper, silicon, titanium, gold, platinum, cobalt,
-  // palladium, aluminum, nickel, iridium.
+  // mine orders for these.
+  // EXCEPTIONS: silicon_ore and titanium_ore are scarce in the galaxy — miners can't
+  // find belts with them despite trying. Allow buy orders for these as last resort.
   const SELF_MINED_ORES = new Set([
-    "iron_ore", "copper_ore", "silicon_ore", "titanium_ore", "gold_ore",
+    "iron_ore", "copper_ore", "gold_ore",
     "platinum_ore", "cobalt_ore", "palladium_ore", "aluminum_ore",
     "nickel_ore", "iridium_ore",
+    // silicon_ore and titanium_ore are intentionally NOT here — let QM buy them
   ]);
 
   for (const [oreId, recipeMargin] of oreRecipeMargins) {
