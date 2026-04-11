@@ -55,12 +55,21 @@ async function main() {
 	async function processBot(bot: any): Promise<void> {
 		const api = new ApiClient({ username: bot.username, sessionStore, logger: stubLogger });
 		await api.restoreSession();
-		await api.login();
-		const status: any = await api.getStatus();
-		const ship = status.ship;
-		const player = status.player;
-		const shipClass = ship?.class_id ?? ship?.classId ?? "?";
-		const credits = player?.credits ?? 0;
+		// Bypass normalizeShip — call login raw via the internal API
+		let shipClass = "?";
+		let credits = 0;
+		try {
+			await api.login();
+			const status: any = await api.getStatus();
+			shipClass = status.ship?.class_id ?? status.ship?.classId ?? "?";
+			credits = status.player?.credits ?? 0;
+		} catch (err: any) {
+			// Login or normalize failed — try raw query
+			const raw: any = await (api as any).query("get_ship");
+			shipClass = raw?.class_id ?? raw?.classId ?? "?";
+			const player: any = await (api as any).query("get_player");
+			credits = player?.credits ?? 0;
+		}
 		const role = roleMap.get(bot.username) ?? "default";
 		const currentClass = catalog.find(s => s.id === shipClass) ?? LEGACY_SHIPS.find(s => s.id === shipClass);
 		const tier = currentClass ? getShipTier(currentClass) : -1;
