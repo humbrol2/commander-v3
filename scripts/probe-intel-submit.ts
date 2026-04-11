@@ -28,10 +28,24 @@ async function main() {
 		console.log(JSON.stringify(help, null, 2).slice(0, 3000));
 	} catch (err: any) { console.log("help err:", err.message); }
 
-	// Try simple submit
-	console.log(`\n=== submit current system ${sysId} ===`);
+	// Try with proper name
+	console.log(`\n=== submit with name ===`);
 	try {
-		const result: any = await api.factionSubmitIntel([{ system_id: sysId }]);
+		const result: any = await api.factionSubmitIntel([{ system_id: sysId, name: "Sol" }]);
+		console.log(JSON.stringify(result, null, 2));
+	} catch (err: any) { console.log("submit err:", err.message); }
+
+	// Try with name + POIs
+	console.log(`\n=== submit with name + pois ===`);
+	try {
+		const result: any = await api.factionSubmitIntel([{
+			system_id: sysId,
+			name: "Sol",
+			pois: [
+				{ id: "sol_central", type: "station", name: "Sol Central" },
+				{ id: "main_belt", type: "asteroid_belt", name: "Main Belt" },
+			],
+		}]);
 		console.log(JSON.stringify(result, null, 2));
 	} catch (err: any) { console.log("submit err:", err.message); }
 
