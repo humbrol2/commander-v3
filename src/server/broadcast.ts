@@ -168,12 +168,18 @@ export function startBroadcastLoop(deps: BroadcastDeps): () => void {
         const financialSource = routineToSource(bot.routine ?? undefined);
 
         // Cap per-tick financial events — large jumps are faction treasury moves, not real profit
-        // Real trading/mining/crafting rarely produces >50K in a single 3s tick
-        const MAX_TICK_DELTA = 50_000;
-        if (delta > MAX_TICK_DELTA || delta < -MAX_TICK_DELTA) {
-          // Log but don't record as financial event — almost certainly a faction transfer
-          if (Math.abs(delta) > 100_000) {
-            console.log(`[Economy] Skipped large delta for ${bot.botId}: ${delta > 0 ? "+" : ""}${delta}cr (likely faction transfer)`);
+        // Real per-tick costs (fuel, listing fees, tax, repair) are typically <2K.
+        // NPC sales can be larger (10K-30K) but we want those tracked as revenue.
+        // Faction deposits/withdrawals are now captured by credit_movements ledger, so
+        // skip them here to avoid double-counting / wallet-delta-as-cost confusion.
+        const MAX_COST_TICK = 2_500;   // anything beyond this is almost certainly a transfer
+        const MAX_REVENUE_TICK = 30_000; // legitimate big NPC sales — keep counting
+        if (delta < -MAX_COST_TICK) {
+          // Treat as transfer, not cost
+          delta = 0;
+        } else if (delta > MAX_REVENUE_TICK) {
+          if (delta > 100_000) {
+            console.log(`[Economy] Skipped large revenue delta for ${bot.botId}: +${delta}cr (likely faction transfer)`);
           }
           delta = 0;
         }
