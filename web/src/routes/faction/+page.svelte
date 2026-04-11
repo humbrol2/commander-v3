@@ -104,19 +104,63 @@
 		($factionState?.storage ?? []).reduce((sum, i) => sum + i.quantity, 0)
 	);
 
-	const storageByCategory = $derived(() => {
+	function categorize(itemId: string): string {
+		// Modules — match suffix pattern (e.g. mining_laser_i, cargo_expander_iii)
+		if (/_(i|ii|iii|iv|v|vi)$/.test(itemId)) {
+			if (itemId.includes("laser") || itemId.includes("cannon") || itemId.includes("turret") || itemId.includes("railgun") || itemId.includes("beam") || itemId.includes("autocannon")) return "Weapons";
+			if (itemId.includes("shield") || itemId.includes("armor")) return "Defense";
+			if (itemId.includes("harvester") || itemId.includes("scanner") || itemId.includes("cargo_expander") || itemId.includes("survey") || itemId.includes("afterburner") || itemId.includes("fuel_tank") || itemId.includes("salvage")) return "Modules";
+			return "Modules";
+		}
+		// Raw ore
+		if (itemId.endsWith("_ore")) return "Ore";
+		// Gas / atmosphere (compressed_hydrogen, argon_gas, etc.)
+		if (itemId.includes("gas") || itemId.includes("hydrogen") || itemId.includes("argon") || itemId.includes("nitrogen") || itemId.includes("helium") || itemId.includes("neon") || itemId.includes("chlorine") || itemId.includes("fluorine")) return "Gas";
+		// Ice / water
+		if (itemId.includes("ice") || itemId.includes("water") || itemId.includes("frost")) return "Ice/Water";
+		// Crystals / fragments / phase / quantum
+		if (itemId.includes("crystal") || itemId.includes("fragment") || itemId.includes("phase") || itemId.includes("quantum") || itemId.includes("dark_matter")) return "Crystal";
+		// Refined metals / alloys / plates
+		if (itemId.includes("plate") || itemId.includes("alloy") || itemId.includes("ingot") || itemId.includes("rod") || itemId.includes("bulkhead") || itemId.includes("composite") || itemId.includes("durasteel") || itemId.includes("graphene") || itemId.includes("hull_plating")) return "Refined Metals";
+		// Wiring / electronics / components
+		if (itemId.includes("wiring") || itemId.includes("circuit") || itemId.includes("processor") || itemId.includes("optic") || itemId.includes("fiber") || itemId.includes("computer") || itemId.includes("matrix") || itemId.includes("sensor")) return "Electronics";
+		// Power / fuel
+		if (itemId.includes("fuel_cell") || itemId.includes("power_cell") || itemId.includes("reactor") || itemId.includes("containment")) return "Power/Fuel";
+		// Ammo
+		if (itemId.includes("rounds") || itemId.includes("ammo") || itemId.includes("missile") || itemId.includes("torpedo")) return "Ammunition";
+		// Ship parts
+		if (itemId.includes("thruster") || itemId.includes("engine") || itemId.includes("frame") || itemId.includes("superstructure") || itemId.includes("nozzle")) return "Ship Parts";
+		// Salvage
+		if (itemId.includes("salvage") || itemId.includes("scrap") || itemId.includes("wreck")) return "Salvage";
+		// Trade goods
+		if (itemId.includes("wine") || itemId.includes("spirit") || itemId.includes("vintage") || itemId.includes("rotgut") || itemId.includes("biotic")) return "Trade Goods";
+		return "Other";
+	}
+
+	const CATEGORY_ORDER = ["Ore", "Gas", "Ice/Water", "Crystal", "Refined Metals", "Electronics", "Power/Fuel", "Ammunition", "Ship Parts", "Modules", "Weapons", "Defense", "Salvage", "Trade Goods", "Other"];
+	const CATEGORY_COLORS: Record<string, string> = {
+		"Ore": "text-shell-orange",
+		"Gas": "text-plasma-cyan",
+		"Ice/Water": "text-laser-blue",
+		"Crystal": "text-void-purple",
+		"Refined Metals": "text-chrome-silver",
+		"Electronics": "text-warning-yellow",
+		"Power/Fuel": "text-bio-green",
+		"Ammunition": "text-claw-red",
+		"Ship Parts": "text-nebula-blue",
+		"Modules": "text-plasma-cyan",
+		"Weapons": "text-claw-red",
+		"Defense": "text-bio-green",
+		"Salvage": "text-hull-grey",
+		"Trade Goods": "text-warning-yellow",
+		"Other": "text-hull-grey",
+	};
+
+	const storageByCategory = $derived.by(() => {
 		const items = $factionState?.storage ?? [];
 		const cats: Record<string, typeof items> = {};
 		for (const item of items) {
-			const cat = item.itemId.startsWith("ore_")
-				? "Ores"
-				: item.itemId.startsWith("refined_")
-					? "Refined"
-					: item.itemId.startsWith("component_")
-						? "Components"
-						: item.itemId.startsWith("module_")
-							? "Modules"
-							: "Other";
+			const cat = categorize(item.itemId);
 			if (!cats[cat]) cats[cat] = [];
 			cats[cat].push(item);
 		}
@@ -124,7 +168,10 @@
 		for (const cat of Object.keys(cats)) {
 			cats[cat].sort((a, b) => b.quantity - a.quantity);
 		}
-		return cats;
+		// Return ordered list of [category, items, totalQty]
+		return CATEGORY_ORDER
+			.filter(c => cats[c]?.length)
+			.map(c => ({ name: c, items: cats[c], totalQty: cats[c].reduce((s, i) => s + i.quantity, 0) }));
 	});
 
 	const onlineMembers = $derived(
@@ -222,21 +269,44 @@
 		<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
 			<!-- Storage (2/3 width) -->
 			<div class="lg:col-span-2 card p-4">
-				<h2 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider mb-3">
-					Faction Storage
-				</h2>
+				<div class="flex items-center justify-between mb-3">
+					<h2 class="text-sm font-semibold text-chrome-silver uppercase tracking-wider">
+						Faction Storage
+					</h2>
+					<div class="text-xs text-hull-grey">
+						{storageByCategory.length} categor{storageByCategory.length === 1 ? "y" : "ies"} ·
+						{$factionState.storage.length} item types ·
+						{totalStorageItems.toLocaleString()} units
+					</div>
+				</div>
 				{#if $factionState.storage.length === 0}
 					<p class="text-sm text-hull-grey py-8 text-center">Storage is empty</p>
 				{:else}
+					<!-- Category summary chips -->
+					<div class="flex flex-wrap gap-2 mb-4 pb-3 border-b border-hull-grey/20">
+						{#each storageByCategory as cat}
+							<a href="#cat-{cat.name.replace(/[^a-z]/gi, '')}" class="text-[10px] px-2 py-1 rounded bg-deep-void/70 hover:bg-nebula-blue/30 transition-colors">
+								<span class={CATEGORY_COLORS[cat.name] ?? 'text-chrome-silver'}>{cat.name}</span>
+								<span class="text-hull-grey ml-1">({cat.items.length})</span>
+								<span class="ml-1 mono text-star-white">{cat.totalQty.toLocaleString()}</span>
+							</a>
+						{/each}
+					</div>
+					<!-- Per-category sections -->
 					<div class="space-y-4">
-						{#each Object.entries(storageByCategory()) as [category, items]}
-							<div>
-								<h3 class="text-xs text-hull-grey uppercase tracking-wider mb-2">{category}</h3>
-								<div class="grid grid-cols-1 sm:grid-cols-2 gap-1">
-									{#each items as item}
-										<div class="flex items-center justify-between py-1.5 px-2 rounded bg-deep-void/50 hover:bg-nebula-blue/20 transition-colors">
-											<span class="text-sm text-star-white">{item.itemName}</span>
-											<span class="mono text-sm font-medium {category === 'Ores' ? 'text-shell-orange' : category === 'Refined' ? 'text-plasma-cyan' : category === 'Components' ? 'text-void-purple' : 'text-chrome-silver'}">
+						{#each storageByCategory as cat}
+							<div id="cat-{cat.name.replace(/[^a-z]/gi, '')}">
+								<h3 class="text-xs uppercase tracking-wider mb-2 flex items-center justify-between">
+									<span class={CATEGORY_COLORS[cat.name] ?? 'text-hull-grey'}>{cat.name}</span>
+									<span class="text-hull-grey font-normal text-[10px] mono">
+										{cat.items.length} type{cat.items.length === 1 ? "" : "s"} · {cat.totalQty.toLocaleString()} total
+									</span>
+								</h3>
+								<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1">
+									{#each cat.items as item}
+										<div class="flex items-center justify-between py-1 px-2 rounded bg-deep-void/50 hover:bg-nebula-blue/20 transition-colors">
+											<span class="text-xs text-star-white truncate" title={item.itemName}>{item.itemName}</span>
+											<span class="mono text-xs font-medium {CATEGORY_COLORS[cat.name] ?? 'text-chrome-silver'}">
 												{item.quantity.toLocaleString()}
 											</span>
 										</div>
