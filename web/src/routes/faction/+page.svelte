@@ -646,14 +646,14 @@
 					</p>
 				</div>
 				{#if $factionState}
-					{@const oreTotal = $factionState.storage.filter(i => i.itemId.startsWith("ore_")).reduce((sum, i) => sum + i.quantity, 0)}
+					{@const oreTotal = $factionState.storage.filter(i => i.itemId.endsWith("_ore")).reduce((sum, i) => sum + i.quantity, 0)}
 					<div>
 						<p class="text-chrome-silver mb-1">Ore in Faction Storage</p>
 						<p class="mono text-shell-orange">{oreTotal.toLocaleString()}</p>
 						<p class="text-xs text-hull-grey mt-1">
-							{#if oreTotal < 20}
+							{#if oreTotal < 2000}
 								Low — miners get priority boost
-							{:else if oreTotal >= 50}
+							{:else if oreTotal >= 10000}
 								High — crafters get priority boost
 							{:else}
 								Moderate supply level

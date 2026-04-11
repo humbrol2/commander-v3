@@ -743,15 +743,16 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
       tradeIntelCoverage: tradeIntelStatus
         ? { stationsSubmitted: Number((tradeIntelStatus as Record<string, unknown>).stations_submitted ?? (tradeIntelStatus as Record<string, unknown>).stationsSubmitted ?? 0), totalStations: Number((tradeIntelStatus as Record<string, unknown>).total_stations ?? (tradeIntelStatus as Record<string, unknown>).totalStations ?? 0) }
         : null,
-      orders: (factionOrders as Array<Record<string, unknown>>).map(o => ({
-        id: String(o.id ?? o.order_id ?? ""),
-        type: (String(o.type ?? o.order_type ?? "sell") as "buy" | "sell"),
-        itemId: String(o.itemId ?? o.item_id ?? ""),
-        itemName: String(o.itemName ?? o.item_name ?? String(o.itemId ?? o.item_id ?? "").replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())),
-        quantity: Number(o.quantity ?? 0),
-        filled: Number(o.quantity ?? 0) - Number(o.remaining ?? o.quantity ?? 0),
-        priceEach: Number(o.priceEach ?? o.price_each ?? o.price ?? 0),
-        stationName: String(o.stationName ?? o.station_name ?? o.stationId ?? o.station_id ?? ""),
+      // Use cachedFactionOrders populated by pollOpenOrders (single source)
+      orders: cachedFactionOrders.map(o => ({
+        id: o.id,
+        type: o.type,
+        itemId: o.itemId,
+        itemName: o.itemName,
+        quantity: o.quantity,
+        filled: o.filled ?? 0,
+        priceEach: o.priceEach,
+        stationName: o.stationName ?? o.stationId ?? "",
       })),
       missions: factionMissions.map(m => ({
         id: String(m.id ?? m.template_id ?? m.mission_id ?? ""),
@@ -780,22 +781,8 @@ async function pollFactionState(deps: BroadcastDeps): Promise<void> {
       buildQueue: fleetConfig.facilityBuildQueue ?? [],
     };
 
-    // Cache faction orders as OpenOrder[] for economy tab
-    cachedFactionOrders = (faction.orders ?? []).map(o => ({
-      id: `faction_${o.id}`,
-      type: o.type,
-      itemId: o.itemId,
-      itemName: o.itemName,
-      quantity: o.quantity,
-      filled: o.filled,
-      priceEach: o.priceEach,
-      total: o.priceEach * o.quantity,
-      stationId: "",
-      stationName: o.stationName,
-      createdAt: "",
-      botId: "Faction",
-      owner: "faction" as const,
-    }));
+    // Note: cachedFactionOrders is populated by pollOpenOrders() — used here for display.
+    // We do NOT overwrite it with our own data (was a circular bug).
 
     broadcast({ type: "faction_update", faction });
 
