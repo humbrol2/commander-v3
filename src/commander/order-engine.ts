@@ -783,7 +783,35 @@ export class OrderEngine {
       }
     }
 
-    // ── 3. SUPPLY CHAIN CRAFTING (pri 68-72) — ore surplus → refined goods ──
+    // ── 2c. INTERMEDIATE CRAFTING (pri 82-84) — HIGHER than final products ──
+    // Intermediates must be made BEFORE final products that consume them.
+    // Without this, crafters pick Hull Plating (pri 76), fail on "need Titanium Alloy",
+    // blacklist, and idle forever.
+    const INTERMEDIATES: Array<{ input: string; output: string; minInput: number; maxOutput: number }> = [
+      { input: "titanium_ore", output: "titanium_alloy", minInput: 10, maxOutput: 200 },
+      { input: "iron_ore", output: "steel_plate", minInput: 50, maxOutput: 500 },
+      { input: "copper_ore", output: "copper_wiring", minInput: 50, maxOutput: 500 },
+      { input: "silicon_ore", output: "circuit_board", minInput: 10, maxOutput: 100 },
+      { input: "energy_crystal", output: "focused_crystal", minInput: 5, maxOutput: 50 },
+    ];
+    for (const im of INTERMEDIATES) {
+      const inputStock = this.factionInventory.get(im.input) ?? 0;
+      const outputStock = this.factionInventory.get(im.output) ?? 0;
+      if (inputStock >= im.minInput && outputStock < im.maxOutput) {
+        const batchSize = Math.min(10, Math.floor(inputStock / Math.max(1, im.minInput / 2)));
+        if (batchSize <= 0) continue;
+        orders.push({
+          type: "craft", targetId: im.output,
+          description: `INTERMEDIATE: ${im.output} (${outputStock} in stock, ${inputStock} ${im.input} available)`,
+          priority: PRI.FACILITY - 1, // 84 — above HIGH_VALUE (76-81), ensures inputs exist before final products
+          reason: `intermediate: ${im.output}`,
+          quantity: batchSize,
+          maxConcurrent: 1, // Dedicated intermediate crafter
+        });
+      }
+    }
+
+    // ── 3. SUPPLY CHAIN CRAFTING (pri 68-72) — ore surplus → refined goods (fallback) ──
     for (const [oreId, config] of Object.entries(SUPPLY_CHAIN_ORES)) {
       const oreStock = this.factionInventory.get(oreId) ?? 0;
       const outputStock = this.factionInventory.get(config.craftInto) ?? 0;
