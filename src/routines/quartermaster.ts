@@ -1347,6 +1347,36 @@ function identifyBuyOrderTargets(
     }
   }
 
+  // ── KNOWN SHORTAGES: force-buy critical scarce materials ──
+  // These items are scarce in the galaxy, miners can't produce them, but the
+  // entire crafting pipeline depends on them. Pay premium to keep crafters working.
+  const SHORTAGE_BUY: Array<{ itemId: string; minStock: number; maxPrice: number; targetQty: number }> = [
+    { itemId: "silicon_ore", minStock: 200, maxPrice: 50, targetQty: 500 },
+    { itemId: "rare_salvage", minStock: 30, maxPrice: 200, targetQty: 100 },
+    { itemId: "silver_wiring", minStock: 30, maxPrice: 100, targetQty: 100 },
+  ];
+  for (const sb of SHORTAGE_BUY) {
+    const stock = factionStock.get(sb.itemId) ?? 0;
+    if (stock >= sb.minStock) continue;
+
+    const entry = idx.get(sb.itemId);
+    // Try market price first, fall back to maxPrice if no market data
+    const marketPrice = entry?.medianBuy ?? entry?.cheapestBuy ?? 0;
+    const buyPrice = marketPrice > 0 && marketPrice < sb.maxPrice
+      ? Math.max(1, Math.floor(marketPrice * 1.2))
+      : sb.maxPrice;
+
+    targets.set(`shortage_${sb.itemId}`, {
+      itemId: sb.itemId,
+      itemName: ctx.crafting.getItemName(sb.itemId) || sb.itemId.replace(/_/g, " "),
+      quantityNeeded: Math.min(sb.targetQty - stock, 200),
+      maxBuyPrice: buyPrice,
+      recommendedPrice: buyPrice,
+      recipeIds: [],
+      expectedMargin: 50000, // Sort to top — these unblock the whole crafting pipeline
+    });
+  }
+
   // ── Facility upgrade materials: highest priority buy orders ──
   const facilityNeeds = ctx.cache.getFacilityMaterialNeeds?.() ?? new Map<string, number>();
   for (const [itemId, needed] of facilityNeeds) {
