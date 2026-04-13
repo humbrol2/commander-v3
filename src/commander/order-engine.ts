@@ -663,7 +663,7 @@ export class OrderEngine {
         description: `STRATEGIC: craft circuit boards (${circuitBoards}, need ${circuitBoards + circuitBoardsNeeded} for facilities)`,
         priority: PRI.FACILITY - 2, reason: "facility: circuit boards",
         quantity: Math.min(10, circuitBoardsNeeded),
-        maxConcurrent: crafterSlots,
+        maxConcurrent: 1, // Silicon-limited — only 1 crafter to conserve silicon
       });
     }
 
@@ -682,7 +682,7 @@ export class OrderEngine {
           priority: PRI.FACILITY + 2, // Above power cells (86) so supply stays ahead
           reason: "supply_chain: circuit boards → power cells",
           quantity: canCraftCB,
-          maxConcurrent: Math.min(crafterSlots, 2), // Don't use all crafters on CBs
+          maxConcurrent: 1, // Silicon-limited — only 1 crafter to conserve silicon
         });
       }
     }
