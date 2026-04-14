@@ -160,8 +160,8 @@ export async function* miner(ctx: BotContext): AsyncGenerator<RoutineYield, void
       ...ctx.galaxy.findPoisByType("asteroid_belt"),
       ...ctx.galaxy.findPoisByType("asteroid"),
       ...ctx.galaxy.findPoisByType("nebula"),
-      ...ctx.galaxy.findPoisByType("crystal_field"),
-      ...ctx.galaxy.findPoisByType("mineral_deposit"),
+      // Also search by target resource directly (catches POIs the type search misses)
+      ...(targetOre ? ctx.galaxy.findPoisWithResource(targetOre) : []),
     ].filter(b => !ctx.galaxy.isPoiDepleted(b.poi.id));
 
     // Cold-start: galaxy cache has no POI data — scan connected systems to discover belts
