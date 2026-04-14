@@ -448,7 +448,7 @@ async function* manageFactionSales(
     // Reserves must cover: strategic minStock + crafting pipeline buffer
     // Only sell quantities ABOVE these thresholds
     const CONSUMABLE_RESERVES: Record<string, number> = {
-      fuel_cell: 5000, fuel_cell_premium: 50, repair_kit: 100,
+      fuel_cell: 500, fuel_cell_premium: 50, repair_kit: 100,  // Slashed fuel_cell reserve from 5000→500 to liquidate 37K stockpile
       purified_water: 100,  // Bio facilities consume it (v0.257.0) — sell the surplus
       phase_crystal: 1000,      // Crafting (focused crystals) + strategic reserve
       quantum_fragments: 1000,  // Rare material, keep substantial buffer
@@ -1352,8 +1352,8 @@ function identifyBuyOrderTargets(
   // entire crafting pipeline depends on them. Pay premium to keep crafters working.
   const SHORTAGE_BUY: Array<{ itemId: string; minStock: number; maxPrice: number; targetQty: number }> = [
     { itemId: "silicon_ore", minStock: 500, maxPrice: 10, targetQty: 2000 },
-    { itemId: "rare_salvage", minStock: 50, maxPrice: 200, targetQty: 200 },
-    { itemId: "silver_wiring", minStock: 50, maxPrice: 100, targetQty: 200 },
+    { itemId: "rare_salvage", minStock: 20, maxPrice: 200, targetQty: 30 },  // Only ~12/hr consumed, was overbuying 13x
+    { itemId: "silver_wiring", minStock: 20, maxPrice: 100, targetQty: 50 },
   ];
   for (const sb of SHORTAGE_BUY) {
     const stock = factionStock.get(sb.itemId) ?? 0;

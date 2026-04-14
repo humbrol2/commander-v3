@@ -896,7 +896,7 @@ export class OrderEngine {
       // Circuit boards: Nova Terra buys at 191-200cr
       { item: "circuit_board", minStock: 50, sellAt: "nova_terra_central", priority: PRI.TRADE + 5, description: "Sell circuit boards at Nova Terra (191cr)" },
       // Fuel cells: surplus stockpile — sell at multiple stations
-      { item: "fuel_cell", minStock: 5000, sellAt: "gold_run_extraction_hub", priority: PRI.TRADE + 3, description: "Sell fuel cells at Gold Run (71cr)" },
+      { item: "fuel_cell", minStock: 500, sellAt: "gold_run_extraction_hub", priority: PRI.TRADE + 5, description: "Sell fuel cells — liquidating 37K stockpile (71cr)" },
       // Reinforced bulkheads: Deep Range buys at 1600-1965cr
       { item: "reinforced_bulkhead", minStock: 1, sellAt: "deep_range_outpost", priority: PRI.TRADE + 8, description: "Sell reinforced bulkheads at Deep Range (1600cr)" },
       // Purified water: bio facilities consume it (v0.257.0) — sell surplus
@@ -1128,6 +1128,20 @@ export class OrderEngine {
         priority: pri, reason: stock < 5_000 ? "low_stock_mine" : "standing_mine",
         requiredModule: "mining_laser",
       });
+    }
+
+    // ── SILICON MINING: force a miner to Crystalline Field in Diphda ──
+    // Silicon is the #1 crafting bottleneck — this POI is a known silicon source
+    const siliconStock = this.factionInventory.get("silicon_ore") ?? 0;
+    if (siliconStock < 1000) {
+      orders.push({
+        type: "mine", targetId: "silicon_ore",
+        description: `CRITICAL: Mine silicon at Crystalline Field — Diphda (${siliconStock} in stock)`,
+        priority: PRI.STANDING + 15, // Highest standing priority — silicon gates entire crafting pipeline
+        reason: "critical_silicon",
+        requiredModule: "mining_laser",
+        targetSystem: "diphda",
+      } as any);
     }
 
     // ── TRADERS: sell surplus from faction storage ──
