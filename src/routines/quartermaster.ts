@@ -210,7 +210,7 @@ export async function* quartermaster(ctx: BotContext): AsyncGenerator<RoutineYie
   const homeBase = getParam(ctx, "homeBase",
     ctx.fleetConfig.factionStorageStation || ctx.fleetConfig.homeBase);
   const moduleTarget = getParam(ctx, "moduleTarget", 4);
-  const undercutPct = getParam(ctx, "undercutPct", 0.05);
+  const undercutPct = getParam(ctx, "undercutPct", 0.20); // Aggressive — sell faster, clear inventory
   const buyOrderBudgetPct = getParam(ctx, "buyOrderBudgetPct", 0.10);
   const maxOrderAge = getParam(ctx, "maxOrderAge", 3_600_000); // 1 hour (was 2h)
 

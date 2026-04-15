@@ -114,18 +114,20 @@ export interface RolePoolConfig {
 
 /** Default pool sizing — used when config doesn't specify */
 export const DEFAULT_POOL_CONFIG: RolePoolConfig[] = [
-  { role: "ore_miner",      min: 1, max: 3, preferredShip: "archimedes" },
-  { role: "crystal_miner",  min: 0, max: 2, preferredShip: "archimedes" },
-  { role: "gas_harvester",   min: 0, max: 1, preferredShip: "archimedes" },
-  { role: "ice_harvester",   min: 0, max: 1, preferredShip: "archimedes" },
-  { role: "explorer",        min: 1, max: 2, preferredShip: "viper" },
-  { role: "trader",          min: 1, max: 2, preferredShip: "archimedes" },
+  // Profit-focused: 5 traders, 2 crafters, 2 miners, 1 QM, 2 scouts, rest fill
+  // Traders are the revenue engine (34K/hr from just 2 → target 80K+ with 5)
+  { role: "trader",          min: 3, max: 5, preferredShip: "archimedes" },
   { role: "crafter",         min: 1, max: 2, preferredShip: "archimedes" },
+  { role: "ore_miner",      min: 1, max: 2, preferredShip: "archimedes" },
+  { role: "crystal_miner",  min: 0, max: 1, preferredShip: "archimedes" },
+  { role: "gas_harvester",   min: 0, max: 1, preferredShip: "archimedes" },
+  { role: "explorer",        min: 1, max: 2, preferredShip: "viper" },
   { role: "quartermaster",   min: 1, max: 1, preferredShip: "theoria" },
-  { role: "hunter",          min: 0, max: 1, preferredShip: "viper" },
-  { role: "mission_runner",  min: 0, max: 2, preferredShip: "archimedes" },
-  { role: "ship_dealer",    min: 0, max: 1, preferredShip: "archimedes" },
-  { role: "shipwright",     min: 0, max: 1, preferredShip: "archimedes" },
+  { role: "hunter",          min: 0, max: 0, preferredShip: "viper" },
+  { role: "mission_runner",  min: 0, max: 1, preferredShip: "archimedes" },
+  { role: "ice_harvester",   min: 0, max: 0, preferredShip: "archimedes" },
+  { role: "ship_dealer",    min: 0, max: 0, preferredShip: "archimedes" },
+  { role: "shipwright",     min: 0, max: 0, preferredShip: "archimedes" },
 ];
 
 // ── Display Names ──

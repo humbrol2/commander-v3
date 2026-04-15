@@ -1160,14 +1160,14 @@ export class OrderEngine {
     }
 
     // ── TRADERS: scan + sell runs to known stations ──
-    // Send traders to stations with known markets to sell goods + scan + buy return cargo
-    const allFreshness = ctx.cache.getAllMarketFreshness?.(7_200_000) ?? []; // 2hr
+    // More traders + more routes = more jackpot discoveries (quantum processor, nebula cargo matrix)
+    const allFreshness = ctx.cache.getAllMarketFreshness?.(14_400_000) ?? []; // 4hr freshness window
     const knownStations = allFreshness.map(f => f.stationId).filter(s => s !== homeStation);
-    for (const stationId of knownStations.slice(0, 3)) {
+    for (const stationId of knownStations.slice(0, 8)) {
       orders.push({
         type: "trade", targetId: "scan_and_sell",
         description: `Trade run to ${stationId.replace(/_/g, " ")} (sell + scan + buy return)`,
-        priority: PRI.TRADE, reason: "standing_trade_run",
+        priority: PRI.TRADE + 2, reason: "standing_trade_run",
         stationId,
         fromStationId: homeStation,
       });
