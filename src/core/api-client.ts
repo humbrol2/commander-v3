@@ -1854,7 +1854,8 @@ function num(v: unknown): number {
 }
 
 /** Normalize raw ship catalog API response → ShipClass */
-export function normalizeShipClass(raw: Record<string, unknown>): import("../types/game").ShipClass {
+export function normalizeShipClass(raw: Record<string, unknown> | null | undefined): import("../types/game").ShipClass {
+  if (!raw || typeof raw !== "object") raw = {} as Record<string, unknown>;
   // Known keys that we explicitly map
   const knownKeys = new Set([
     "id", "name", "category", "description",
