@@ -623,6 +623,11 @@ export class Commander {
     if (now - this.lastShipCheck < 300_000) return;
     this.lastShipCheck = now;
 
+    // PAUSED: don't commission NEW ships until existing commissions are all claimed.
+    // We have 11 unclaimed ships worth 2.6M. Focus on claiming, not buying.
+    // Only allow free switches to already-owned ships.
+    const PAUSE_BUY_COMMISSIONS = true;
+
     // Auto-load ship catalog
     if (this.shipCatalog.length === 0) {
       const api = this.deps.getApi?.();
@@ -678,6 +683,7 @@ export class Commander {
       }
 
       // Priority 2: Buy upgrade from shipyard (silent — no noise unless successful)
+      if (PAUSE_BUY_COMMISSIONS) continue; // PAUSED — claim existing commissions first
       const budget = bot.credits - minReserve;
       if (budget <= 0) continue;
       const available = catalog.filter(s => !this.shipBlacklist.has(s.id));
