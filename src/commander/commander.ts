@@ -214,11 +214,38 @@ export class Commander {
   // ══════════════════════════════════════════════════════════
 
   private lastBlacklistClear = 0;
+  private lastCommissionCheck = 0;
 
   private async evaluateAndAssign(): Promise<CommanderDecision> {
     this._evaluating = true;
     const startMs = performance.now();
     try {
+      // Auto-claim ready ship commissions every 5 min
+      // Commissions sit "ready" indefinitely until claimed — we lost 2.6M to this bug
+      const now2 = Date.now();
+      if (now2 - this.lastCommissionCheck > 5 * 60 * 1000 && now2 - this.startedAt > 120_000) {
+        this.lastCommissionCheck = now2;
+        const api = this.deps.getApi?.();
+        if (api) {
+          try {
+            const status: any = await (api as any).query("commission_status");
+            const ready = (status?.commissions ?? []).filter((c: any) => c.status === "ready");
+            for (const c of ready) {
+              try {
+                await api.claimCommission(c.commission_id);
+                console.log(`[Commander] Auto-claimed ${c.ship_class_id} (${c.commission_id.slice(0, 12)}, ${c.credits_paid}cr)`);
+              } catch (err: any) {
+                // "not_docked" is expected — bot needs to dock to claim
+                const msg = err.message ?? "";
+                if (!msg.includes("not_docked") && !msg.includes("action_in_progress")) {
+                  console.log(`[Commander] Claim failed for ${c.ship_class_id}: ${msg.slice(0, 60)}`);
+                }
+              }
+            }
+          } catch { /* commission_status not available */ }
+        }
+      }
+
       // Auto-clear crafter blacklists every 30 min so they retry failed recipes
       // Silicon/material availability changes constantly — stale blacklists cause idle crafters
       const now = Date.now();
