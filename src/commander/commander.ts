@@ -623,10 +623,9 @@ export class Commander {
     if (now - this.lastShipCheck < 300_000) return;
     this.lastShipCheck = now;
 
-    // PAUSED: don't commission NEW ships until existing commissions are all claimed.
-    // We have 11 unclaimed ships worth 2.6M. Focus on claiming, not buying.
-    // Only allow free switches to already-owned ships.
-    const PAUSE_BUY_COMMISSIONS = true;
+    // Re-enabled: auto-claimer handles ready commissions now.
+    // Treasury at 2.5M+ can afford commissions for trader upgrades.
+    const PAUSE_BUY_COMMISSIONS = false;
 
     // Auto-load ship catalog
     if (this.shipCatalog.length === 0) {
@@ -682,20 +681,17 @@ export class Commander {
         }
       }
 
-      // Priority 2: Buy upgrade from shipyard (silent — no noise unless successful)
-      if (PAUSE_BUY_COMMISSIONS) continue; // PAUSED — claim existing commissions first
+      // Priority 2: Commission upgrade (at any docked station)
+      if (PAUSE_BUY_COMMISSIONS) continue;
+      if (!bot.docked) continue; // Must be docked to commission
       const budget = bot.credits - minReserve;
-      if (budget <= 0) continue;
+      if (budget < 50_000) continue; // Need meaningful budget
       const available = catalog.filter(s => !this.shipBlacklist.has(s.id));
       const candidates = findUpgradeCandidates(currentClass.id, role, available, budget, bot.skills);
       if (candidates.length === 0) continue;
-      let upgrade: typeof candidates[0] | null = null;
-      let shipyard: { stationId: string; price: number } | null = null;
-      for (const candidate of candidates) {
-        const yard = this.deps.cache.findShipyardForClass(candidate.id);
-        if (yard) { upgrade = candidate; shipyard = yard; break; }
-      }
-      if (!upgrade || !shipyard) continue; // No shipyard known — silently skip
+      // Pick the best affordable candidate — commission_ship works at any station
+      const upgrade = candidates[0];
+      const shipyard = { stationId: bot.systemId ?? "", price: upgrade.basePrice };
 
       this.pendingUpgrades.set(bot.botId, {
         targetShipClass: upgrade.id, targetPrice: upgrade.basePrice, role,
