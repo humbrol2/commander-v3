@@ -68,7 +68,7 @@ const PROTECTED_MATERIALS = new Set([
   "flex_polymer",          // Faction Workshop facility
   "power_battery",         // Crafting chain input
   "ceramite_plating",      // Facility material
-  "compressed_hydrogen",   // Fuel chain input
+  "hydrogen_gas",          // Fuel chain input (renamed from compressed_hydrogen in v0.269.15)
   "liquid_hydrogen",       // Fuel chain input
   // steel_plate, copper_wiring, titanium_alloy: moved to CONSUMABLE_RESERVES (sell excess)
   // phase_crystal, quantum_fragments, energy_crystal: moved to CONSUMABLE_RESERVES

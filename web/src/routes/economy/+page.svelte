@@ -690,8 +690,8 @@
 		{@const factionCredits = $factionState?.credits ?? 0}
 		{@const totalAssets = totalBotCredits + factionCredits}
 		{@const factionOre = ($factionState?.storage ?? []).filter(s => s.itemId.endsWith('_ore') || s.itemId === 'quantum_fragments').reduce((s, i) => s + i.quantity, 0)}
-		{@const factionCrafted = ($factionState?.storage ?? []).filter(s => !s.itemId.endsWith('_ore') && s.itemId !== 'quantum_fragments' && !['water_ice','argon_gas','compressed_hydrogen','liquid_hydrogen','liquid_nitrogen','nitrogen_ice','purified_argon','purified_water'].includes(s.itemId)).reduce((s, i) => s + i.quantity, 0)}
-		{@const factionGas = ($factionState?.storage ?? []).filter(s => ['water_ice','argon_gas','compressed_hydrogen','liquid_hydrogen','liquid_nitrogen','nitrogen_ice','purified_argon','purified_water'].includes(s.itemId)).reduce((s, i) => s + i.quantity, 0)}
+		{@const factionCrafted = ($factionState?.storage ?? []).filter(s => !s.itemId.endsWith('_ore') && s.itemId !== 'quantum_fragments' && !['water_ice','argon_gas','hydrogen_gas','liquid_hydrogen','liquid_nitrogen','nitrogen_ice','purified_argon','purified_water'].includes(s.itemId)).reduce((s, i) => s + i.quantity, 0)}
+		{@const factionGas = ($factionState?.storage ?? []).filter(s => ['water_ice','argon_gas','hydrogen_gas','liquid_hydrogen','liquid_nitrogen','nitrogen_ice','purified_argon','purified_water'].includes(s.itemId)).reduce((s, i) => s + i.quantity, 0)}
 		{@const activeBots = $bots.filter(b => b.status === 'running').length}
 		{@const totalBots = $bots.length}
 		<div class="card p-4 mb-4 border border-plasma-cyan/20">
