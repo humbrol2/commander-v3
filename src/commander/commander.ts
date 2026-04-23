@@ -46,6 +46,8 @@ export interface CommanderDeps {
   cache: GameCache;
   crafting: Crafting;
   getApi?: () => ApiClient | null;
+  /** Get a specific bot's API client by botId/username */
+  getBotApi?: (botId: string) => ApiClient | null;
   homeBase?: string;
   homeSystem?: string;
   defaultStorageMode?: "sell" | "deposit" | "faction_deposit";
@@ -220,29 +222,46 @@ export class Commander {
     this._evaluating = true;
     const startMs = performance.now();
     try {
-      // Auto-claim ready ship commissions every 5 min
+      // Auto-claim ready ship commissions every 5 min (per-bot)
       // Commissions sit "ready" indefinitely until claimed — we lost 2.6M to this bug
+      // Must use each bot's own API client AND bot must be docked at the build station
       const now2 = Date.now();
       if (now2 - this.lastCommissionCheck > 5 * 60 * 1000 && now2 - this.startedAt > 120_000) {
         this.lastCommissionCheck = now2;
-        const api = this.deps.getApi?.();
-        if (api) {
+        const fleet = this.deps.getFleetStatus();
+        const homeBase = this.deps.homeBase ?? this.deps.getFleetConfig?.()?.factionStorageStation ?? "";
+
+        for (const bot of fleet.bots) {
+          const botApi = this.deps.getBotApi?.(bot.botId);
+          if (!botApi) continue;
+
           try {
-            const status: any = await (api as any).query("commission_status");
+            const status: any = await (botApi as any).query("commission_status");
             const ready = (status?.commissions ?? []).filter((c: any) => c.status === "ready");
-            for (const c of ready) {
-              try {
-                await api.claimCommission(c.commission_id);
-                console.log(`[Commander] Auto-claimed ${c.ship_class_id} (${c.commission_id.slice(0, 12)}, ${c.credits_paid}cr)`);
-              } catch (err: any) {
-                // "not_docked" is expected — bot needs to dock to claim
-                const msg = err.message ?? "";
-                if (!msg.includes("not_docked") && !msg.includes("action_in_progress")) {
-                  console.log(`[Commander] Claim failed for ${c.ship_class_id}: ${msg.slice(0, 60)}`);
+            if (ready.length === 0) continue;
+
+            if (bot.docked) {
+              // Try claiming — will fail with wrong_base if not at build station
+              for (const c of ready) {
+                try {
+                  await botApi.claimCommission(c.commission_id);
+                  console.log(`[Commander] Auto-claimed ${c.ship_class_id} for ${bot.botId} (${c.credits_paid?.toLocaleString()}cr)`);
+                } catch (err: any) {
+                  const msg = err.message ?? "";
+                  if (msg.includes("wrong_base")) {
+                    // Bot is docked but at wrong station — send home
+                    console.log(`[Commander] ${bot.botId} has ${ready.length} ship(s) ready at ${homeBase} — sending home to claim`);
+                    try { await this.deps.assignRoutine(bot.botId, "return_home", {}); } catch { /* best effort */ }
+                    break;
+                  }
                 }
               }
+            } else {
+              // Bot has ready commissions but is undocked — send home next cycle
+              console.log(`[Commander] ${bot.botId} has ${ready.length} ship(s) ready — queuing return_home to claim`);
+              try { await this.deps.assignRoutine(bot.botId, "return_home", {}); } catch { /* best effort */ }
             }
-          } catch { /* commission_status not available */ }
+          } catch { /* commission_status may fail for some bots */ }
         }
       }
 

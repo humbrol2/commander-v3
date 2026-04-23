@@ -277,6 +277,10 @@ export async function startup(config: AppConfig): Promise<AppServices> {
       const readyBot = bots.find(b => b.status === "ready" || b.status === "running");
       return readyBot?.api ?? null;
     },
+    getBotApi: (botId: string) => {
+      const bot = botManager.getBot(botId) ?? botManager.getAllBots().find(b => b.username === botId);
+      return (bot?.status === "ready" || bot?.status === "running") ? bot.api : null;
+    },
     homeBase: config.fleet.home_base || undefined,
     getFleetConfig: () => botManager.fleetConfig,
     memoryStore,
