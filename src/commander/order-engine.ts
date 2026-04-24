@@ -112,6 +112,7 @@ export interface OrderEngineConfig {
   homeSystem: string;
   defaultStorageMode: "sell" | "deposit" | "faction_deposit";
   minBotCredits: number;
+  maxBotCredits?: number;
   factionStorageStation?: string;
 }
 
@@ -411,7 +412,7 @@ export class OrderEngine {
       }
 
       // High credits: above maximum — deposit excess to faction treasury
-      const maxCredits = 100_000; // TODO: make configurable
+      const maxCredits = this.config.maxBotCredits ?? 400_000;
       if (bot.credits > maxCredits && bot.docked) {
         const excess = bot.credits - maxCredits;
         orders.push({
@@ -803,10 +804,10 @@ export class OrderEngine {
         orders.push({
           type: "craft", targetId: im.output,
           description: `INTERMEDIATE: ${im.output} (${outputStock} in stock, ${inputStock} ${im.input} available)`,
-          priority: PRI.FACILITY - 1, // 84 — above HIGH_VALUE (76-81), ensures inputs exist before final products
+          priority: PRI.MAINTENANCE, // 90 — ABOVE power cell (86) so intermediates get made FIRST
           reason: `intermediate: ${im.output}`,
           quantity: batchSize,
-          maxConcurrent: 1, // Dedicated intermediate crafter
+          maxConcurrent: 2, // 2 crafters on intermediates, 2 on final products
         });
       }
     }

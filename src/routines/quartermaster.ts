@@ -1909,8 +1909,9 @@ async function* manageFactionFacilities(
             return;
           } else {
             // Last resort: try upgrading with just the facility type (let the API figure out the ID)
-            yield `no predecessor found in facility list — trying direct upgrade`;
-            try {
+            yield `no predecessor found in facility list — skipping upgrade (need facility_id)`;
+            // Direct upgrade without facility_id doesn't work (API requires it)
+            if (false) { // DISABLED — was spamming invalid_payload errors
               await ctx.api.factionFacilityUpgrade("", facilityType);
               await ctx.refreshState();
               const qi4 = ctx.fleetConfig.facilityBuildQueue.indexOf(facilityType);
