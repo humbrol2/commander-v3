@@ -1908,19 +1908,7 @@ async function* manageFactionFacilities(
             ctx.cache.setFacilityMaterialNeeds(allMaterialNeeds);
             return;
           } else {
-            // Last resort: try upgrading with just the facility type (let the API figure out the ID)
-            yield `no predecessor found in facility list — skipping upgrade (need facility_id)`;
-            // Direct upgrade without facility_id doesn't work (API requires it)
-            if (false) { // DISABLED — was spamming invalid_payload errors
-              await ctx.api.factionFacilityUpgrade("", facilityType);
-              await ctx.refreshState();
-              const qi4 = ctx.fleetConfig.facilityBuildQueue.indexOf(facilityType);
-              if (qi4 >= 0) ctx.fleetConfig.facilityBuildQueue.splice(qi4, 1);
-              yield `upgraded to ${facilityType.replace(/_/g, " ")} successfully`;
-              return;
-            } catch (err3) {
-              yield `direct upgrade failed: ${err3 instanceof Error ? err3.message : String(err3)}`;
-            }
+            yield `no predecessor found for ${facilityType} — cannot upgrade without facility_id`;
           }
         } catch (err2) {
           yield `upgrade failed: ${err2 instanceof Error ? err2.message : String(err2)}`;
