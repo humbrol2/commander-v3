@@ -103,7 +103,7 @@ export class Commander {
       homeSystem: deps.homeSystem ?? "",
       defaultStorageMode: deps.defaultStorageMode ?? "sell",
       minBotCredits: deps.minBotCredits ?? 0,
-      maxBotCredits: deps.getFleetConfig?.()?.maxBotCredits ?? 400_000,
+      maxBotCredits: (deps.getFleetConfig?.() as any)?.maxBotCredits ?? 400_000,
       factionStorageStation: deps.getFleetConfig?.()?.factionStorageStation,
     }, wom);
   }
