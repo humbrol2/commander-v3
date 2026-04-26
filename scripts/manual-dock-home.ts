@@ -60,25 +60,40 @@ async function main() {
 		console.log(`  Now in: ${curSys}`);
 	}
 
-	// Dock
-	console.log("[3] Docking at confederacy_central_command...");
+	// Travel to station POI then dock
+	console.log("[3] Traveling to station POI...");
 	try {
-		// First travel to the station POI
-		await (api as any).mutation("travel", { poi_id: "confederacy_central_command" });
-		await new Promise(r => setTimeout(r, 3000));
-	} catch { /* may already be there */ }
+		await api.travel("confederacy_central_command");
+		console.log("  Traveled to station POI");
+		// Wait for travel to complete
+		for (let i = 0; i < 10; i++) {
+			await new Promise(r => setTimeout(r, 3000));
+			const s3: any = await api.getStatus();
+			if (s3.player?.docked_at_base || s3.player?.dockedAtBase) {
+				console.log(`[DONE] Auto-docked at ${s3.player.docked_at_base ?? s3.player.dockedAtBase}`);
+				process.exit(0);
+			}
+			// Try manual dock
+			try {
+				await (api as any).mutation("dock");
+				console.log("[DONE] Docked");
+				process.exit(0);
+			} catch (e: any) {
+				const m = e.message ?? "";
+				if (m.includes("action_in_progress") || m.includes("traveling")) continue;
+				if (m.includes("already_docked")) { console.log("[DONE] Already docked"); process.exit(0); }
+			}
+		}
+	} catch (err: any) {
+		console.log(`[3] Travel err: ${(err.message ?? "").slice(0, 80)}`);
+	}
+	// Fallback: try findAndDock pattern
+	console.log("[4] Trying direct dock...");
 	try {
 		await (api as any).mutation("dock", { base_id: "confederacy_central_command" });
 		console.log("[DONE] Docked at home");
 	} catch (err: any) {
-		console.log(`[3] Dock err: ${(err.message ?? "").slice(0, 80)}`);
-		// Try dock without base_id
-		try {
-			await (api as any).mutation("dock");
-			console.log("[DONE] Docked (auto)");
-		} catch (err2: any) {
-			console.log(`[3] Auto-dock err: ${(err2.message ?? "").slice(0, 80)}`);
-		}
+		console.log(`[4] Final dock err: ${(err.message ?? "").slice(0, 80)}`);
 	}
 
 	process.exit(0);
