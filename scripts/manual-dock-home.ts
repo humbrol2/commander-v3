@@ -29,25 +29,27 @@ async function main() {
 		process.exit(0);
 	}
 
-	// Navigate to sol
+	// Navigate to sol using jump(target_system)
 	if (sys !== "sol") {
-		console.log(`[2] Navigating to sol from ${sys}...`);
-		await (api as any).mutation("navigate", { system_id: "sol" });
-		for (let i = 0; i < 30; i++) {
-			await new Promise(r => setTimeout(r, 3000));
+		console.log(`[2] Finding route to sol from ${sys}...`);
+		const route = await api.findRoute("sol");
+		console.log(`  Route: ${route.totalJumps} jumps`);
+		for (let i = 0; i < route.totalJumps + 5; i++) {
 			try {
-				await (api as any).mutation("jump");
-				const s: any = await api.getStatus();
-				const curSys = s.player?.current_system ?? s.player?.currentSystem;
-				console.log(`  jump ${i + 1}: now in ${curSys}`);
-				if (curSys === "sol") break;
+				const result = await api.jump("sol");
+				console.log(`  jump ${i + 1}: ${result.system ?? "?"}`);
+				if (result.system === "sol") break;
 			} catch (err: any) {
 				const msg = err.message ?? "";
-				if (msg.includes("arrived") || msg.includes("no_destination") || msg.includes("already")) break;
-				if (msg.includes("action_in_progress") || msg.includes("rate_limited")) continue;
+				if (msg.includes("already") || msg.includes("same_system")) break;
+				if (msg.includes("action_in_progress") || msg.includes("rate_limited")) {
+					await new Promise(r => setTimeout(r, 5000));
+					continue;
+				}
 				console.log(`  err: ${msg.slice(0, 60)}`);
-				break;
+				await new Promise(r => setTimeout(r, 3000));
 			}
+			await new Promise(r => setTimeout(r, 2000));
 		}
 	}
 
