@@ -1351,7 +1351,7 @@ function identifyBuyOrderTargets(
   // These items are scarce in the galaxy, miners can't produce them, but the
   // entire crafting pipeline depends on them. Pay premium to keep crafters working.
   const SHORTAGE_BUY: Array<{ itemId: string; minStock: number; maxPrice: number; targetQty: number }> = [
-    { itemId: "silicon_ore", minStock: 500, maxPrice: 10, targetQty: 2000 },
+    { itemId: "silicon_ore", minStock: 50, maxPrice: 5, targetQty: 200 },  // Crafters use ~50/day. Was buying 192K/day (4000x overspend)
     { itemId: "rare_salvage", minStock: 10, maxPrice: 30, targetQty: 15 },  // 12/hr consumed, was spending 517K/day at 200cr. Slashed.
     { itemId: "silver_wiring", minStock: 10, maxPrice: 30, targetQty: 20 }, // Was 170K/day at 100cr. Slashed.
   ];
